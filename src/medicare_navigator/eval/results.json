@@ -1,0 +1,107 @@
+[
+  {
+    "id": "eval-001",
+    "message": "metformin 500mg copay on H1234-045",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-002",
+    "message": "tier for metformin 500mg plan H1234-001",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-003",
+    "message": "xyznonexistentdrug 500mg plan H1234-045",
+    "actual_status": "not_found",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-004",
+    "message": "januvia 100mg plan S5678-018",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-005",
+    "message": "metformin 500mg plan ZZZZ-999",
+    "actual_status": "not_found",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-006",
+    "message": "why did lisinopril cost go up on plan S5678-012",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-007",
+    "message": "show alternatives to lipitor",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-008",
+    "message": "atorvastatin 20mg tier H1234-001 spent $400 YTD",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-009",
+    "message": "metformin",
+    "actual_status": "needs_clarification",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-010",
+    "message": "lisinopril 10mg copay U3456-002",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-011",
+    "message": "eliquis 5mg tier H1234-045",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-012",
+    "message": "what if I've spent $800 on metformin 500mg H1234-001",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-013",
+    "message": "metformin 500mg plan H1234-045 spent $2500 YTD",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-014",
+    "message": "omeprazole 20mg plan S5678-012",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-015",
+    "message": "cost trend for lisinopril plan A9012-003",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  }
+]

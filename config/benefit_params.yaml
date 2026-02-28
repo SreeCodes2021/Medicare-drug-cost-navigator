@@ -1,0 +1,7 @@
+contract_year: 2026
+deductible: 615
+initial_coverage_coinsurance_pct: 25
+oop_threshold: 2100
+catastrophic_cost_share: 0
+source_id: cms_part_d_benefit_params_2026
+as_of_date: "2026-01-01"
