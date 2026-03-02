@@ -7,6 +7,7 @@ from medicare_navigator.models.response import CostShareInfo, FormularyResult
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import FormularyRepository, PlanRepository
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase, load_benefit_params
+from medicare_navigator.tools.supply_estimate import compute_supply_estimate
 
 SOURCE_ID = "cms_spuf_2026_q1_demo"
 
@@ -24,6 +25,10 @@ def formulary_benefit_lookup(
     ndc: str,
     ytd_oop_spend: float = 0.0,
     contract_year: int = 2026,
+    ytd_oop_spend_provided: bool = False,
+    quantity: int | None = None,
+    fills: int | None = None,
+    days_supply: int | None = 30,
 ) -> ToolResult[FormularyResult]:
     as_of = _manifest_as_of()
     plan_repo = PlanRepository()
@@ -38,21 +43,23 @@ def formulary_benefit_lookup(
 
     formulary_repo = FormularyRepository()
     entry = formulary_repo.get_formulary_entry(plan_key, ndc)
+    params = load_benefit_params(contract_year)
+    oop_threshold = float(params["oop_threshold"])
+    deductible = float(plan["deductible"])
+    catastrophic_copay = float(params.get("catastrophic_cost_share", 0))
+
     if not entry:
-        params = load_benefit_params(contract_year)
-        oop_threshold = float(params["oop_threshold"])
-        deductible = float(plan["deductible"])
-        phase = compute_benefit_phase(ytd_oop_spend, deductible, oop_threshold)
         not_covered = FormularyResult(
             plan_key=plan_key,
             plan_name=plan["plan_name"],
             tier=None,
             cost_share=None,
-            benefit_phase=phase,
+            benefit_phase=None,
             ytd_oop_spend=ytd_oop_spend,
             oop_threshold=oop_threshold,
             deductible=deductible,
             covered=False,
+            ytd_oop_spend_assumed=not ytd_oop_spend_provided,
         )
         return ToolResult(
             status=ToolStatus.not_covered,
@@ -62,9 +69,6 @@ def formulary_benefit_lookup(
             message=f"Drug NDC {ndc} is not covered on plan {plan_key}.",
         )
 
-    params = load_benefit_params(contract_year)
-    oop_threshold = float(params["oop_threshold"])
-    deductible = float(plan["deductible"])
     phase = compute_benefit_phase(ytd_oop_spend, deductible, oop_threshold)
 
     cost_share = CostShareInfo(
@@ -72,6 +76,17 @@ def formulary_benefit_lookup(
         copay=entry.copay,
         coinsurance_pct=entry.coinsurance_pct,
         cost_type=entry.cost_type,
+    )
+
+    supply_estimate = compute_supply_estimate(
+        ndc=ndc,
+        phase=phase,
+        cost_share=cost_share,
+        ytd_oop_spend=ytd_oop_spend,
+        quantity=quantity,
+        fills=fills,
+        days_supply=days_supply,
+        catastrophic_copay=catastrophic_copay,
     )
 
     result = FormularyResult(
@@ -84,5 +99,7 @@ def formulary_benefit_lookup(
         oop_threshold=oop_threshold,
         deductible=deductible,
         covered=True,
+        ytd_oop_spend_assumed=not ytd_oop_spend_provided,
+        supply_estimate=supply_estimate,
     )
     return ToolResult.ok(result, source_id=SOURCE_ID, as_of_date=as_of)

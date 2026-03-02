@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
-from typing import TypeVar
+from dataclasses import dataclass, field
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -13,6 +15,19 @@ _FOLLOW_UP_COUNT_RE = re.compile(
     r"only one|how many alternative|did you find|just one|any other alternative|is that all",
     re.I,
 )
+
+
+@dataclass
+class ToolCallSpec:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class ChatWithToolsResult:
+    content: str | None
+    tool_calls: list[ToolCallSpec] = field(default_factory=list)
 
 
 class LLMClient:
@@ -69,6 +84,78 @@ class LLMClient:
             response_model=response_model,
         )
 
+    async def chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatWithToolsResult:
+        if not self._has_credentials():
+            raise RuntimeError("chat_with_tools requires LLM API credentials")
+
+        if self.provider == "openai":
+            return await self._openai_chat_with_tools(system_prompt, messages, tools)
+        return await self._anthropic_chat_with_tools(system_prompt, messages, tools)
+
+    async def _openai_chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatWithToolsResult:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        oai_messages = [{"role": "system", "content": system_prompt}, *messages]
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=oai_messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+        choice = response.choices[0].message
+        tool_calls: list[ToolCallSpec] = []
+        if choice.tool_calls:
+            for tc in choice.tool_calls:
+                args = json.loads(tc.function.arguments or "{}")
+                tool_calls.append(
+                    ToolCallSpec(id=tc.id, name=tc.function.name, arguments=args)
+                )
+        return ChatWithToolsResult(content=choice.content, tool_calls=tool_calls)
+
+    async def _anthropic_chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatWithToolsResult:
+        from anthropic import AsyncAnthropic
+
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        response = await client.messages.create(
+            model=self.model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+
+        text_parts: list[str] = []
+        tool_calls: list[ToolCallSpec] = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append(
+                    ToolCallSpec(
+                        id=block.id,
+                        name=block.name,
+                        arguments=block.input if isinstance(block.input, dict) else {},
+                    )
+                )
+        content = "\n".join(text_parts).strip() or None
+        return ChatWithToolsResult(content=content, tool_calls=tool_calls)
+
     def _fallback_structured(
         self, user_prompt: str, response_model: type[T], agent_name: str
     ) -> T:
@@ -79,6 +166,8 @@ class LLMClient:
             return self._fallback_policy(user_prompt, response_model)
         if response_model.__name__ == "SynthesisLLMOutput":
             return self._fallback_synthesis(user_prompt, response_model)
+        if response_model.__name__ == "ClarificationLLMOutput":
+            return response_model.model_validate({"message": ""})
         return response_model.model_validate({})
 
     def _fallback_intake(self, user_prompt: str, model: type[T]) -> T:
@@ -109,6 +198,11 @@ class LLMClient:
                     break
 
             if not drug:
+                for_match = re.search(r"\bfor\s+([a-zA-Z][a-zA-Z0-9-]*)", current_message, re.I)
+                if for_match:
+                    drug = for_match.group(1).lower()
+
+            if not drug:
                 stop = {
                     "plan",
                     "spent",
@@ -129,6 +223,11 @@ class LLMClient:
                     "have",
                     "you",
                     "did",
+                    "eligible",
+                    "eligibility",
+                    "filling",
+                    "cover",
+                    "covered",
                 }
                 tokens = re.findall(r"[a-zA-Z]{4,}", current_message)
                 for token in tokens:

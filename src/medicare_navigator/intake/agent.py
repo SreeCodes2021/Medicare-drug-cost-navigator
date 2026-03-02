@@ -15,13 +15,71 @@ Extract structured slots from the user's message: drug, dosage, plan_id (format 
 ytd_oop_spend, and intents (tier_lookup, explain_cost_change, alternatives).
 When the current message is a follow-up, preserve context from recent conversation and
 only update slots explicitly mentioned in the current message.
-Never guess drug names. If ambiguous, leave fields null.
+Extract the drug token as the user wrote it (including likely misspellings); normalization will validate spelling.
+For eligibility or coverage questions, set intent to tier_lookup even when plan_id is missing.
+Never guess or invent plan_id — only extract it when the user explicitly names a plan or plan ID.
 Never recommend switching plans. Never give medical advice."""
 
 _FOLLOW_UP_COUNT_RE = re.compile(
     r"only one|how many alternative|did you find|just one|any other alternative|is that all",
     re.I,
 )
+
+_PLAN_FUZZY_STOPWORDS = frozenset(
+    {
+        "a",
+        "am",
+        "an",
+        "and",
+        "are",
+        "can",
+        "do",
+        "for",
+        "how",
+        "i",
+        "is",
+        "it",
+        "me",
+        "my",
+        "on",
+        "or",
+        "the",
+        "to",
+        "what",
+        "which",
+        "who",
+        "why",
+        "you",
+        "your",
+    }
+)
+_MIN_PLAN_FUZZY_TOKEN_LEN = 4
+
+_QUANTITY_DOSAGE_RE = re.compile(
+    r"^\d+\s*(pieces?|pills?|tablets?|capsules?|units?|count|qty|quantity)\b",
+    re.I,
+)
+_DOSAGE_STRENGTH_RE = re.compile(r"\d+\s*(mg|mcg|g|ml|iu|unit|%)\b", re.I)
+
+
+def _looks_like_quantity_not_dosage(dosage: str | None) -> bool:
+    if not dosage:
+        return False
+    if _DOSAGE_STRENGTH_RE.search(dosage):
+        return False
+    return bool(_QUANTITY_DOSAGE_RE.search(dosage.strip()))
+
+
+def _plan_fuzzy_candidates(message: str) -> list[str]:
+    candidates: list[str] = []
+    for token in message.split():
+        cleaned = token.strip(".,?!\"'()")
+        if len(cleaned) < _MIN_PLAN_FUZZY_TOKEN_LEN:
+            continue
+        if cleaned.lower() in _PLAN_FUZZY_STOPWORDS:
+            continue
+        candidates.append(cleaned)
+    return candidates
 
 
 class IntakeLLMOutput(BaseModel):
@@ -87,7 +145,8 @@ async def run_intake(
 
     ytd = llm_out.ytd_oop_spend
     spend_mentioned = bool(
-        re.search(r"spent\s+\$?\s*\d", message, re.I)
+        re.search(r"(?:spent|spend)\s+\$?\s*\d", message, re.I)
+        or re.search(r"already\s+(?:spent|spend)\s+\$?\s*\d", message, re.I)
         or re.search(r"\$\d+(?:\.\d+)?\s+ytd", message, re.I)
         or re.search(r"what if i'?ve spent", message, re.I)
     )
@@ -107,7 +166,7 @@ async def run_intake(
         plan_match = re.search(r"plan\s+([A-Za-z0-9]+-\d{3})", message, re.I)
         if plan_match:
             chat_slots.plan_id = plan_match.group(1).upper()
-        for token in message.split():
+        for token in _plan_fuzzy_candidates(message):
             matches = PlanRepository().fuzzy_match_plan(token)
             if matches:
                 chat_slots.plan_id = matches[0]["plan_key"]
@@ -125,7 +184,8 @@ async def run_intake(
 
     if merged.ytd_oop_spend is None:
         spend_patterns = [
-            r"spent\s+\$?\s*(\d+(?:\.\d+)?)",
+            r"(?:spent|spend)\s+\$?\s*(\d+(?:\.\d+)?)",
+            r"already\s+(?:spent|spend)\s+\$?\s*(\d+(?:\.\d+)?)",
             r"\$(\d+(?:\.\d+)?)\s+ytd",
             r"what if i'?ve spent\s+\$?\s*(\d+(?:\.\d+)?)",
         ]
@@ -140,36 +200,57 @@ async def run_intake(
         return IntakeResult(
             status="needs_clarification",
             slots=merged,
-            clarification_message="Which drug would you like to look up? Please provide the drug name and dosage.",
             missing_slots=["drug"],
             follow_up_type=follow_up_type,
             slots_unchanged=slots_unchanged,
         )
 
-    norm_result = await normalize_drug(merged.drug, merged.dosage)
+    dosage = merged.dosage
+    if _looks_like_quantity_not_dosage(dosage):
+        merged.dosage = None
+        dosage = None
+
+    norm_result = await normalize_drug(merged.drug, dosage)
+    if norm_result.status.value == "not_found" and dosage:
+        retry = await normalize_drug(merged.drug, None)
+        if retry.status.value != "not_found":
+            norm_result = retry
+            merged.dosage = None
+
+    drug_candidates = (norm_result.data or {}).get("candidates", []) if norm_result.data else []
     if norm_result.status.value == "not_found":
         return IntakeResult(
             status="not_found",
             slots=merged,
-            clarification_message=norm_result.message or f"I couldn't find '{merged.drug}'. Please check the spelling.",
+            missing_slots=["drug"],
+            drug_candidates=drug_candidates,
             follow_up_type=follow_up_type,
             slots_unchanged=slots_unchanged,
         )
 
     selected = norm_result.data["selected"]
     plan_required_intents = {"tier_lookup", "explain_cost_change"}
-    needs_plan = bool(plan_required_intents.intersection(set(merged.intents or []))) or (
-        "tier" in message.lower() or "copay" in message.lower() or "cost" in message.lower()
+    message_lower = message.lower()
+    needs_plan = bool(plan_required_intents.intersection(set(merged.intents or []))) or any(
+        kw in message_lower
+        for kw in (
+            "tier",
+            "copay",
+            "cost",
+            "eligible",
+            "eligibility",
+            "covered",
+            "cover",
+            "fill",
+            "filling",
+        )
     )
     if not merged.plan_id and needs_plan:
         return IntakeResult(
             status="needs_clarification",
             slots=merged,
-            clarification_message=(
-                f"I found {selected['drug_name']} {selected.get('dosage', '')}. "
-                "Which plan should I check? Provide a plan ID like H1234-045 or a plan name."
-            ),
             missing_slots=["plan_id"],
+            resolved_drug=selected,
             follow_up_type=follow_up_type,
             slots_unchanged=slots_unchanged,
         )
@@ -180,10 +261,8 @@ async def run_intake(
             return IntakeResult(
                 status="not_found",
                 slots=merged,
-                clarification_message=(
-                    f"Plan '{merged.plan_id}' was not found in the demo plan set. "
-                    "Please provide a valid plan ID like H1234-045."
-                ),
+                missing_slots=["plan_id"],
+                resolved_drug=selected,
                 follow_up_type=follow_up_type,
                 slots_unchanged=slots_unchanged,
             )

@@ -13,6 +13,15 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
 
 class InputMerger:
     @staticmethod
+    def _spend_mentioned(raw_message: str) -> bool:
+        return bool(
+            re.search(r"(?:spent|spend)\s+\$?\s*\d", raw_message, re.I)
+            or re.search(r"already\s+(?:spent|spend)\s+\$?\s*\d", raw_message, re.I)
+            or re.search(r"\$\d+(?:\.\d+)?\s+ytd", raw_message, re.I)
+            or re.search(r"what if i'?ve spent", raw_message, re.I)
+        )
+
+    @staticmethod
     def _message_signals_intent(message: str) -> set[str]:
         text = message.lower()
         detected: set[str] = set()
@@ -33,14 +42,12 @@ class InputMerger:
             base = session_slots.model_copy(deep=True)
         if filter_slots:
             for field, value in filter_slots.model_dump(exclude_none=True).items():
+                if field == "ytd_oop_spend" and value in (0, 0.0):
+                    continue
                 if value is not None and value != "":
                     setattr(base, field, value)
 
-        spend_mentioned = bool(
-            re.search(r"spent\s+\$?\s*\d", raw_message, re.I)
-            or re.search(r"\$\d+(?:\.\d+)?\s+ytd", raw_message, re.I)
-            or re.search(r"what if i'?ve spent", raw_message, re.I)
-        )
+        spend_mentioned = InputMerger._spend_mentioned(raw_message)
 
         for field, value in chat_slots.model_dump(exclude_none=True).items():
             if field in ("raw_message", "intents"):
@@ -93,6 +100,11 @@ class InputMerger:
             contract_id = parts[0]
             plan_segment_id = parts[1]
 
+        ytd = slots.ytd_oop_spend if slots.ytd_oop_spend is not None else 0.0
+        ytd_provided = InputMerger._spend_mentioned(slots.raw_message) or (
+            slots.ytd_oop_spend is not None and slots.ytd_oop_spend != 0.0
+        )
+
         return ParsedQuery(
             drug_name=drug_data.get("drug_name", slots.drug) if drug_data else (slots.drug or ""),
             rxcui=drug_data.get("rxcui") if drug_data else None,
@@ -102,7 +114,8 @@ class InputMerger:
             contract_id=contract_id,
             plan_segment_id=plan_segment_id,
             contract_year=slots.contract_year or 2026,
-            ytd_oop_spend=slots.ytd_oop_spend or 0.0,
+            ytd_oop_spend=ytd,
+            ytd_oop_spend_provided=ytd_provided,
             pharmacy_channel=slots.pharmacy_channel or "preferred_retail",
             days_supply=slots.days_supply or 30,
             include_alternatives=slots.include_alternatives if slots.include_alternatives is not None else True,

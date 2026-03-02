@@ -13,3 +13,4 @@
 {"id": "eval-013", "message": "metformin 500mg plan H1234-045 spent $2500 YTD", "expected_status": "ok", "expected_phase": "catastrophic"}
 {"id": "eval-014", "message": "omeprazole 20mg plan S5678-012", "expected_status": "ok", "expected_tool_status": {"formulary_benefit_lookup": "not_covered"}}
 {"id": "eval-015", "message": "cost trend for lisinopril plan A9012-003", "expected_status": "ok", "expected_has_trend": true}
+{"id": "eval-016", "message": "Why did lisinopril costs go up on plan S5678-012? I want to buy 10 pieces. I have already spent $1000 this year. I want help in budgeting.", "expected_status": "ok", "expected_has_trend": true, "expected_has_supply_estimate": true, "expected_phase": "initial_coverage"}

@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 
+from medicare_navigator.agents.clarification import run_clarification_agent
 from medicare_navigator.agents.policy import run_policy_agent
 from medicare_navigator.agents.synthesis import run_synthesis_agent
 from medicare_navigator.config import settings
@@ -143,7 +144,10 @@ class Orchestrator:
         session["slots"] = intake.slots
 
         if intake.status != "complete" or not intake.parsed_query:
-            explanation = intake.clarification_message or ""
+            explanation, clarification_source = await run_clarification_agent(
+                message, intake, chat_history=chat_history
+            )
+            agents_invoked.append("clarification")
             latency = (time.perf_counter() - start) * 1000
             _log_query(query_id, session["session_id"], tools_invoked, agents_invoked, tool_statuses, latency)
             session_manager.append_turn(session, message, explanation, query_id=query_id)
@@ -152,10 +156,10 @@ class Orchestrator:
                 session,
                 intake.status,
                 explanation,
-                clarification_message=intake.clarification_message,
+                clarification_message=explanation,
                 tools_invoked=tools_invoked,
                 agents_invoked=agents_invoked,
-                response_source="Rule-based clarification",
+                response_source=clarification_source,
             )
 
         parsed = intake.parsed_query
@@ -188,7 +192,11 @@ class Orchestrator:
                 else:
                     tools_invoked.append("formulary_benefit_lookup")
                     form_result = formulary_benefit_lookup(
-                        parsed.plan_key, parsed.ndc, parsed.ytd_oop_spend, parsed.contract_year
+                        parsed.plan_key,
+                        parsed.ndc,
+                        parsed.ytd_oop_spend,
+                        parsed.contract_year,
+                        ytd_oop_spend_provided=parsed.ytd_oop_spend_provided,
                     )
                     session["tool_artifacts"][key] = form_result
                 tool_artifacts["formulary_benefit_lookup"] = form_result
@@ -210,7 +218,9 @@ class Orchestrator:
                 data_as_of["alternatives"] = alt_result.as_of_date
 
         policy_claims = None
-        needs_policy = "explain_cost_change" in parsed.intents or "explain" in message.lower()
+        needs_policy = (
+            "explain_cost_change" not in parsed.intents and "explain" in message.lower()
+        )
         if needs_policy and not reuse_artifacts:
             agents_invoked.append("policy")
             policy_out, retrieval = await run_policy_agent(parsed, tool_artifacts)

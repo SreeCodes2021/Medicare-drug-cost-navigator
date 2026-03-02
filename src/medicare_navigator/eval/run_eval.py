@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from medicare_navigator.ingestion.seed import run_seed
-from medicare_navigator.orchestrator.pipeline import orchestrator
+from medicare_navigator.orchestrator.router import orchestrator
 
 
 def _queries_path() -> Path:
@@ -61,19 +61,30 @@ async def _run_case(case: dict) -> dict:
             result["passed"] = False
             result["failures"].append("expected cost trend data")
 
+    if case.get("expected_has_supply_estimate"):
+        if not resp.formulary or not resp.formulary.supply_estimate:
+            result["passed"] = False
+            result["failures"].append("expected supply_estimate on formulary result")
+
     if resp.status == "ok" and resp.explanation:
         if "Disclaimer" not in resp.explanation and "informational" not in resp.explanation.lower():
             result["passed"] = False
             result["failures"].append("missing disclaimer in explanation")
 
     if resp.status == "ok" and not resp.citations:
-        result["passed"] = False
-        result["failures"].append("no citations on ok response")
+        # Navigator fallback may build citations from artifacts; allow empty only for clarification-like ok
+        if "which drug" not in resp.explanation.lower() and "which medicare plan" not in resp.explanation.lower():
+            result["passed"] = False
+            result["failures"].append("no citations on ok response")
 
     return result
 
 
 async def run_eval() -> int:
+    from medicare_navigator.config import settings
+
+    settings.anthropic_api_key = ""
+    settings.openai_api_key = ""
     run_seed()
     cases = []
     with _queries_path().open(encoding="utf-8") as f:

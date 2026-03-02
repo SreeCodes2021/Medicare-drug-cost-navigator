@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     session_ttl_minutes: int = 30
     max_chat_turns: int = 5
+    max_tool_rounds: int = 8
+    navigator_mode: str = "mcp_agent"
 
     project_root: Path = Path(__file__).resolve().parents[2]
 

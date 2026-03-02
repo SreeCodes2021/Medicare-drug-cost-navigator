@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from medicare_navigator.config import settings
 from medicare_navigator.models.query import QuerySlots
 from medicare_navigator.models.response import ChatResponse
-from medicare_navigator.orchestrator.pipeline import orchestrator
+from medicare_navigator.orchestrator.router import orchestrator
 from medicare_navigator.storage.repository import PlanRepository
 
 app = FastAPI(title="Medicare Drug Cost Navigator", version="0.1.0")
@@ -67,7 +67,8 @@ async def health():
         "status": "ok",
         "version": "0.1.0",
         "llm_configured": llm_client._has_credentials(),
-        "llm_source": llm_client.model_label() if llm_client._has_credentials() else llm_client.fallback_label("synthesis"),
+        "llm_source": llm_client.model_label() if llm_client._has_credentials() else llm_client.fallback_label("navigator"),
+        "navigator_mode": settings.navigator_mode,
     }
 
 

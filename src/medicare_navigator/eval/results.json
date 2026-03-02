@@ -30,9 +30,12 @@
   {
     "id": "eval-005",
     "message": "metformin 500mg plan ZZZZ-999",
-    "actual_status": "not_found",
-    "passed": true,
-    "failures": []
+    "actual_status": "ok",
+    "passed": false,
+    "failures": [
+      "status: expected not_found, got ok",
+      "no citations on ok response"
+    ]
   },
   {
     "id": "eval-006",
@@ -58,9 +61,12 @@
   {
     "id": "eval-009",
     "message": "metformin",
-    "actual_status": "needs_clarification",
-    "passed": true,
-    "failures": []
+    "actual_status": "ok",
+    "passed": false,
+    "failures": [
+      "status: expected needs_clarification, got ok",
+      "no citations on ok response"
+    ]
   },
   {
     "id": "eval-010",
@@ -100,6 +106,13 @@
   {
     "id": "eval-015",
     "message": "cost trend for lisinopril plan A9012-003",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-016",
+    "message": "Why did lisinopril costs go up on plan S5678-012? I want to buy 10 pieces. I have already spent $1000 this year. I want help in budgeting.",
     "actual_status": "ok",
     "passed": true,
     "failures": []

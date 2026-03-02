@@ -32,5 +32,6 @@ class ToolResult(BaseModel, Generic[T]):
         source_id: str,
         as_of_date: str,
         message: str | None = None,
+        data: T | None = None,
     ) -> "ToolResult[T]":
-        return cls(status=status, data=None, source_id=source_id, as_of_date=as_of_date, message=message)
+        return cls(status=status, data=data, source_id=source_id, as_of_date=as_of_date, message=message)

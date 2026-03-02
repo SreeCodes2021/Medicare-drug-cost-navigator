@@ -46,6 +46,17 @@ def test_formulary_not_covered():
     assert result.data is not None
     assert result.data.covered is False
     assert result.data.plan_key == "S5678-018"
+    assert result.data.benefit_phase is None
+    assert result.data.ytd_oop_spend_assumed is True
+
+
+def test_formulary_covered_ytd_provided():
+    result = formulary_benefit_lookup(
+        "H1234-045", "00093-7214-01", ytd_oop_spend=400.0, ytd_oop_spend_provided=True
+    )
+    assert result.status == ToolStatus.ok
+    assert result.data.ytd_oop_spend_assumed is False
+    assert result.data.benefit_phase == "initial_coverage"
 
 
 def test_formulary_plan_not_found():

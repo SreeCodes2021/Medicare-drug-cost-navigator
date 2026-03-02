@@ -1,0 +1,147 @@
+from medicare_navigator.agents.policy import filter_policy_claims
+from medicare_navigator.agents.synthesis import _explain_cost_change_answer
+from medicare_navigator.models.query import ParsedQuery
+from medicare_navigator.models.response import CostTrendPoint, FormularyResult
+from medicare_navigator.models.tool_result import ToolResult, ToolStatus
+from medicare_navigator.tools.ira_drugs import is_ira_negotiated
+
+import pytest
+
+from medicare_navigator.ingestion.seed import run_seed
+from medicare_navigator.orchestrator.pipeline import orchestrator
+
+
+@pytest.fixture(scope="module", autouse=True)
+def seed_data():
+    run_seed()
+
+
+def _parsed(**kwargs) -> ParsedQuery:
+    defaults = {
+        "drug_name": "lisinopril",
+        "plan_key": "S5678-012",
+        "intents": ["explain_cost_change"],
+        "raw_message": "why did lisinopril cost go up on plan S5678-012",
+        "ytd_oop_spend_provided": False,
+    }
+    defaults.update(kwargs)
+    return ParsedQuery(**defaults)
+
+
+def _lisinopril_formulary(**kwargs) -> FormularyResult:
+    defaults = {
+        "plan_key": "S5678-012",
+        "plan_name": "SilverScript Choice",
+        "tier": 1,
+        "cost_share": {"tier": 1, "copay": 2.0, "cost_type": "copay"},
+        "benefit_phase": "deductible",
+        "ytd_oop_spend": 0.0,
+        "oop_threshold": 2100.0,
+        "deductible": 350.0,
+        "covered": True,
+        "ytd_oop_spend_assumed": True,
+    }
+    defaults.update(kwargs)
+    return FormularyResult(**defaults)
+
+
+def _tool_artifacts(formulary: FormularyResult | None = None, with_trend: bool = True):
+    form = formulary or _lisinopril_formulary()
+    tools = {
+        "formulary_benefit_lookup": ToolResult(
+            status=ToolStatus.ok,
+            data=form,
+            source_id="cms_spuf_2026_q1_demo",
+            as_of_date="2026-01-15",
+        )
+    }
+    if with_trend:
+        tools["cost_trend_lookup"] = ToolResult(
+            status=ToolStatus.ok,
+            data=[
+                CostTrendPoint(year=2022, total_spend=800_000_000, avg_unit_cost=0.08),
+                CostTrendPoint(year=2025, total_spend=1_050_000_000, avg_unit_cost=0.12),
+            ],
+            source_id="cms_part_d_spending_demo",
+            as_of_date="2026-01-15",
+        )
+    return tools
+
+
+def test_explain_cost_change_leads_with_ytd_assumption():
+    explanation, _ = _explain_cost_change_answer(_parsed(), _tool_artifacts())
+    lower = explanation.lower()
+    assert lower.index("assuming $0") < lower.index("deductible")
+    assert "most likely you're paying full price" in lower
+    assert "tier 1" in lower
+    assert "no prior-year tier data" in lower
+
+
+def test_explain_cost_change_omits_ira_and_tier_change_speculation():
+    explanation, _ = _explain_cost_change_answer(_parsed(), _tool_artifacts())
+    lower = explanation.lower()
+    assert "ira" not in lower
+    assert "negotiat" not in lower
+    assert "moved to a higher tier" not in lower
+    assert "---" not in explanation
+    assert "###" not in explanation
+
+
+def test_explain_cost_change_includes_unit_cost_trend():
+    explanation, citations = _explain_cost_change_answer(_parsed(), _tool_artifacts())
+    assert "$0.08" in explanation
+    assert "$0.12" in explanation
+    assert any("unit cost trend" in c.claim.lower() for c in citations)
+
+
+def test_explain_cost_change_invites_ytd_when_assumed():
+    explanation, _ = _explain_cost_change_answer(_parsed(), _tool_artifacts())
+    assert "share your year-to-date" in explanation.lower()
+
+
+def test_explain_cost_change_with_provided_ytd():
+    form = _lisinopril_formulary(ytd_oop_spend=400.0, ytd_oop_spend_assumed=False)
+    explanation, _ = _explain_cost_change_answer(
+        _parsed(ytd_oop_spend=400.0, ytd_oop_spend_provided=True),
+        _tool_artifacts(formulary=form),
+    )
+    assert "$400.00" in explanation
+    assert "assuming $0" not in explanation.lower()
+    assert "share your year-to-date" not in explanation.lower()
+
+
+def test_lisinopril_not_ira_negotiated():
+    assert not is_ira_negotiated("lisinopril")
+    assert is_ira_negotiated("eliquis")
+
+
+def test_filter_policy_claims_drops_ira_for_generic():
+    claims = [
+        {"claim": "IRA negotiation may change costs.", "source_id": "ira_negotiated_prices"},
+        {"claim": "Benefit phases affect what you pay.", "source_id": "cms_part_d_redesign_2026"},
+        {"claim": "A formulary tier change can increase cost sharing.", "source_id": "formulary_tier_explanation"},
+    ]
+    filtered = filter_policy_claims(claims, "lisinopril", {})
+    assert len(filtered) == 1
+    assert filtered[0]["source_id"] == "cms_part_d_redesign_2026"
+
+
+def test_filter_policy_claims_keeps_ira_for_eliquis():
+    claims = [
+        {"claim": "IRA negotiation may change costs for selected drugs.", "source_id": "ira_negotiated_prices"},
+    ]
+    filtered = filter_policy_claims(claims, "eliquis", {})
+    assert len(filtered) == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_lisinopril_cost_change_end_to_end():
+    response = await orchestrator.run("why did lisinopril cost go up on plan S5678-012")
+    assert response.status == "ok"
+    assert response.cost_trend
+    lower = response.explanation.lower()
+    assert "assuming $0" in lower
+    assert "deductible" in lower
+    assert "ira" not in lower
+    assert "policy" not in response.agents_invoked
+    assert "Deterministic cost-change explanation" in (response.response_source or "")

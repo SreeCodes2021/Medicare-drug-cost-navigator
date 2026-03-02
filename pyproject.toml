@@ -21,6 +21,7 @@ dependencies = [
     "chromadb>=0.5.0",
     "pyyaml>=6.0.0",
     "python-multipart>=0.0.12",
+    "mcp>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,8 @@ dev = [
 [project.scripts]
 medicare-ingest = "medicare_navigator.ingestion.cli:main"
 medicare-eval = "medicare_navigator.eval.run_eval:main"
+medicare-chat-invoke = "medicare_navigator.qa.cli:main"
+medicare-ui-test = "medicare_navigator.ui_test.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/medicare_navigator"]

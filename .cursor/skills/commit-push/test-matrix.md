@@ -30,9 +30,12 @@ All pytest runs are offline — [`tests/conftest.py`](../../../tests/conftest.py
 
 Rows are additive: multiple matches → union of commands, then dedupe.
 
+| `frontend/**` | `pytest tests/test_ui.py -v` |
+| `src/medicare_navigator/ui_test/**` | `pytest tests/test_ui.py -v` |
+
 ### Frontend only
 
-If **every** staged path is under `frontend/` → **no automated tests**. Note in overview: manual UI check at http://localhost:8000.
+If **every** staged path is under `frontend/` → `pytest tests/test_ui.py -v`. Note in overview: optional live check `medicare-ui-test run` at http://localhost:8000.
 
 ### Docs / config only
 

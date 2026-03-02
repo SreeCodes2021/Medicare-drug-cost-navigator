@@ -23,11 +23,31 @@ class FormularyResult(BaseModel):
     plan_name: str
     tier: int | None = None
     cost_share: CostShareInfo | None = None
-    benefit_phase: str
+    benefit_phase: str | None = None
     ytd_oop_spend: float
     oop_threshold: float
     deductible: float
     covered: bool = True
+    ytd_oop_spend_assumed: bool = True
+    supply_estimate: "SupplyEstimate | None" = None
+
+
+class SupplyScenario(BaseModel):
+    label: str
+    estimated_patient_cost: float
+    formula_description: str
+    fills: int | None = None
+    quantity: int | None = None
+
+
+class SupplyEstimate(BaseModel):
+    estimated_patient_cost: float | None = None
+    calculation_method: str
+    formula_description: str
+    fills: int | None = None
+    quantity: int | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    scenarios: list[SupplyScenario] | None = None
 
 
 class CostTrendPoint(BaseModel):

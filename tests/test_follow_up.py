@@ -79,7 +79,15 @@ async def test_not_covered_includes_formulary_in_response():
     assert r.status == "ok"
     assert r.formulary is not None
     assert r.formulary.covered is False
+    assert r.formulary.benefit_phase is None
     assert r.tool_statuses.get("formulary_benefit_lookup") == "not_covered"
+
+
+def test_merger_ignores_zero_ytd_filter():
+    filters = QuerySlots(plan_id="H1234-045", ytd_oop_spend=0.0)
+    chat = QuerySlots(drug="metformin", raw_message="metformin tier")
+    merged = InputMerger.merge(chat, filter_slots=filters, raw_message="metformin tier")
+    assert merged.ytd_oop_spend is None
 
 
 def test_merger_preserves_ytd_when_not_mentioned():

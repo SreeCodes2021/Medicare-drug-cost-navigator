@@ -33,6 +33,7 @@ class ParsedQuery(BaseModel):
     plan_segment_id: str | None = None
     contract_year: int = 2026
     ytd_oop_spend: float = 0.0
+    ytd_oop_spend_provided: bool = False
     pharmacy_channel: str = "preferred_retail"
     days_supply: int = 30
     include_alternatives: bool = True
@@ -49,3 +50,5 @@ class IntakeResult(BaseModel):
     missing_slots: list[str] = Field(default_factory=list)
     follow_up_type: str | None = None
     slots_unchanged: bool = False
+    resolved_drug: dict | None = None
+    drug_candidates: list[dict] = Field(default_factory=list)

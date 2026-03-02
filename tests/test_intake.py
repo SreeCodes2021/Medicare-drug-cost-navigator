@@ -28,3 +28,27 @@ async def test_intake_not_found():
 async def test_intake_needs_clarification():
     result = await run_intake("metformin")
     assert result.status == "needs_clarification"
+    assert "plan_id" in result.missing_slots
+
+
+@pytest.mark.asyncio
+async def test_intake_eligibility_without_plan_does_not_guess_plan():
+    result = await run_intake("Am I eligible for filling omeprazole?")
+    assert result.status == "needs_clarification"
+    assert "plan_id" in result.missing_slots
+    assert result.slots.plan_id is None
+
+
+@pytest.mark.asyncio
+async def test_intake_ignores_quantity_as_dosage():
+    message = (
+        "Why did lisinopril costs go up on plan S5678-012? "
+        "I want buy 10 pieces of it. I have already spend $1000 this year. "
+        "I want help in budgeting"
+    )
+    result = await run_intake(message)
+    assert result.status == "complete"
+    assert result.parsed_query is not None
+    assert result.parsed_query.drug_name == "lisinopril"
+    assert result.parsed_query.plan_key == "S5678-012"
+    assert result.parsed_query.ytd_oop_spend == 1000.0
