@@ -9,6 +9,7 @@ from medicare_navigator.agents.clarification import run_clarification_agent
 from medicare_navigator.agents.policy import run_policy_agent
 from medicare_navigator.agents.synthesis import run_synthesis_agent
 from medicare_navigator.config import settings
+from medicare_navigator.guardrails.citations import enrich_citations
 from medicare_navigator.intake.agent import run_intake
 from medicare_navigator.models.query import IntakeResult, QuerySlots
 from medicare_navigator.models.response import QueryResponse
@@ -237,6 +238,7 @@ class Orchestrator:
             chat_history=chat_history,
             follow_up_type=intake.follow_up_type,
         )
+        citations = enrich_citations(citations, tool_artifacts)
 
         if tool_artifacts:
             session["last_tool_artifacts"] = dict(tool_artifacts)

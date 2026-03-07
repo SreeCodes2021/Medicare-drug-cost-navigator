@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from medicare_navigator.ingestion.manifest import get_as_of, get_source_id
 from medicare_navigator.mcp.schemas import TOOL_SCHEMAS
 from medicare_navigator.models.tool_result import ToolResult
 from medicare_navigator.storage.repository import PlanRepository
@@ -15,8 +16,16 @@ from medicare_navigator.tools.lookup_plan import lookup_plan
 from medicare_navigator.tools.normalize_drug import normalize_drug
 from medicare_navigator.tools.policy_retrieval import policy_retrieval
 
-SOURCE_ID = "cms_spuf_2026_q1_demo"
-AS_OF = "2026-01-15"
+SOURCE_ID_FALLBACK = "cms_spuf_2026_q1_demo"
+AS_OF_FALLBACK = "2026-01-15"
+
+
+def _spuf_source_id() -> str:
+    return get_source_id("spuf", SOURCE_ID_FALLBACK)
+
+
+def _spuf_as_of() -> str:
+    return get_as_of("spuf", AS_OF_FALLBACK)
 
 
 def _serialize_tool_result(result: ToolResult) -> dict[str, Any]:
@@ -56,7 +65,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             state=args.get("state"),
             contract_year=args.get("contract_year"),
         )
-        result = ToolResult.ok(plans, source_id=SOURCE_ID, as_of_date=AS_OF)
+        result = ToolResult.ok(plans, source_id=_spuf_source_id(), as_of_date=_spuf_as_of())
     elif name == "formulary_benefit_lookup":
         result = formulary_benefit_lookup(
             plan_key=args["plan_key"],
@@ -67,6 +76,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             quantity=args.get("quantity"),
             fills=args.get("fills"),
             days_supply=args.get("days_supply", 30),
+            pharmacy_channel=args.get("pharmacy_channel", "preferred_retail"),
         )
     elif name == "cost_trend_lookup":
         result = cost_trend_lookup(args["rxcui"])
@@ -78,7 +88,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "not_found",
             "source_id": "navigator",
-            "as_of_date": AS_OF,
+            "as_of_date": _spuf_as_of(),
             "message": f"Unknown tool: {name}",
             "data": None,
         }

@@ -1,0 +1,34 @@
+# Kubernetes CronJob: daily CMS SPUF ingest at 3:00 AM (cluster local time).
+# Adjust schedule/timezone and image tag for your environment.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: medicare-spuf-ingest
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: ingest
+              image: medicare-navigator:latest
+              command: ["/bin/bash", "scripts/run-daily-ingest.sh"]
+              env:
+                - name: DATA_DIR
+                  value: /data
+                - name: DUCKDB_PATH
+                  value: /data/navigator.duckdb
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: medicare-navigator-data
+---
+# API deployment must mount the same PVC at /data (or equivalent DATA_DIR).

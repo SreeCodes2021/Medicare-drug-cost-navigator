@@ -73,7 +73,7 @@ Without API keys, the system uses deterministic fallbacks for agent outputs whil
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/health` | Health check |
+| `GET` | `/api/health` | Health check (includes `data_fresh`, `seeded_at`) |
 | `GET` | `/api/disclaimer` | Canonical disclaimer text |
 | `GET` | `/api/meta/as-of` | Data freshness manifest |
 | `GET` | `/api/plans` | Demo plan list |
@@ -100,6 +100,9 @@ docs/               # implementation plan, data sources
 ## Documentation
 
 - [Phase 1 Implementation Plan](docs/phase-1-implementation-plan.md)
+- [Phase 2 Implementation Plan](docs/phase-2-implementation-plan.md)
+- [Phase 3 Implementation Plan](docs/phase-3-implementation-plan.md)
+- [Deployment & scheduled ingest](docs/deployment.md)
 - [Data Sources](docs/data-sources.md)
 - [Build Requirements](build-requirements.md)
 

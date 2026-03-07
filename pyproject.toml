@@ -43,6 +43,10 @@ packages = ["src/medicare_navigator"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that call live external APIs (deselect with -m 'not integration')",
+]
 
 [tool.ruff]
 line-length = 100

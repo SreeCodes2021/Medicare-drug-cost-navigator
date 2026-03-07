@@ -1,0 +1,16 @@
+# Filters for real CMS SPUF ingestion (FL + TX coverage)
+contract_year: 2026
+
+states:
+  - FL
+  - TX
+
+# PDP plans use PDP_REGION_CODE (not STATE). See CMS SPUF MA_REGION/PDP_REGION tables.
+pdp_region_codes:
+  FL: "11"
+  TX: "22"
+
+# Include stand-alone PDP (S*) and local MA-PD (H*) plans
+plan_type_prefixes:
+  - S
+  - H

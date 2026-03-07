@@ -260,11 +260,14 @@ medicare-ui-test run
 
 ## 12. Phase 2 → Phase 3 (deferred)
 
-Not in Phase 2:
+The following were deferred from Phase 2 and implemented in [phase-3-implementation-plan.md](./phase-3-implementation-plan.md):
 
 - Full CMS PUF ingestion beyond demo subset
+- Production deployment / hosting
+
+Still deferred (Phase 4+):
+
 - Live tier-change detection across plan years
 - Automated eval gate in CI
-- Production deployment / hosting
 
 See [build-requirements.md](../build-requirements.md) Section 12 for the full deferred list.
