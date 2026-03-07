@@ -75,7 +75,7 @@ def _deterministic_clarification(intake: IntakeResult) -> str:
 
     if intake.slots.plan_id and intake.status == "not_found":
         return (
-            f"Plan '{intake.slots.plan_id}' was not found in the demo plan set. "
+            f"Plan '{intake.slots.plan_id}' was not found. "
             "Please provide a valid plan ID like H1234-045."
         )
 

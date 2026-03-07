@@ -4,6 +4,13 @@ import re
 from typing import Any
 
 from medicare_navigator.config import settings
+from medicare_navigator.guardrails.source_catalog import (
+    drug_name_from_artifacts,
+    formulary_citation_claim,
+    label_for_source_id,
+    trend_citation_claim,
+    url_for_source_id,
+)
 from medicare_navigator.models.citation import Citation
 from medicare_navigator.models.response import FormularyResult
 
@@ -23,29 +30,87 @@ def extract_source_ids(tool_artifacts: dict[str, dict[str, Any]]) -> set[str]:
     return ids
 
 
+def _passage_claim(text: str, source_label: str | None) -> str:
+    if source_label:
+        return source_label
+    trimmed = (text or "").strip()
+    if len(trimmed) > 80:
+        return trimmed[:77] + "..."
+    return trimmed or "CMS policy reference"
+
+
+def _normalize_artifacts(tool_artifacts: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, artifact in tool_artifacts.items():
+        if hasattr(artifact, "model_dump"):
+            dumped = artifact.model_dump()
+            normalized[name] = {
+                "status": dumped.get("status"),
+                "source_id": dumped.get("source_id"),
+                "as_of_date": dumped.get("as_of_date"),
+                "data": dumped.get("data"),
+            }
+        elif isinstance(artifact, dict):
+            status = artifact.get("status")
+            if hasattr(status, "value"):
+                status = status.value
+            normalized[name] = {
+                "status": status,
+                "source_id": artifact.get("source_id"),
+                "as_of_date": artifact.get("as_of_date"),
+                "data": artifact.get("data"),
+            }
+    return normalized
+
+
+def _url_for_policy_claim(claim: str, passages: list[dict[str, Any]]) -> str | None:
+    for passage in passages:
+        text = passage.get("text", "")
+        label = passage.get("source_label") or ""
+        if claim in text or text in claim or (label and label in claim):
+            return passage.get("url")
+    return None
+
+
+def enrich_citations(
+    citations: list[Citation],
+    tool_artifacts: dict[str, Any],
+) -> list[Citation]:
+    """Attach documentation URLs from source registry and policy passage metadata."""
+    artifacts = _normalize_artifacts(tool_artifacts)
+    passages = (artifacts.get("policy_retrieval") or {}).get("data") or []
+    enriched: list[Citation] = []
+    for citation in citations:
+        if citation.url:
+            enriched.append(citation)
+            continue
+        url = _url_for_policy_claim(citation.claim, passages)
+        if not url:
+            url = url_for_source_id(citation.source_id)
+        enriched.append(citation.model_copy(update={"url": url}) if url else citation)
+    return enriched
+
+
 def build_citations_from_artifacts(
     tool_artifacts: dict[str, dict[str, Any]],
 ) -> list[Citation]:
     citations: list[Citation] = []
     seen: set[str] = set()
+    drug_name = drug_name_from_artifacts(tool_artifacts)
 
     form = tool_artifacts.get("formulary_benefit_lookup")
     if form and form.get("status") in ("ok", "not_covered") and form.get("data"):
         key = f"formulary:{form['source_id']}"
         if key not in seen:
             data = form["data"]
-            tier = data.get("tier")
-            claim = (
-                f"Formulary tier {tier} on {data.get('plan_key')}"
-                if tier is not None
-                else f"Formulary status on {data.get('plan_key')}"
-            )
+            source_id = form["source_id"]
             citations.append(
                 Citation(
-                    claim=claim,
-                    source_id=form["source_id"],
+                    claim=formulary_citation_claim(data, drug_name),
+                    source_id=source_id,
                     as_of_date=form.get("as_of_date", ""),
-                    source_label="CMS SPUF Demo Formulary",
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
                 )
             )
             seen.add(key)
@@ -56,13 +121,14 @@ def build_citations_from_artifacts(
         if key not in seen:
             points = trend["data"]
             if points:
-                first, last = points[0], points[-1]
+                source_id = trend["source_id"]
                 citations.append(
                     Citation(
-                        claim=f"Spending trend {first.get('year')}-{last.get('year')}",
-                        source_id=trend["source_id"],
+                        claim=trend_citation_claim(points, drug_name),
+                        source_id=source_id,
                         as_of_date=trend.get("as_of_date", ""),
-                        source_label="CMS Part D Spending Demo",
+                        source_label=label_for_source_id(source_id),
+                        url=url_for_source_id(source_id),
                     )
                 )
                 seen.add(key)
@@ -71,26 +137,34 @@ def build_citations_from_artifacts(
     if alts and alts.get("status") == "ok" and alts.get("data"):
         key = f"alts:{alts['source_id']}"
         if key not in seen:
+            source_id = alts["source_id"]
+            drug = drug_name.capitalize() if drug_name else "Drug"
             citations.append(
                 Citation(
-                    claim="Therapeutic alternatives",
-                    source_id=alts["source_id"],
+                    claim=f"{drug} therapeutic alternatives",
+                    source_id=source_id,
                     as_of_date=alts.get("as_of_date", ""),
-                    source_label="FDA Orange Book Demo",
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
                 )
             )
             seen.add(key)
 
     policy = tool_artifacts.get("policy_retrieval")
     if policy and policy.get("status") == "ok" and policy.get("data"):
-        key = f"policy:{policy['source_id']}"
-        if key not in seen:
+        for idx, passage in enumerate(policy["data"]):
+            key = f"policy:{policy['source_id']}:{passage.get('passage_id', idx)}"
+            if key in seen:
+                continue
+            text = passage.get("text", "")
+            label = passage.get("source_label")
             citations.append(
                 Citation(
-                    claim="CMS policy reference",
+                    claim=_passage_claim(text, label),
                     source_id=policy["source_id"],
                     as_of_date=policy.get("as_of_date", ""),
-                    source_label="CMS Policy Corpus",
+                    source_label=label or "CMS Policy Corpus",
+                    url=passage.get("url") or url_for_source_id(policy["source_id"]),
                 )
             )
             seen.add(key)
@@ -172,6 +246,7 @@ def apply_guardrails(
     if settings.disclaimer_text and settings.disclaimer_text not in out:
         out = f"{out}\n\n{settings.disclaimer_text}"
 
+    cites = enrich_citations(cites, tool_artifacts)
     return out, cites, errors
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.schema import create_indexes, create_tables
 from medicare_navigator.storage.connection import DuckDBConnection
 
 AS_OF = "2026-01-15"
@@ -30,27 +31,27 @@ DEMO_DRUGS = [
     ("lipitor", "153165", "00071-0157-23", "40mg", "atorvastatin"),
 ]
 
-# plan_key, ndc, tier, copay, coinsurance_pct, cost_type
+# plan_key, ndc, rxcui, tier, copay, coinsurance_pct, cost_type, pharmacy_channel
 FORMULARY_ENTRIES = [
-    ("H1234-001", "00093-7214-01", 1, 5.0, None, "copay"),
-    ("H1234-001", "00378-1805-01", 1, 3.0, None, "copay"),
-    ("H1234-001", "00071-0156-23", 2, 15.0, None, "copay"),
-    ("H1234-001", "00378-3590-77", 1, 5.0, None, "copay"),
-    ("H1234-045", "00093-7214-01", 1, 0.0, None, "copay"),
-    ("H1234-045", "00378-1805-01", 1, 0.0, None, "copay"),
-    ("H1234-045", "00071-0156-23", 2, 10.0, None, "copay"),
-    ("H1234-045", "00003-0894-21", 3, 47.0, None, "copay"),
-    ("S5678-012", "00093-7214-01", 2, 8.0, None, "copay"),
-    ("S5678-012", "00378-1805-01", 1, 2.0, None, "copay"),
-    ("S5678-018", "00093-7214-01", 2, 12.0, None, "copay"),
-    ("A9012-003", "00093-7214-01", 1, 4.0, None, "copay"),
-    ("A9012-003", "00071-0156-23", 2, 18.0, None, "copay"),
-    ("U3456-002", "00093-7214-01", 1, 6.0, None, "copay"),
-    ("U3456-002", "00378-1805-01", 1, 4.0, None, "copay"),
-    ("C7890-004", "00093-7214-01", 1, 7.0, None, "copay"),
-    ("W2345-006", "00378-1805-01", 1, 5.0, None, "copay"),
-    ("B6789-009", "00071-0156-23", 2, 20.0, None, "copay"),
-    ("M4567-015", "00093-7214-01", 1, 5.0, None, "copay"),
+    ("H1234-001", "00093-7214-01", "6809", 1, 5.0, None, "copay", "preferred_retail"),
+    ("H1234-001", "00378-1805-01", "29046", 1, 3.0, None, "copay", "preferred_retail"),
+    ("H1234-001", "00071-0156-23", "83367", 2, 15.0, None, "copay", "preferred_retail"),
+    ("H1234-001", "00378-3590-77", "7646", 1, 5.0, None, "copay", "preferred_retail"),
+    ("H1234-045", "00093-7214-01", "6809", 1, 0.0, None, "copay", "preferred_retail"),
+    ("H1234-045", "00378-1805-01", "29046", 1, 0.0, None, "copay", "preferred_retail"),
+    ("H1234-045", "00071-0156-23", "83367", 2, 10.0, None, "copay", "preferred_retail"),
+    ("H1234-045", "00003-0894-21", "1364430", 3, 47.0, None, "copay", "preferred_retail"),
+    ("S5678-012", "00093-7214-01", "6809", 2, 8.0, None, "copay", "preferred_retail"),
+    ("S5678-012", "00378-1805-01", "29046", 1, 2.0, None, "copay", "preferred_retail"),
+    ("S5678-018", "00093-7214-01", "6809", 2, 12.0, None, "copay", "preferred_retail"),
+    ("A9012-003", "00093-7214-01", "6809", 1, 4.0, None, "copay", "preferred_retail"),
+    ("A9012-003", "00071-0156-23", "83367", 2, 18.0, None, "copay", "preferred_retail"),
+    ("U3456-002", "00093-7214-01", "6809", 1, 6.0, None, "copay", "preferred_retail"),
+    ("U3456-002", "00378-1805-01", "29046", 1, 4.0, None, "copay", "preferred_retail"),
+    ("C7890-004", "00093-7214-01", "6809", 1, 7.0, None, "copay", "preferred_retail"),
+    ("W2345-006", "00378-1805-01", "29046", 1, 5.0, None, "copay", "preferred_retail"),
+    ("B6789-009", "00071-0156-23", "83367", 2, 20.0, None, "copay", "preferred_retail"),
+    ("M4567-015", "00093-7214-01", "6809", 1, 5.0, None, "copay", "preferred_retail"),
     # januvia excluded from S5678-018 (formulary exclusion demo)
 ]
 
@@ -130,78 +131,14 @@ def seed_duckdb(db: DuckDBConnection | None = None) -> None:
     db = db or DuckDBConnection()
     conn = db.connect()
     try:
-        conn.execute("DROP TABLE IF EXISTS drugs")
-        conn.execute("DROP TABLE IF EXISTS plans")
-        conn.execute("DROP TABLE IF EXISTS formulary")
-        conn.execute("DROP TABLE IF EXISTS cost_trends")
-        conn.execute("DROP TABLE IF EXISTS alternatives")
-        conn.execute("DROP TABLE IF EXISTS policy_passages")
-        conn.execute("DROP TABLE IF EXISTS query_log")
-
-        conn.execute(
-            """
-            CREATE TABLE drugs (
-                drug_name VARCHAR, rxcui VARCHAR, ndc VARCHAR,
-                dosage VARCHAR, ingredient VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE plans (
-                plan_key VARCHAR PRIMARY KEY, contract_id VARCHAR, plan_id VARCHAR,
-                plan_name VARCHAR, plan_type VARCHAR, state VARCHAR,
-                deductible DOUBLE, contract_year INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE formulary (
-                plan_key VARCHAR, ndc VARCHAR, tier INTEGER,
-                copay DOUBLE, coinsurance_pct DOUBLE, cost_type VARCHAR, as_of_date VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE cost_trends (
-                rxcui VARCHAR, drug_name VARCHAR, year INTEGER,
-                total_spend DOUBLE, avg_unit_cost DOUBLE, as_of_date VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE alternatives (
-                rxcui VARCHAR, drug_name VARCHAR, ingredient VARCHAR, te_code VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE policy_passages (
-                passage_id VARCHAR PRIMARY KEY, text VARCHAR,
-                source_label VARCHAR, url VARCHAR, as_of_date VARCHAR
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE query_log (
-                query_id VARCHAR, session_id VARCHAR, tools_invoked VARCHAR,
-                agents_invoked VARCHAR, statuses VARCHAR, latency_ms DOUBLE,
-                created_at TIMESTAMP DEFAULT current_timestamp
-            )
-            """
-        )
+        create_tables(conn, drop_existing=True)
 
         for drug in DEMO_DRUGS:
             conn.execute("INSERT INTO drugs VALUES (?, ?, ?, ?, ?)", list(drug))
 
         for plan in _load_plans_from_yaml():
             conn.execute(
-                "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     plan["plan_key"],
                     plan["contract_id"],
@@ -211,12 +148,13 @@ def seed_duckdb(db: DuckDBConnection | None = None) -> None:
                     plan["state"],
                     plan["deductible"],
                     plan["contract_year"],
+                    None,
                 ],
             )
 
         for entry in FORMULARY_ENTRIES:
             conn.execute(
-                "INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [*entry, AS_OF],
             )
 
@@ -234,6 +172,8 @@ def seed_duckdb(db: DuckDBConnection | None = None) -> None:
                 "INSERT INTO policy_passages VALUES (?, ?, ?, ?, ?)",
                 [passage["id"], passage["text"], passage["source_label"], passage["url"], AS_OF],
             )
+
+        create_indexes(conn)
     finally:
         conn.close()
 

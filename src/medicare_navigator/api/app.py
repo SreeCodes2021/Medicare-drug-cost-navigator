@@ -61,14 +61,17 @@ def _filters_to_slots(filters: FilterPayload | None, message: str = "") -> Query
 
 @app.get("/api/health")
 async def health():
+    from medicare_navigator.ingestion.manifest import data_freshness_summary
     from medicare_navigator.llm.client import llm_client
 
+    freshness = data_freshness_summary()
     return {
         "status": "ok",
         "version": "0.1.0",
         "llm_configured": llm_client._has_credentials(),
         "llm_source": llm_client.model_label() if llm_client._has_credentials() else llm_client.fallback_label("navigator"),
         "navigator_mode": settings.navigator_mode,
+        **freshness,
     }
 
 

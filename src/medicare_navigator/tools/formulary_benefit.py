@@ -1,23 +1,28 @@
 from __future__ import annotations
 
-import json
-
-from medicare_navigator.config import settings
+from medicare_navigator.ingestion.manifest import get_as_of, get_contract_year, get_source_id
 from medicare_navigator.models.response import CostShareInfo, FormularyResult
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import FormularyRepository, PlanRepository
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase, load_benefit_params
 from medicare_navigator.tools.supply_estimate import compute_supply_estimate
 
-SOURCE_ID = "cms_spuf_2026_q1_demo"
+SOURCE_ID_FALLBACK = "cms_spuf_2026_q1_demo"
+
+
+def _source_id() -> str:
+    return get_source_id("spuf", SOURCE_ID_FALLBACK)
 
 
 def _manifest_as_of() -> str:
-    manifest_path = settings.data_dir / "manifest.json"
-    if manifest_path.exists():
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return data.get("spuf", {}).get("as_of", "2026-01-15")
-    return "2026-01-15"
+    return get_as_of("spuf", "2026-01-15")
+
+
+def _check_stale(contract_year: int) -> ToolStatus | None:
+    manifest_year = get_contract_year(contract_year)
+    if manifest_year != contract_year:
+        return ToolStatus.stale
+    return None
 
 
 def formulary_benefit_lookup(
@@ -29,20 +34,26 @@ def formulary_benefit_lookup(
     quantity: int | None = None,
     fills: int | None = None,
     days_supply: int | None = 30,
+    pharmacy_channel: str = "preferred_retail",
 ) -> ToolResult[FormularyResult]:
     as_of = _manifest_as_of()
+    source_id = _source_id()
+    stale = _check_stale(contract_year)
+
     plan_repo = PlanRepository()
     plan = plan_repo.get_plan(plan_key)
     if not plan:
         return ToolResult.failure(
             ToolStatus.not_found,
-            source_id=SOURCE_ID,
+            source_id=source_id,
             as_of_date=as_of,
-            message=f"Plan '{plan_key}' not found in demo plan set.",
+            message=f"Plan '{plan_key}' not found.",
         )
 
     formulary_repo = FormularyRepository()
-    entry = formulary_repo.get_formulary_entry(plan_key, ndc)
+    entry = formulary_repo.get_formulary_entry(
+        plan_key, ndc, pharmacy_channel=pharmacy_channel
+    )
     params = load_benefit_params(contract_year)
     oop_threshold = float(params["oop_threshold"])
     deductible = float(plan["deductible"])
@@ -64,7 +75,7 @@ def formulary_benefit_lookup(
         return ToolResult(
             status=ToolStatus.not_covered,
             data=not_covered,
-            source_id=SOURCE_ID,
+            source_id=source_id,
             as_of_date=as_of,
             message=f"Drug NDC {ndc} is not covered on plan {plan_key}.",
         )
@@ -80,6 +91,7 @@ def formulary_benefit_lookup(
 
     supply_estimate = compute_supply_estimate(
         ndc=ndc,
+        plan_key=plan_key,
         phase=phase,
         cost_share=cost_share,
         ytd_oop_spend=ytd_oop_spend,
@@ -102,4 +114,16 @@ def formulary_benefit_lookup(
         ytd_oop_spend_assumed=not ytd_oop_spend_provided,
         supply_estimate=supply_estimate,
     )
-    return ToolResult.ok(result, source_id=SOURCE_ID, as_of_date=as_of)
+    status = stale or ToolStatus.ok
+    return ToolResult(
+        status=status,
+        data=result,
+        source_id=source_id,
+        as_of_date=as_of,
+        message=(
+            f"Data is from contract year {get_contract_year(contract_year)}; "
+            f"requested year {contract_year}."
+            if stale
+            else None
+        ),
+    )

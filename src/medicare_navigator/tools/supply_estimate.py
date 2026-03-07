@@ -4,7 +4,14 @@ from medicare_navigator.models.response import CostShareInfo, SupplyEstimate, Su
 from medicare_navigator.storage.repository import CostTrendRepository, DrugRepository
 
 
-def _latest_unit_price(ndc: str) -> tuple[float | None, list[str]]:
+def _latest_unit_price(ndc: str, plan_key: str | None = None) -> tuple[float | None, list[str]]:
+    if plan_key:
+        from medicare_navigator.storage.repository import PricingRepository
+
+        unit_cost = PricingRepository().get_unit_cost(plan_key, ndc)
+        if unit_cost is not None:
+            return unit_cost, ["Unit price from CMS SPUF pricing file"]
+
     repo = DrugRepository()
     row = repo.db.fetchone(
         "SELECT drug_name, rxcui, ndc, dosage, ingredient FROM drugs WHERE ndc = ?",
@@ -27,6 +34,7 @@ def _latest_unit_price(ndc: str) -> tuple[float | None, list[str]]:
 def compute_supply_estimate(
     *,
     ndc: str,
+    plan_key: str | None = None,
     phase: str,
     cost_share: CostShareInfo | None,
     ytd_oop_spend: float,
@@ -56,7 +64,7 @@ def compute_supply_estimate(
             assumptions=assumptions,
         )
 
-    unit_price, unit_assumptions = _latest_unit_price(ndc)
+    unit_price, unit_assumptions = _latest_unit_price(ndc, plan_key=plan_key)
 
     if quantity is not None and fills is None and quantity >= 2 and cost_type == "copay":
         copay = cost_share.copay if cost_share and cost_share.copay is not None else 0.0

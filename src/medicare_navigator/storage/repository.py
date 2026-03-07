@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.storage.connection import DuckDBConnection
 
 
@@ -179,32 +180,118 @@ class FormularyRepository:
     def __init__(self, db: DuckDBConnection | None = None) -> None:
         self.db = db or DuckDBConnection()
 
-    def get_formulary_entry(self, plan_key: str, ndc: str) -> FormularyRecord | None:
+    def _ndc_variants(self, ndc: str) -> list[str]:
+        variants: list[str] = [ndc]
+        try:
+            normalized = normalize_ndc(ndc)
+            variants.append(normalized)
+            variants.append(format_ndc_display(normalized))
+        except ValueError:
+            pass
+        return list(dict.fromkeys(variants))
+
+    def get_beneficiary_cost_share(
+        self,
+        plan_key: str,
+        tier: int,
+        pharmacy_channel: str = "preferred_retail",
+        coverage_level: int = 1,
+        days_supply: int = 1,
+    ) -> tuple[str, float | None, float | None] | None:
         row = self.db.fetchone(
             """
-            SELECT f.plan_key, p.plan_name, p.contract_id, p.plan_id, f.ndc, f.tier,
-                   f.copay, f.coinsurance_pct, f.cost_type, p.deductible, f.as_of_date
-            FROM formulary f
-            JOIN plans p ON f.plan_key = p.plan_key
-            WHERE f.plan_key = ? AND f.ndc = ?
+            SELECT cost_type, copay, coinsurance_pct
+            FROM beneficiary_cost
+            WHERE plan_key = ? AND tier = ? AND pharmacy_channel = ?
+              AND coverage_level = ? AND days_supply = ?
             """,
-            [plan_key, ndc],
+            [plan_key, tier, pharmacy_channel, coverage_level, days_supply],
         )
         if not row:
+            row = self.db.fetchone(
+                """
+                SELECT cost_type, copay, coinsurance_pct
+                FROM beneficiary_cost
+                WHERE plan_key = ? AND tier = ? AND pharmacy_channel = ?
+                  AND days_supply = ?
+                ORDER BY coverage_level
+                LIMIT 1
+                """,
+                [plan_key, tier, pharmacy_channel, days_supply],
+            )
+        if not row:
             return None
+        return row[0], row[1], row[2]
+
+    def get_formulary_entry(
+        self,
+        plan_key: str,
+        ndc: str,
+        pharmacy_channel: str = "preferred_retail",
+    ) -> FormularyRecord | None:
+        variants = self._ndc_variants(ndc)
+        row = None
+        for variant in variants:
+            row = self.db.fetchone(
+                """
+                SELECT f.plan_key, p.plan_name, p.contract_id, p.plan_id, f.ndc, f.tier,
+                       f.copay, f.coinsurance_pct, f.cost_type, p.deductible, f.as_of_date
+                FROM formulary f
+                JOIN plans p ON f.plan_key = p.plan_key
+                WHERE f.plan_key = ? AND (f.ndc = ? OR REPLACE(f.ndc, '-', '') = REPLACE(?, '-', ''))
+                """,
+                [plan_key, variant, variant],
+            )
+            if row:
+                break
+        if not row:
+            return None
+
+        cost_type = row[8]
+        copay = row[6]
+        coinsurance = row[7]
+        tier = row[5]
+
+        if pharmacy_channel != "preferred_retail":
+            channel_share = self.get_beneficiary_cost_share(
+                plan_key, tier, pharmacy_channel=pharmacy_channel
+            )
+            if channel_share:
+                cost_type, copay, coinsurance = channel_share
+
         return FormularyRecord(
             plan_key=row[0],
             plan_name=row[1],
             contract_id=row[2],
             plan_id=row[3],
             ndc=row[4],
-            tier=row[5],
-            copay=row[6],
-            coinsurance_pct=row[7],
-            cost_type=row[8],
+            tier=tier,
+            copay=copay,
+            coinsurance_pct=coinsurance,
+            cost_type=cost_type,
             deductible=row[9],
             as_of_date=row[10],
         )
+
+
+class PricingRepository:
+    def __init__(self, db: DuckDBConnection | None = None) -> None:
+        self.db = db or DuckDBConnection()
+
+    def get_unit_cost(self, plan_key: str, ndc: str, days_supply: int = 30) -> float | None:
+        variants = FormularyRepository(self.db)._ndc_variants(ndc)
+        for variant in variants:
+            row = self.db.fetchone(
+                """
+                SELECT unit_cost FROM pricing
+                WHERE plan_key = ? AND (ndc = ? OR REPLACE(ndc, '-', '') = REPLACE(?, '-', ''))
+                  AND days_supply = ?
+                """,
+                [plan_key, variant, variant, days_supply],
+            )
+            if row:
+                return float(row[0])
+        return None
 
 
 class CostTrendRepository:

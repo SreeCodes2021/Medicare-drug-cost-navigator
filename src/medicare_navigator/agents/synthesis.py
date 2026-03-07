@@ -6,6 +6,12 @@ from datetime import date
 from pydantic import BaseModel, Field
 
 from medicare_navigator.config import settings
+from medicare_navigator.guardrails.source_catalog import (
+    formulary_citation_claim,
+    label_for_source_id,
+    trend_citation_claim,
+    url_for_source_id,
+)
 from medicare_navigator.llm.client import llm_client
 from medicare_navigator.models.citation import Citation
 from medicare_navigator.models.query import ParsedQuery
@@ -157,7 +163,8 @@ def _follow_up_alternatives_answer(
             claim=f"{count} therapeutic alternative(s) for {parsed_query.drug_name}",
             source_id=alt_result.source_id,
             as_of_date=alt_result.as_of_date,
-            source_label="FDA Orange Book Demo",
+            source_label=label_for_source_id(alt_result.source_id),
+            url=url_for_source_id(alt_result.source_id),
         )
     ]
     return explanation, citations
@@ -200,10 +207,11 @@ def _explain_cost_change_answer(
 
     citations: list[Citation] = [
         Citation(
-            claim=f"Tier {formulary.tier} cost-sharing on {formulary.plan_key}",
+            claim=formulary_citation_claim(formulary.model_dump(), parsed_query.drug_name),
             source_id=form_result.source_id,
             as_of_date=form_result.as_of_date,
-            source_label="CMS SPUF Demo Formulary",
+            source_label=label_for_source_id(form_result.source_id),
+            url=url_for_source_id(form_result.source_id),
         )
     ]
 
@@ -269,13 +277,14 @@ def _explain_cost_change_answer(
         trend_sentence = _trend_context_sentence(drug, trend_result.data)
         if trend_sentence:
             sentences.append(trend_sentence)
-            first, last = trend_result.data[0], trend_result.data[-1]
+            points_dump = [p.model_dump() for p in trend_result.data]
             citations.append(
                 Citation(
-                    claim=f"Multi-year unit cost trend {first.year}-{last.year}",
+                    claim=trend_citation_claim(points_dump, parsed_query.drug_name),
                     source_id=trend_result.source_id,
                     as_of_date=trend_result.as_of_date,
-                    source_label="CMS Part D Spending Demo",
+                    source_label=label_for_source_id(trend_result.source_id),
+                    url=url_for_source_id(trend_result.source_id),
                 )
             )
 
@@ -327,10 +336,11 @@ def _deterministic_explanation(
         )
         citations.append(
             Citation(
-                claim=f"Tier {f.tier} cost-sharing on {f.plan_key}",
+                claim=formulary_citation_claim(f.model_dump(), parsed_query.drug_name),
                 source_id=form_result.source_id,
                 as_of_date=form_result.as_of_date,
-                source_label="CMS SPUF Demo Formulary",
+                source_label=label_for_source_id(form_result.source_id),
+                url=url_for_source_id(form_result.source_id),
             )
         )
     elif form_result and form_result.status.value == "not_covered" and form_result.data:
@@ -345,6 +355,8 @@ def _deterministic_explanation(
                 claim="Drug not covered on plan formulary",
                 source_id=form_result.source_id,
                 as_of_date=form_result.as_of_date,
+                source_label=label_for_source_id(form_result.source_id),
+                url=url_for_source_id(form_result.source_id),
             )
         )
 
@@ -358,12 +370,14 @@ def _deterministic_explanation(
                 f"Program spending for {parsed_query.drug_name} {direction} from "
                 f"${first.total_spend:,.0f} in {first.year} to ${last.total_spend:,.0f} in {last.year}."
             )
+            points_dump = [p.model_dump() for p in points]
             citations.append(
                 Citation(
-                    claim=f"Multi-year spending trend {first.year}-{last.year}",
+                    claim=trend_citation_claim(points_dump, parsed_query.drug_name),
                     source_id=trend_result.source_id,
                     as_of_date=trend_result.as_of_date,
-                    source_label="CMS Part D Spending Demo",
+                    source_label=label_for_source_id(trend_result.source_id),
+                    url=url_for_source_id(trend_result.source_id),
                 )
             )
 
@@ -376,10 +390,11 @@ def _deterministic_explanation(
         )
         citations.append(
             Citation(
-                claim="Therapeutic alternatives",
+                claim=f"{parsed_query.drug_name.capitalize()} therapeutic alternatives",
                 source_id=alt_result.source_id,
                 as_of_date=alt_result.as_of_date,
-                source_label="FDA Orange Book Demo",
+                source_label=label_for_source_id(alt_result.source_id),
+                url=url_for_source_id(alt_result.source_id),
             )
         )
 

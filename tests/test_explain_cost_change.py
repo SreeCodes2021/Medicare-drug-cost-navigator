@@ -91,7 +91,7 @@ def test_explain_cost_change_includes_unit_cost_trend():
     explanation, citations = _explain_cost_change_answer(_parsed(), _tool_artifacts())
     assert "$0.08" in explanation
     assert "$0.12" in explanation
-    assert any("unit cost trend" in c.claim.lower() for c in citations)
+    assert any("avg unit cost" in c.claim.lower() for c in citations)
 
 
 def test_explain_cost_change_invites_ytd_when_assumed():
