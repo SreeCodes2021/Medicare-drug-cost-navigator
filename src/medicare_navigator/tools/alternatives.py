@@ -7,7 +7,7 @@ from medicare_navigator.models.response import AlternativesResult
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import AlternativesRepository, DrugRepository
 
-SOURCE_ID = "fda_orange_book_demo"
+SOURCE_ID = "fda_orange_book"
 
 
 def _manifest_as_of() -> str:

@@ -1,11 +1,11 @@
-"""Human-readable labels and documentation URLs for demo data sources."""
+"""Human-readable labels and documentation URLs for data sources."""
 
 from __future__ import annotations
 
 from typing import Any
 
 SOURCE_CATALOG: dict[str, dict[str, str]] = {
-    "cms_spuf_2026_q1_demo": {
+    "cms_spuf_2026_q1": {
         "label": "CMS Part D Formulary & Pricing (SPUF)",
         "url": (
             "https://data.cms.gov/provider-summary-by-type-of-service/"
@@ -13,7 +13,7 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         ),
         "scope": "Plan-specific tier, copay, and benefit phase",
     },
-    "cms_part_d_spending_demo": {
+    "cms_part_d_spending": {
         "label": "CMS Medicare Part D Drug Spending",
         "url": (
             "https://data.cms.gov/summary-statistics-on-use-and-payments/"
@@ -21,7 +21,7 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         ),
         "scope": "National program spending and average unit cost by year",
     },
-    "fda_orange_book_demo": {
+    "fda_orange_book": {
         "label": "FDA Orange Book (Therapeutic Equivalence)",
         "url": (
             "https://www.fda.gov/drugs/drug-approvals-and-databases/"
@@ -29,7 +29,7 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         ),
         "scope": "Therapeutically equivalent generic alternatives",
     },
-    "cms_policy_corpus_demo": {
+    "cms_policy_corpus": {
         "label": "CMS Policy & Program Guidance",
         "url": "https://www.cms.gov/medicare/prescription-drug-coverage",
         "scope": "Part D benefit rules and program explanations",
@@ -39,7 +39,7 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html",
         "scope": "Drug name normalization",
     },
-    "rxnorm_cache_demo": {
+    "rxnorm_cache": {
         "label": "RxNorm (local cache)",
         "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html",
         "scope": "Drug name normalization",
@@ -52,9 +52,9 @@ def label_for_source_id(source_id: str) -> str:
         return SOURCE_CATALOG[source_id]["label"]
     lowered = source_id.lower()
     if "spuf" in lowered:
-        return SOURCE_CATALOG["cms_spuf_2026_q1_demo"]["label"]
+        return SOURCE_CATALOG["cms_spuf_2026_q1"]["label"]
     if "spending" in lowered:
-        return SOURCE_CATALOG["cms_part_d_spending_demo"]["label"]
+        return SOURCE_CATALOG["cms_part_d_spending"]["label"]
     return source_id
 
 
@@ -63,9 +63,9 @@ def url_for_source_id(source_id: str) -> str | None:
         return SOURCE_CATALOG[source_id]["url"]
     lowered = source_id.lower()
     if "spuf" in lowered:
-        return SOURCE_CATALOG["cms_spuf_2026_q1_demo"]["url"]
+        return SOURCE_CATALOG["cms_spuf_2026_q1"]["url"]
     if "spending" in lowered:
-        return SOURCE_CATALOG["cms_part_d_spending_demo"]["url"]
+        return SOURCE_CATALOG["cms_part_d_spending"]["url"]
     return None
 
 
@@ -74,9 +74,9 @@ def scope_for_source_id(source_id: str) -> str | None:
         return SOURCE_CATALOG[source_id].get("scope")
     lowered = source_id.lower()
     if "spuf" in lowered:
-        return SOURCE_CATALOG["cms_spuf_2026_q1_demo"]["scope"]
+        return SOURCE_CATALOG["cms_spuf_2026_q1"]["scope"]
     if "spending" in lowered:
-        return SOURCE_CATALOG["cms_part_d_spending_demo"]["scope"]
+        return SOURCE_CATALOG["cms_part_d_spending"]["scope"]
     return None
 
 

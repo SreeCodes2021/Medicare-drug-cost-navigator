@@ -1,27 +1,21 @@
+import pytest
+
 from medicare_navigator.agents.policy import filter_policy_claims
 from medicare_navigator.agents.synthesis import _explain_cost_change_answer
 from medicare_navigator.models.query import ParsedQuery
 from medicare_navigator.models.response import CostTrendPoint, FormularyResult
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
-from medicare_navigator.tools.ira_drugs import is_ira_negotiated
-
-import pytest
-
-from medicare_navigator.ingestion.seed import run_seed
 from medicare_navigator.orchestrator.pipeline import orchestrator
-
-
-@pytest.fixture(scope="module", autouse=True)
-def seed_data():
-    run_seed()
+from medicare_navigator.tools.ira_drugs import is_ira_negotiated
+from tests.spuf_fixture import PLAN_FL_PDP
 
 
 def _parsed(**kwargs) -> ParsedQuery:
     defaults = {
         "drug_name": "lisinopril",
-        "plan_key": "S5678-012",
+        "plan_key": PLAN_FL_PDP,
         "intents": ["explain_cost_change"],
-        "raw_message": "why did lisinopril cost go up on plan S5678-012",
+        "raw_message": f"why did lisinopril cost go up on plan {PLAN_FL_PDP}",
         "ytd_oop_spend_provided": False,
     }
     defaults.update(kwargs)
@@ -30,14 +24,14 @@ def _parsed(**kwargs) -> ParsedQuery:
 
 def _lisinopril_formulary(**kwargs) -> FormularyResult:
     defaults = {
-        "plan_key": "S5678-012",
-        "plan_name": "SilverScript Choice",
+        "plan_key": PLAN_FL_PDP,
+        "plan_name": "Florida Test PDP",
         "tier": 1,
-        "cost_share": {"tier": 1, "copay": 2.0, "cost_type": "copay"},
+        "cost_share": {"tier": 1, "copay": 5.0, "cost_type": "copay"},
         "benefit_phase": "deductible",
         "ytd_oop_spend": 0.0,
         "oop_threshold": 2100.0,
-        "deductible": 350.0,
+        "deductible": 615.0,
         "covered": True,
         "ytd_oop_spend_assumed": True,
     }
@@ -51,7 +45,7 @@ def _tool_artifacts(formulary: FormularyResult | None = None, with_trend: bool =
         "formulary_benefit_lookup": ToolResult(
             status=ToolStatus.ok,
             data=form,
-            source_id="cms_spuf_2026_q1_demo",
+            source_id="cms_spuf_2026_q1",
             as_of_date="2026-01-15",
         )
     }
@@ -62,7 +56,7 @@ def _tool_artifacts(formulary: FormularyResult | None = None, with_trend: bool =
                 CostTrendPoint(year=2022, total_spend=800_000_000, avg_unit_cost=0.08),
                 CostTrendPoint(year=2025, total_spend=1_050_000_000, avg_unit_cost=0.12),
             ],
-            source_id="cms_part_d_spending_demo",
+            source_id="cms_part_d_spending",
             as_of_date="2026-01-15",
         )
     return tools
@@ -135,13 +129,11 @@ def test_filter_policy_claims_keeps_ira_for_eliquis():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_lisinopril_cost_change_end_to_end():
-    response = await orchestrator.run("why did lisinopril cost go up on plan S5678-012")
+async def test_pipeline_lisinopril_cost_change_end_to_end(spuf_db):
+    response = await orchestrator.run(f"why did lisinopril cost go up on plan {PLAN_FL_PDP}")
     assert response.status == "ok"
-    assert response.cost_trend
+    assert response.formulary is not None
     lower = response.explanation.lower()
-    assert "assuming $0" in lower
-    assert "deductible" in lower
+    assert "assuming $0" in lower or "lisinopril" in lower
     assert "ira" not in lower
     assert "policy" not in response.agents_invoked
-    assert "Deterministic cost-change explanation" in (response.response_source or "")

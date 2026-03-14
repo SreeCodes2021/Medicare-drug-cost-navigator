@@ -1,0 +1,10 @@
+# Deployment operator settings (committed to repo).
+# Cron expressions use UTC (supercronic / Render).
+
+ingest:
+  cron: "0 3 * * *"
+  # 0 8 * * * ≈ 3:00 AM US Eastern (EST, UTC-5)
+
+render:
+  plan: starter
+  disk_size_gb: 5

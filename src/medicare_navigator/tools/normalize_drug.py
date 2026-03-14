@@ -204,7 +204,7 @@ async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResul
 
     return ToolResult.ok(
         {"candidates": enriched, "selected": enriched[0]},
-        source_id=SOURCE_ID if enriched[0].get("source") != "local_cache" else "rxnorm_cache_demo",
+        source_id=SOURCE_ID if enriched[0].get("source") != "local_cache" else "rxnorm_cache",
         as_of_date=as_of,
     )
 

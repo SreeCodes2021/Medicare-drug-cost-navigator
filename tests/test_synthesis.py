@@ -32,7 +32,7 @@ def test_not_covered_skips_benefit_phase():
         "formulary_benefit_lookup": ToolResult(
             status=ToolStatus.not_covered,
             data=form,
-            source_id="cms_spuf_2026_q1_demo",
+            source_id="cms_spuf_2026_q1",
             as_of_date="2026-01-15",
         )
     }
@@ -60,7 +60,7 @@ def test_covered_assumed_ytd_disclosed():
         "formulary_benefit_lookup": ToolResult(
             status=ToolStatus.ok,
             data=form,
-            source_id="cms_spuf_2026_q1_demo",
+            source_id="cms_spuf_2026_q1",
             as_of_date="2026-01-15",
         )
     }
@@ -85,7 +85,7 @@ def test_alternatives_follow_up_includes_as_of_date():
                     equivalent=True,
                 )
             ],
-            source_id="fda_orange_book_demo",
+            source_id="fda_orange_book",
             as_of_date="2026-01-15",
         )
     }

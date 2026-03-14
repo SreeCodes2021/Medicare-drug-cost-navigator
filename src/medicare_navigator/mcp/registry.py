@@ -16,7 +16,7 @@ from medicare_navigator.tools.lookup_plan import lookup_plan
 from medicare_navigator.tools.normalize_drug import normalize_drug
 from medicare_navigator.tools.policy_retrieval import policy_retrieval
 
-SOURCE_ID_FALLBACK = "cms_spuf_2026_q1_demo"
+SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 AS_OF_FALLBACK = "2026-01-15"
 
 

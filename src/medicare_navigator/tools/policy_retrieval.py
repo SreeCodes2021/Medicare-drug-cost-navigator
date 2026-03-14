@@ -6,7 +6,7 @@ from medicare_navigator.config import settings
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.connection import DuckDBConnection
 
-SOURCE_ID = "cms_policy_corpus_demo"
+SOURCE_ID = "cms_policy_corpus"
 
 
 def _manifest_as_of() -> str:

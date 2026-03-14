@@ -1,4 +1,4 @@
-"""Ingestion CLI — demo seed or real CMS SPUF load."""
+"""Ingestion CLI — CMS SPUF load for production and local fixture-based tests."""
 
 from __future__ import annotations
 
@@ -7,13 +7,7 @@ import sys
 from pathlib import Path
 
 from medicare_navigator.ingestion.cms_download import download_spuf, resolve_spuf_download
-from medicare_navigator.ingestion.seed import run_seed
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
-
-
-def _cmd_demo(_args: argparse.Namespace) -> None:
-    run_seed()
-    print("Demo ingestion complete.")
 
 
 def _apply_state_filter(filters: IngestFilters, states: str | None) -> IngestFilters:
@@ -81,11 +75,11 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Medicare navigator data ingestion")
-    sub = parser.add_subparsers(dest="command")
-
-    demo_parser = sub.add_parser("demo", help="Seed demo data for local dev and offline tests")
-    demo_parser.set_defaults(func=_cmd_demo)
+    parser = argparse.ArgumentParser(
+        description="Medicare navigator CMS data ingestion",
+        epilog="Production: medicare-ingest spuf --download",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
 
     spuf_parser = sub.add_parser("spuf", help="Ingest CMS SPUF (auto-download or local path)")
     spuf_parser.add_argument(
@@ -146,10 +140,6 @@ def main() -> None:
     fetch_parser.set_defaults(func=_cmd_fetch)
 
     args = parser.parse_args()
-    if not args.command:
-        run_seed()
-        print("Demo ingestion complete (default). Use 'medicare-ingest demo' or 'medicare-ingest spuf --download'.")
-        return
     args.func(args)
 
 

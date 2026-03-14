@@ -28,11 +28,14 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-### Seed demo data
+### Load CMS data (local)
 
 ```bash
-medicare-ingest
-# or: python -m medicare_navigator.ingestion.cli
+# Offline tests use tests/fixtures/spuf/ — for local API with real FL+TX data:
+medicare-ingest spuf --download
+
+# Or ingest the offline fixture:
+medicare-ingest spuf --source tests/fixtures/spuf
 ```
 
 ### Run API server
@@ -76,7 +79,7 @@ Without API keys, the system uses deterministic fallbacks for agent outputs whil
 | `GET` | `/api/health` | Health check (includes `data_fresh`, `seeded_at`) |
 | `GET` | `/api/disclaimer` | Canonical disclaimer text |
 | `GET` | `/api/meta/as-of` | Data freshness manifest |
-| `GET` | `/api/plans` | Demo plan list |
+| `GET` | `/api/plans` | Plan list (from SPUF-loaded DuckDB) |
 | `POST` | `/api/query` | Structured query |
 | `POST` | `/api/chat` | Conversational turn |
 
@@ -89,11 +92,11 @@ src/medicare_navigator/
 ├── tools/          # 5 deterministic tools
 ├── orchestrator/   # hand-rolled pipeline
 ├── storage/        # DuckDB repositories
-├── ingestion/      # seed data CLI
+├── ingestion/      # CMS SPUF ingest CLI
 ├── api/            # FastAPI app
 └── eval/           # evaluation suite
 frontend/dist/      # static chat UI
-config/             # demo plans, benefit params, disclaimer
+config/             # ingest filters, benefit params, deploy settings, disclaimer
 docs/               # implementation plan, data sources
 ```
 
@@ -102,13 +105,29 @@ docs/               # implementation plan, data sources
 - [Phase 1 Implementation Plan](docs/phase-1-implementation-plan.md)
 - [Phase 2 Implementation Plan](docs/phase-2-implementation-plan.md)
 - [Phase 3 Implementation Plan](docs/phase-3-implementation-plan.md)
-- [Deployment & scheduled ingest](docs/deployment.md)
+- [Phase 4 Implementation Plan](docs/phase-4-implementation-plan.md)
+- [Deployment & scheduled ingest](docs/deployment.md) (includes Render)
 - [Data Sources](docs/data-sources.md)
 - [Build Requirements](build-requirements.md)
 
-## Demo plans
+## Deploy to Render
 
-~12 representative Part D and MA-PD plans are configured in `config/demo_plans.yaml`. Seed data includes formulary entries, cost trends, and alternatives for common demo drugs (metformin, lisinopril, atorvastatin, eliquis, etc.).
+1. Push this repo to GitHub.
+2. [Render](https://render.com) → **New Blueprint** → connect repo (`render.yaml`).
+3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<your-app>.onrender.com`.
+4. After first deploy, **Shell** on the web service:
+
+```bash
+medicare-ingest spuf --download
+```
+
+5. Verify `GET /api/health` → `data_fresh: true`.
+
+Nightly ingest: supercronic reads schedule from [`config/deploy.yaml`](config/deploy.yaml). Resources: [`render.yaml`](render.yaml).
+
+## Data scope
+
+Production formulary data comes from **CMS SPUF** (FL + TX per `config/ingest_filters.yaml`). Cost trends, alternatives, and policy corpus return `no_match` until real loaders are added.
 
 ## Disclaimer
 

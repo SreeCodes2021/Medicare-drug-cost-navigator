@@ -7,7 +7,7 @@ from medicare_navigator.models.response import CostTrendPoint
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import CostTrendRepository
 
-SOURCE_ID = "cms_part_d_spending_demo"
+SOURCE_ID = "cms_part_d_spending"
 
 
 def _manifest_as_of() -> str:
