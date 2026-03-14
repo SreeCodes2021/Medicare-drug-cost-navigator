@@ -1,0 +1,31 @@
+# Render Blueprint — connect GitHub repo, set secrets in dashboard, deploy.
+# Secrets (sync: false): ANTHROPIC_API_KEY or OPENAI_API_KEY, CORS_ORIGINS
+# Cron schedule: config/deploy.yaml (in-container supercronic; Render cron cannot mount disk)
+
+services:
+  - type: web
+    name: medicare-navigator
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: medicare-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: DUCKDB_PATH
+        value: /data/navigator.duckdb
+      - key: CHROMA_PATH
+        value: /data/chroma
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: NAVIGATOR_MODE
+        value: mcp_agent
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

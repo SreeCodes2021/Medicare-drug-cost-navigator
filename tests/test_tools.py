@@ -1,16 +1,16 @@
 import pytest
 
-from medicare_navigator.ingestion.seed import run_seed
 from medicare_navigator.intake.merger import InputMerger
 from medicare_navigator.models.query import QuerySlots
 from medicare_navigator.models.tool_result import ToolStatus
 from medicare_navigator.tools.formulary_benefit import formulary_benefit_lookup
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase
+from tests.spuf_fixture import NDC_JANUVIA, NDC_LISINOPRIL, NDC_METFORMIN, PLAN_FL_MAPD, PLAN_FL_PDP, PLAN_TX_PDP
 
 
-@pytest.fixture(scope="module", autouse=True)
-def seed_data():
-    run_seed()
+@pytest.fixture(autouse=True)
+def _spuf(spuf_db):
+    pass
 
 
 def test_benefit_phase_deductible():
@@ -26,33 +26,33 @@ def test_benefit_phase_catastrophic():
 
 
 def test_input_merger_chat_overrides_filter():
-    chat = QuerySlots(drug="metformin", dosage="500mg", plan_id="H1234-045")
-    filters = QuerySlots(plan_id="H1234-001")
+    chat = QuerySlots(drug="metformin", dosage="500mg", plan_id=PLAN_FL_MAPD)
+    filters = QuerySlots(plan_id=PLAN_FL_PDP)
     merged = InputMerger.merge(chat, filters)
     assert merged.drug == "metformin"
-    assert merged.plan_id == "H1234-045"
+    assert merged.plan_id == PLAN_FL_MAPD
 
 
 def test_formulary_lookup_ok():
-    result = formulary_benefit_lookup("H1234-045", "00093-7214-01", ytd_oop_spend=0)
+    result = formulary_benefit_lookup(PLAN_FL_MAPD, NDC_METFORMIN, ytd_oop_spend=0)
     assert result.status == ToolStatus.ok
-    assert result.data.tier == 1
-    assert result.data.cost_share.copay == 0.0
+    assert result.data.tier == 2
+    assert result.data.cost_share.copay == 8.0
 
 
 def test_formulary_not_covered():
-    result = formulary_benefit_lookup("S5678-018", "00006-0112-54")
+    result = formulary_benefit_lookup(PLAN_TX_PDP, NDC_JANUVIA)
     assert result.status == ToolStatus.not_covered
     assert result.data is not None
     assert result.data.covered is False
-    assert result.data.plan_key == "S5678-018"
+    assert result.data.plan_key == PLAN_TX_PDP
     assert result.data.benefit_phase is None
     assert result.data.ytd_oop_spend_assumed is True
 
 
 def test_formulary_covered_ytd_provided():
     result = formulary_benefit_lookup(
-        "H1234-045", "00093-7214-01", ytd_oop_spend=400.0, ytd_oop_spend_provided=True
+        PLAN_FL_MAPD, NDC_METFORMIN, ytd_oop_spend=400.0, ytd_oop_spend_provided=True
     )
     assert result.status == ToolStatus.ok
     assert result.data.ytd_oop_spend_assumed is False
@@ -60,5 +60,5 @@ def test_formulary_covered_ytd_provided():
 
 
 def test_formulary_plan_not_found():
-    result = formulary_benefit_lookup("ZZZZ-999", "00093-7214-01")
+    result = formulary_benefit_lookup("ZZZZ-999", NDC_METFORMIN)
     assert result.status == ToolStatus.not_found

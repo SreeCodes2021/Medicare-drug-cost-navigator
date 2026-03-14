@@ -8,7 +8,7 @@ from medicare_navigator.models.citation import Citation
 def _formulary_artifact():
     return {
         "status": "ok",
-        "source_id": "cms_spuf_2026_q1_demo",
+        "source_id": "cms_spuf_2026_q1",
         "as_of_date": "2026-01-15",
         "data": {
             "plan_key": "H1234-045",
@@ -40,7 +40,7 @@ def test_lisinopril_cost_change_citations_are_distinct():
     artifacts = {
         "normalize_drug": {
             "status": "ok",
-            "source_id": "rxnorm_cache_demo",
+            "source_id": "rxnorm_cache",
             "as_of_date": "2026-01-15",
             "data": {
                 "selected": {"drug_name": "lisinopril", "rxcui": "29046"},
@@ -48,7 +48,7 @@ def test_lisinopril_cost_change_citations_are_distinct():
         },
         "formulary_benefit_lookup": {
             "status": "ok",
-            "source_id": "cms_spuf_2026_q1_demo",
+            "source_id": "cms_spuf_2026_q1",
             "as_of_date": "2026-01-15",
             "data": {
                 "plan_key": "S5678-012",
@@ -65,7 +65,7 @@ def test_lisinopril_cost_change_citations_are_distinct():
         },
         "cost_trend_lookup": {
             "status": "ok",
-            "source_id": "cms_part_d_spending_demo",
+            "source_id": "cms_part_d_spending",
             "as_of_date": "2026-01-15",
             "data": [
                 {"year": 2022, "total_spend": 800_000_000, "avg_unit_cost": 0.08},
@@ -92,7 +92,7 @@ def test_policy_citations_are_per_passage_with_urls():
     artifacts = {
         "policy_retrieval": {
             "status": "ok",
-            "source_id": "cms_policy_corpus_demo",
+            "source_id": "cms_policy_corpus",
             "as_of_date": "2026-01-15",
             "data": [
                 {
@@ -123,7 +123,7 @@ def test_enrich_citations_adds_policy_url_for_matching_claim():
     artifacts = {
         "policy_retrieval": {
             "status": "ok",
-            "source_id": "cms_policy_corpus_demo",
+            "source_id": "cms_policy_corpus",
             "as_of_date": "2026-01-15",
             "data": [
                 {
@@ -138,7 +138,7 @@ def test_enrich_citations_adds_policy_url_for_matching_claim():
     citations = [
         Citation(
             claim="Part D plans place drugs on formulary tiers.",
-            source_id="cms_policy_corpus_demo",
+            source_id="cms_policy_corpus",
             as_of_date="2026-01-15",
             source_label="CMS Policy Corpus",
         )

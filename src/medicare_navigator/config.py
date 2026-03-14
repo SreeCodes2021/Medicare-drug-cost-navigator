@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +18,15 @@ class Settings(BaseSettings):
     chroma_path: Path = Path("./data/chroma")
 
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = Field(default=8000, validation_alias="API_PORT")
+
+    @field_validator("api_port", mode="before")
+    @classmethod
+    def _coerce_port(cls, value: object) -> object:
+        # Render and other PaaS hosts set PORT; prefer it over API_PORT default.
+        if os.environ.get("PORT"):
+            return os.environ["PORT"]
+        return value
     cors_origins: str = "http://localhost:5173,http://localhost:8000"
 
     session_ttl_minutes: int = 30

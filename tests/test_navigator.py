@@ -2,12 +2,12 @@ import pytest
 
 from medicare_navigator.agent.navigator import navigator
 from medicare_navigator.config import settings
-from medicare_navigator.ingestion.seed import run_seed
+from tests.spuf_fixture import PLAN_FL_PDP
 
 
-@pytest.fixture(scope="module", autouse=True)
-def seed_data():
-    run_seed()
+@pytest.fixture(autouse=True)
+def _spuf(spuf_db):
+    pass
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def mcp_agent_mode(monkeypatch):
 @pytest.mark.asyncio
 async def test_navigator_lisinopril_budgeting_fallback():
     message = (
-        "Why did lisinopril costs go up on plan S5678-012? "
+        f"Why did lisinopril costs go up on plan {PLAN_FL_PDP}? "
         "I want to buy 10 pieces. I have already spent $1000 this year. "
         "I want help in budgeting."
     )
@@ -45,6 +45,6 @@ async def test_navigator_needs_plan_clarification():
 async def test_router_uses_navigator_by_default():
     from medicare_navigator.orchestrator.router import orchestrator
 
-    response = await orchestrator.run("lisinopril 10mg copay plan S5678-012")
+    response = await orchestrator.run(f"lisinopril 10mg copay plan {PLAN_FL_PDP}")
     assert response.status == "ok"
     assert response.agents_invoked == ["navigator"]

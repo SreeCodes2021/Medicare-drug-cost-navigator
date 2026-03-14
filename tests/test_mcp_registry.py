@@ -1,13 +1,13 @@
 import pytest
 
-from medicare_navigator.ingestion.seed import run_seed
 from medicare_navigator.mcp.registry import call_tool, tool_names
 from medicare_navigator.mcp.schemas import openai_tools
+from tests.spuf_fixture import NDC_METFORMIN, PLAN_FL_MAPD, PLAN_FL_PDP
 
 
-@pytest.fixture(scope="module", autouse=True)
-def seed_data():
-    run_seed()
+@pytest.fixture(autouse=True)
+def _spuf(spuf_db):
+    pass
 
 
 def test_tool_names():
@@ -33,16 +33,16 @@ async def test_mcp_normalize_drug():
 
 @pytest.mark.asyncio
 async def test_mcp_lookup_plan_exact():
-    result = await call_tool("lookup_plan", {"plan_key": "S5678-012"})
+    result = await call_tool("lookup_plan", {"plan_key": PLAN_FL_PDP})
     assert result["status"] == "ok"
-    assert result["data"]["plan"]["plan_key"] == "S5678-012"
+    assert result["data"]["plan"]["plan_key"] == PLAN_FL_PDP
 
 
 @pytest.mark.asyncio
 async def test_mcp_formulary_matches_direct():
     direct = await call_tool(
         "formulary_benefit_lookup",
-        {"plan_key": "H1234-045", "ndc": "00093-7214-01", "ytd_oop_spend": 0},
+        {"plan_key": PLAN_FL_MAPD, "ndc": NDC_METFORMIN, "ytd_oop_spend": 0},
     )
     assert direct["status"] == "ok"
-    assert direct["data"]["tier"] == 1
+    assert direct["data"]["tier"] == 2

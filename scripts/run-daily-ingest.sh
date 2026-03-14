@@ -15,5 +15,5 @@ export DATA_DIR="${DATA_DIR:-./data}"
 export DUCKDB_PATH="${DUCKDB_PATH:-${DATA_DIR}/navigator.duckdb}"
 
 echo "[$(date -Iseconds)] Starting SPUF ingest (DATA_DIR=${DATA_DIR})"
-medicare-ingest spuf --download
+medicare-ingest spuf --download --preserve-other
 echo "[$(date -Iseconds)] SPUF ingest complete"

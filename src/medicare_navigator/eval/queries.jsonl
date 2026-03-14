@@ -1,16 +1,16 @@
-{"id": "eval-001", "message": "metformin 500mg copay on H1234-045", "expected_status": "ok", "expected_tier": 1, "expected_copay": 0.0, "expected_tool_status": {"formulary_benefit_lookup": "ok"}}
-{"id": "eval-002", "message": "tier for metformin 500mg plan H1234-001", "expected_status": "ok", "expected_tier": 1, "expected_copay": 5.0, "expected_tool_status": {"formulary_benefit_lookup": "ok"}}
-{"id": "eval-003", "message": "xyznonexistentdrug 500mg plan H1234-045", "expected_status": "not_found"}
-{"id": "eval-004", "message": "januvia 100mg plan S5678-018", "expected_status": "ok", "expected_tool_status": {"formulary_benefit_lookup": "not_covered"}}
+{"id": "eval-001", "message": "metformin 500mg copay on H8888-001", "expected_status": "ok", "expected_tier": 2, "expected_copay": 8.0, "expected_tool_status": {"formulary_benefit_lookup": "ok"}}
+{"id": "eval-002", "message": "tier for metformin 500mg plan S9999-001", "expected_status": "ok", "expected_tier": 1, "expected_copay": 5.0, "expected_tool_status": {"formulary_benefit_lookup": "ok"}}
+{"id": "eval-003", "message": "xyznonexistentdrug 500mg plan H8888-001", "expected_status": "not_found"}
+{"id": "eval-004", "message": "januvia 100mg plan S9999-002", "expected_status": "ok", "expected_tool_status": {"formulary_benefit_lookup": "not_covered"}}
 {"id": "eval-005", "message": "metformin 500mg plan ZZZZ-999", "expected_status": "not_found"}
-{"id": "eval-006", "message": "why did lisinopril cost go up on plan S5678-012", "expected_status": "ok", "expected_has_trend": true}
+{"id": "eval-006", "message": "why did lisinopril cost go up on plan S9999-001", "expected_status": "ok"}
 {"id": "eval-007", "message": "show alternatives to lipitor", "expected_status": "ok"}
-{"id": "eval-008", "message": "atorvastatin 20mg tier H1234-001 spent $400 YTD", "expected_status": "ok", "expected_tier": 2, "expected_phase": "deductible"}
+{"id": "eval-008", "message": "metformin 500mg tier S9999-001 spent $400 YTD", "expected_status": "ok", "expected_tier": 1, "expected_phase": "deductible"}
 {"id": "eval-009", "message": "metformin", "expected_status": "needs_clarification"}
-{"id": "eval-010", "message": "lisinopril 10mg copay U3456-002", "expected_status": "ok", "expected_tier": 1, "expected_copay": 4.0}
-{"id": "eval-011", "message": "eliquis 5mg tier H1234-045", "expected_status": "ok", "expected_tier": 3, "expected_copay": 47.0}
-{"id": "eval-012", "message": "what if I've spent $800 on metformin 500mg H1234-001", "expected_status": "ok", "expected_phase": "initial_coverage"}
-{"id": "eval-013", "message": "metformin 500mg plan H1234-045 spent $2500 YTD", "expected_status": "ok", "expected_phase": "catastrophic"}
-{"id": "eval-014", "message": "omeprazole 20mg plan S5678-012", "expected_status": "ok", "expected_tool_status": {"formulary_benefit_lookup": "not_covered"}}
-{"id": "eval-015", "message": "cost trend for lisinopril plan A9012-003", "expected_status": "ok", "expected_has_trend": true}
-{"id": "eval-016", "message": "Why did lisinopril costs go up on plan S5678-012? I want to buy 10 pieces. I have already spent $1000 this year. I want help in budgeting.", "expected_status": "ok", "expected_has_trend": true, "expected_has_supply_estimate": true, "expected_phase": "initial_coverage"}
+{"id": "eval-010", "message": "lisinopril 10mg copay S9999-001", "expected_status": "ok", "expected_tier": 1, "expected_copay": 5.0}
+{"id": "eval-011", "message": "metformin 500mg tier H8888-001", "expected_status": "ok", "expected_tier": 2, "expected_copay": 8.0}
+{"id": "eval-012", "message": "what if I've spent $800 on metformin 500mg S9999-001", "expected_status": "ok", "expected_phase": "initial_coverage"}
+{"id": "eval-013", "message": "metformin 500mg plan H8888-001 spent $2500 YTD", "expected_status": "ok", "expected_phase": "catastrophic"}
+{"id": "eval-014", "message": "omeprazole 20mg plan S9999-002", "expected_status": "ok", "expected_tool_status": {"formulary_benefit_lookup": "not_covered"}}
+{"id": "eval-015", "message": "cost trend for lisinopril plan S9999-001", "expected_status": "ok"}
+{"id": "eval-016", "message": "Why did lisinopril costs go up on plan S9999-001? I want to buy 10 pieces. I have already spent $1000 this year. I want help in budgeting.", "expected_status": "ok", "expected_has_supply_estimate": true, "expected_phase": "initial_coverage"}

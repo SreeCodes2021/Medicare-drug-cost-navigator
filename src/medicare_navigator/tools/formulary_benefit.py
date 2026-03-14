@@ -7,7 +7,7 @@ from medicare_navigator.storage.repository import FormularyRepository, PlanRepos
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase, load_benefit_params
 from medicare_navigator.tools.supply_estimate import compute_supply_estimate
 
-SOURCE_ID_FALLBACK = "cms_spuf_2026_q1_demo"
+SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 
 
 def _source_id() -> str:

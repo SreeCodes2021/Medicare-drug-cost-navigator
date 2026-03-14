@@ -4,7 +4,7 @@ from medicare_navigator.ingestion.manifest import get_as_of, get_source_id
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import PlanRepository
 
-SOURCE_ID_FALLBACK = "cms_spuf_2026_q1_demo"
+SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 
 
 def _source_id() -> str:

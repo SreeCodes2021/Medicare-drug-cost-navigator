@@ -1,15 +1,14 @@
 import pytest
 
 from medicare_navigator.agents.clarification import _deterministic_clarification, run_clarification_agent
-from medicare_navigator.ingestion.seed import run_seed
 from medicare_navigator.intake.agent import run_intake
 from medicare_navigator.models.query import IntakeResult, QuerySlots
 from medicare_navigator.orchestrator.pipeline import orchestrator
 
 
-@pytest.fixture(scope="module", autouse=True)
-def seed_data():
-    run_seed()
+@pytest.fixture(autouse=True)
+def _spuf(spuf_db):
+    pass
 
 
 @pytest.mark.asyncio

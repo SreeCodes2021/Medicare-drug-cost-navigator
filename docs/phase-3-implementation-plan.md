@@ -296,10 +296,15 @@ uvicorn medicare_navigator.api.app:app --reload --port 8000
 
 ## 12. Phase 3 → Phase 4 (deferred)
 
-Not in Phase 3:
+The following were deferred from Phase 3 and implemented in [phase-4-implementation-plan.md](./phase-4-implementation-plan.md):
+
+- Production deployment / hosting (Docker + Render Blueprint)
+- Remove demo seed path; SPUF-only ingest and offline fixture for tests
+
+Still deferred (Phase 5+):
 
 - National plan coverage (all states / all PDP regions)
-- Real CMS cost-trend and alternatives loaders (replace demo tables)
+- Real CMS cost-trend and alternatives loaders
 - Live tier-change detection across plan years
 - Automated eval gate in CI (`.github/` workflows)
 - Frontend build pipeline (`frontend/dist` remains gitignored; local-only)

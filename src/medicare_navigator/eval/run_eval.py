@@ -6,8 +6,13 @@ import asyncio
 import json
 from pathlib import Path
 
-from medicare_navigator.ingestion.seed import run_seed
+from medicare_navigator.config import settings
+from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 from medicare_navigator.orchestrator.router import orchestrator
+
+
+def _eval_fixture_dir() -> Path:
+    return settings.project_root / "tests" / "fixtures" / "spuf"
 
 
 def _queries_path() -> Path:
@@ -85,7 +90,19 @@ async def run_eval() -> int:
 
     settings.anthropic_api_key = ""
     settings.openai_api_key = ""
-    run_seed()
+    data_dir = settings.data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    filters = IngestFilters(
+        contract_year=2026,
+        states=["FL", "TX"],
+        pdp_region_codes={"FL": "11", "TX": "22"},
+        plan_type_prefixes=["S", "H"],
+    )
+    ingest_spuf(
+        _eval_fixture_dir(),
+        filters=filters,
+        version="SPUF.2026.20260115",
+    )
     cases = []
     with _queries_path().open(encoding="utf-8") as f:
         for line in f:

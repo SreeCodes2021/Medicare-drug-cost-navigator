@@ -1,4 +1,4 @@
-"""DuckDB schema creation shared by demo seed and real SPUF ingestion."""
+"""DuckDB schema creation shared by SPUF ingestion and empty-table bootstrap."""
 
 from __future__ import annotations
 
