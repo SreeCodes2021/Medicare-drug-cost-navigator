@@ -9,7 +9,7 @@ Single Docker web service with persistent disk at `/data` and in-container super
 | File | Purpose |
 |------|---------|
 | [`render.yaml`](../render.yaml) | Blueprint: web service, disk, env |
-| [`Dockerfile`](../Dockerfile) | Image: uvicorn + supercronic |
+| [`Dockerfile`](../Dockerfile) | Multi-stage image: builds `frontend/dist` from `frontend/src`, then uvicorn + supercronic |
 | [`config/deploy.yaml`](../config/deploy.yaml) | **Cron schedule** (`ingest.cron`, UTC) |
 | [`scripts/docker-start.sh`](../scripts/docker-start.sh) | Starts supercronic + uvicorn |
 | [`scripts/run-daily-ingest.sh`](../scripts/run-daily-ingest.sh) | Nightly: `spuf --download --preserve-other` |

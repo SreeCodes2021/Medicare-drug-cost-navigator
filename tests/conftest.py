@@ -1,7 +1,18 @@
+import subprocess
+
 import pytest
 
 from medicare_navigator.config import settings
 from tests.spuf_fixture import patch_settings
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_frontend_dist():
+    dist_index = settings.project_root / "frontend" / "dist" / "index.html"
+    if dist_index.exists():
+        return
+    script = settings.project_root / "scripts" / "build-frontend.sh"
+    subprocess.run([str(script)], check=True, cwd=settings.project_root)
 
 
 @pytest.fixture(autouse=True)
