@@ -38,6 +38,14 @@ medicare-ingest spuf --download
 medicare-ingest spuf --source tests/fixtures/spuf
 ```
 
+### Build frontend (local dev)
+
+```bash
+scripts/build-frontend.sh
+```
+
+Static UI sources live in `frontend/src/`; the script copies them to `frontend/dist/` (gitignored). Docker/Render builds `dist` automatically in the image.
+
 ### Run API server
 
 ```bash
@@ -95,7 +103,7 @@ src/medicare_navigator/
 ├── ingestion/      # CMS SPUF ingest CLI
 ├── api/            # FastAPI app
 └── eval/           # evaluation suite
-frontend/dist/      # static chat UI
+frontend/src/       # static chat UI sources (built to frontend/dist/)
 config/             # ingest filters, benefit params, deploy settings, disclaimer
 docs/               # implementation plan, data sources
 ```

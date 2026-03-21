@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Medicare Drug Cost Navigator</title>
+  <link rel="stylesheet" href="/styles.css?v=3" />
+</head>
+<body>
+  <div id="disclaimer-banner" class="disclaimer-banner" role="alert" aria-live="polite">
+    <span class="disclaimer-icon">ℹ️</span>
+    <span id="disclaimer-text">Loading disclaimer…</span>
+  </div>
+
+  <header class="app-header">
+    <h1>Medicare Drug Cost Navigator</h1>
+    <p class="subtitle">Informational drug cost &amp; benefit transparency tool</p>
+  </header>
+
+  <main class="layout">
+    <aside class="filters-panel" id="filters-panel">
+      <div class="panel-header">
+        <h2>Filters <span class="badge" id="filter-badge">0</span></h2>
+        <button type="button" id="toggle-filters" aria-label="Toggle filters">−</button>
+      </div>
+      <div class="filters-body" id="filters-body">
+        <label>Drug <input type="text" id="filter-drug" placeholder="e.g. metformin" /></label>
+        <label>Dosage <input type="text" id="filter-dosage" placeholder="e.g. 500mg" /></label>
+        <label>Plan
+          <select id="filter-plan"><option value="">— select plan —</option></select>
+        </label>
+        <label>Contract year
+          <select id="filter-year">
+            <option value="2026">2026</option>
+            <option value="2025">2025</option>
+          </select>
+        </label>
+        <label>YTD out-of-pocket ($) <input type="number" id="filter-ytd" min="0" step="1" placeholder="optional" /></label>
+        <label class="checkbox"><input type="checkbox" id="filter-alternatives" checked /> Include alternatives</label>
+        <label class="checkbox"><input type="checkbox" id="filter-trend" checked /> Include cost trend</label>
+      </div>
+    </aside>
+
+    <section class="chat-panel">
+      <div class="chat-header">
+        <span>Chat</span>
+        <span id="turn-counter" class="turn-counter">0/5 turns</span>
+      </div>
+      <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <div class="empty-state" id="empty-state">
+          <p>Ask about a drug's tier, copay, cost trends, or alternatives.</p>
+          <div class="prompt-chips">
+            <button class="chip" data-prompt="What's the tier and copay for metformin 500mg on plan H1234-045?">Metformin tier on H1234-045</button>
+            <button class="chip" data-prompt="Why did lisinopril costs go up on plan S5678-012?">Why did lisinopril costs go up?</button>
+            <button class="chip" data-prompt="Show alternatives to lipitor">Show lipitor alternatives</button>
+          </div>
+        </div>
+      </div>
+      <div id="loading" class="loading hidden">
+        <span class="spinner"></span>
+        <span id="loading-text">Looking up formulary…</span>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" rows="2" placeholder="Ask anything — e.g. metformin 500mg copay on H1234-045, spent $400 YTD" required></textarea>
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </section>
+
+    <section class="results-panel" id="results-panel">
+      <div class="results-header">
+        <h2>Results</h2>
+        <span id="data-as-of" class="data-as-of hidden"></span>
+      </div>
+      <div id="results-content" class="results-content" aria-live="polite" aria-relevant="additions">
+        <p class="placeholder">Results will appear here after you send a query.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js?v=5"></script>
+</body>
+</html>

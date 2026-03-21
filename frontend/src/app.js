@@ -1,0 +1,404 @@
+const API = window.location.origin;
+let sessionId = null;
+let turnCount = 0;
+let resultsBaseline = null;
+
+const PLACEHOLDERS = {
+  formulary: "Select a plan to see tier and copay.",
+  costTrend: "No spending trend data available for this drug.",
+  alternatives: "No therapeutic alternatives found.",
+  citations: "No source citations for this response.",
+};
+
+const el = (id) => document.getElementById(id);
+
+async function loadDisclaimer() {
+  try {
+    const res = await fetch(`${API}/api/disclaimer`);
+    const data = await res.json();
+    el("disclaimer-text").textContent = data.text;
+  } catch {
+    el("disclaimer-text").textContent =
+      "Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice.";
+  }
+}
+
+async function loadPlans() {
+  try {
+    const res = await fetch(`${API}/api/plans`);
+    const plans = await res.json();
+    const select = el("filter-plan");
+    plans.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.plan_key;
+      opt.textContent = `${p.plan_name} (${p.plan_key})`;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.warn("Could not load plans", e);
+  }
+}
+
+function getFilters() {
+  const filters = {};
+  const drug = el("filter-drug").value.trim();
+  const dosage = el("filter-dosage").value.trim();
+  const plan = el("filter-plan").value;
+  const year = el("filter-year").value;
+  const ytd = el("filter-ytd").value;
+  if (drug) filters.drug = drug;
+  if (dosage) filters.dosage = dosage;
+  if (plan) filters.plan_id = plan;
+  if (year) filters.contract_year = parseInt(year, 10);
+  const ytdNum = parseFloat(ytd);
+  if (ytd && !Number.isNaN(ytdNum) && ytdNum > 0) filters.ytd_oop_spend = ytdNum;
+  filters.include_alternatives = el("filter-alternatives").checked;
+  filters.include_cost_trend = el("filter-trend").checked;
+  return Object.keys(filters).length ? filters : null;
+}
+
+function updateFilterBadge() {
+  const f = getFilters() || {};
+  const count = ["drug", "dosage", "plan_id", "contract_year", "ytd_oop_spend"].filter(
+    (k) => f[k] !== undefined && f[k] !== ""
+  ).length;
+  el("filter-badge").textContent = count;
+}
+
+function escapeAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtml(value) {
+  return escapeAttr(value);
+}
+
+function renderMarkdown(text) {
+  const escaped = String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/\n\n/g, "</p><p>")
+    .replace(/\n/g, "<br>");
+}
+
+function renderCitationRef(index) {
+  return `<a href="#citation-${index}" class="citation-ref" data-citation="${index}" aria-label="View source ${index}">[${index}]</a>`;
+}
+
+function renderCitationRefs(citations) {
+  if (!citations?.length) return "";
+  return citations.map((_, i) => renderCitationRef(i + 1)).join("");
+}
+
+function linkifyCitationMarkers(html, citations) {
+  if (!citations?.length) return html;
+  return html.replace(/\[(\d+)\]/g, (match, rawIndex) => {
+    const index = parseInt(rawIndex, 10);
+    if (index >= 1 && index <= citations.length) {
+      return renderCitationRef(index);
+    }
+    return match;
+  });
+}
+
+function renderExplanationWithCitations(text, citations) {
+  const body = renderMarkdown(text);
+  if (!citations?.length) return body;
+
+  let linked = linkifyCitationMarkers(body, citations);
+  if (!/\[(\d+)\]/.test(text)) {
+    linked += ` <span class="citation-refs">${renderCitationRefs(citations)}</span>`;
+  }
+  return linked;
+}
+
+function openCitation(index) {
+  const el = document.getElementById(`citation-${index}`);
+  if (!el) return;
+  el.open = true;
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const summary = el.querySelector("summary");
+  if (summary) summary.focus();
+}
+
+function appendMessage(role, text, source, citations) {
+  const empty = el("empty-state");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = `message ${role}`;
+  if (role === "assistant") {
+    div.innerHTML = `<div class="message-body"><p>${renderExplanationWithCitations(text, citations)}</p></div>`;
+  } else {
+    div.textContent = text;
+  }
+  if (role === "assistant" && source) {
+    const sourceEl = document.createElement("div");
+    sourceEl.className = "message-source";
+    sourceEl.textContent = `via ${source}`;
+    div.appendChild(sourceEl);
+  }
+  el("chat-messages").appendChild(div);
+  el("chat-messages").scrollTop = el("chat-messages").scrollHeight;
+}
+
+function showLoading(text) {
+  el("loading-text").textContent = text;
+  el("loading").classList.remove("hidden");
+}
+
+function hideLoading() {
+  el("loading").classList.add("hidden");
+}
+
+function drugKeyFromResp(resp) {
+  if (resp.rxcui) return resp.rxcui;
+  if (resp.drug_name) return resp.drug_name.toLowerCase();
+  const filters = getFilters() || {};
+  if (filters.drug) return `${filters.drug}${filters.dosage || ""}`.toLowerCase();
+  return null;
+}
+
+function establishBaseline(resp) {
+  return {
+    drugKey: drugKeyFromResp(resp),
+    drug_name: resp.drug_name || null,
+    formulary: resp.formulary || null,
+    cost_trend: resp.cost_trend?.length ? resp.cost_trend : null,
+    alternatives: resp.alternatives?.length ? resp.alternatives : null,
+    citations: resp.citations?.length ? resp.citations : null,
+    data_as_of: resp.data_as_of || {},
+    tool_statuses: resp.tool_statuses || {},
+  };
+}
+
+function mergeResults(baseline, resp) {
+  const merged = { ...baseline, data_as_of: { ...baseline.data_as_of }, tool_statuses: { ...baseline.tool_statuses } };
+  if (resp.drug_name) merged.drug_name = resp.drug_name;
+  const key = drugKeyFromResp(resp);
+  if (key) merged.drugKey = key;
+  if (resp.formulary != null) merged.formulary = resp.formulary;
+  if (resp.cost_trend?.length) merged.cost_trend = resp.cost_trend;
+  if (resp.alternatives?.length) merged.alternatives = resp.alternatives;
+  if (resp.citations?.length) merged.citations = resp.citations;
+  if (resp.data_as_of) Object.assign(merged.data_as_of, resp.data_as_of);
+  if (resp.tool_statuses) Object.assign(merged.tool_statuses, resp.tool_statuses);
+  return merged;
+}
+
+function renderFormularyCard(f) {
+  if (!f) {
+    return `<div class="card"><h3>Formulary &amp; Cost Share</h3><p class="card-placeholder">${PLACEHOLDERS.formulary}</p></div>`;
+  }
+  if (f.covered === false) {
+    return `<div class="card">
+      <h3>Formulary &amp; Cost Share</h3>
+      <p class="status-warning" style="margin-top:0.4rem">Drug not covered on this plan.</p>
+      <p style="margin-top:0.4rem;font-size:0.85rem;color:var(--muted)">${f.plan_name} (${f.plan_key})</p>
+      <p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">Benefit phase and cost-sharing do not apply to non-covered drugs.</p>
+    </div>`;
+  }
+  const cs = f.cost_share || {};
+  const copay = cs.copay != null ? `$${cs.copay.toFixed(2)} copay` : "see plan";
+  const spendLine = f.ytd_oop_spend_assumed
+    ? `<p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">Phase estimate assumes $0 YTD spending (not provided)</p>`
+    : `<p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">YTD OOP: $${f.ytd_oop_spend.toFixed(2)} / $${f.oop_threshold.toFixed(2)}</p>`;
+  return `<div class="card">
+    <h3>Formulary &amp; Cost Share</h3>
+    <div class="value">Tier ${f.tier} — ${copay}</div>
+    <p style="margin-top:0.4rem;font-size:0.85rem;color:var(--muted)">${f.plan_name} (${f.plan_key})</p>
+    <span class="phase-pill phase-${f.benefit_phase}">${(f.benefit_phase || "").replace(/_/g, " ")}</span>
+    ${spendLine}
+  </div>`;
+}
+
+function renderCostTrendCard(trend) {
+  if (!trend?.length) {
+    return `<div class="card"><h3>Cost Trend</h3><p class="card-placeholder">${PLACEHOLDERS.costTrend}</p></div>`;
+  }
+  const max = Math.max(...trend.map((p) => p.total_spend));
+  const bars = trend
+    .map((p) => {
+      const h = Math.round((p.total_spend / max) * 55);
+      return `<div class="trend-bar" style="height:${h}px" title="${p.year}: $${p.total_spend.toLocaleString()}"></div>`;
+    })
+    .join("");
+  const labels = trend.map((p) => p.year).join(" · ");
+  return `<div class="card">
+    <h3>Cost Trend</h3>
+    <div class="trend-bars">${bars}</div>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.3rem">${labels}</p>
+  </div>`;
+}
+
+function renderAlternativesCard(alternatives) {
+  if (!alternatives?.length) {
+    return `<div class="card"><h3>Alternatives</h3><p class="card-placeholder">${PLACEHOLDERS.alternatives}</p></div>`;
+  }
+  const list = alternatives.map((a) => `<li>${a.drug_name} (TE: ${a.te_code || "—"})</li>`).join("");
+  return `<div class="card"><h3>Alternatives</h3><ul style="font-size:0.88rem;padding-left:1.2rem">${list}</ul></div>`;
+}
+
+function renderCitationsCard(citations) {
+  if (!citations?.length) {
+    return `<div class="card"><h3>Citations</h3><p class="card-placeholder">${PLACEHOLDERS.citations}</p></div>`;
+  }
+  const items = citations
+    .map((c, i) => {
+      const index = i + 1;
+      const link = c.url
+        ? `<a href="${escapeAttr(c.url)}" target="_blank" rel="noopener noreferrer">View source documentation</a>`
+        : "";
+      const sourceName = c.source_label || c.source_id;
+      return `
+      <details class="citation-item" id="citation-${index}">
+        <summary>[${index}] ${escapeHtml(c.claim)}</summary>
+        <div class="citation-body">
+          <div><strong>${escapeHtml(sourceName)}</strong></div>
+          <div>As of ${escapeHtml(c.as_of_date)}</div>
+          ${link ? `<div class="citation-link">${link}</div>` : ""}
+        </div>
+      </details>`;
+    })
+    .join("");
+  return `<div class="card"><h3>Citations</h3><div class="citation-list">${items}</div></div>`;
+}
+
+function renderBaseline(baseline, warningHtml) {
+  const container = el("results-content");
+  container.innerHTML = warningHtml || "";
+
+  const asOf = baseline.data_as_of || {};
+  const dates = Object.values(asOf);
+  const badge = el("data-as-of");
+  if (dates.length) {
+    badge.textContent = `Data as of ${dates[0]}`;
+    badge.classList.remove("hidden");
+  }
+
+  container.innerHTML += renderFormularyCard(baseline.formulary);
+  container.innerHTML += renderCostTrendCard(baseline.cost_trend);
+  container.innerHTML += renderAlternativesCard(baseline.alternatives);
+  container.innerHTML += renderCitationsCard(baseline.citations);
+
+  if (baseline.tool_statuses && Object.keys(baseline.tool_statuses).length) {
+    const statuses = Object.entries(baseline.tool_statuses)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(" · ");
+    container.innerHTML += `<p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Tools: ${statuses}</p>`;
+  }
+}
+
+function renderResults(resp) {
+  const container = el("results-content");
+
+  if (resp.status === "needs_clarification" || resp.status === "not_found") {
+    if (!resultsBaseline) {
+      container.innerHTML = `<p class="status-warning">${resp.clarification_message || resp.explanation}</p>`;
+      el("data-as-of").classList.add("hidden");
+      return;
+    }
+    const warning = `<p class="status-warning">${resp.clarification_message || resp.explanation}</p>`;
+    renderBaseline(resultsBaseline, warning);
+    return;
+  }
+
+  if (resp.status === "ok") {
+    const key = drugKeyFromResp(resp);
+    if (!resultsBaseline) {
+      resultsBaseline = establishBaseline(resp);
+    } else if (key && resultsBaseline.drugKey && key !== resultsBaseline.drugKey) {
+      resultsBaseline = establishBaseline(resp);
+    } else {
+      resultsBaseline = mergeResults(resultsBaseline, resp);
+    }
+    renderBaseline(resultsBaseline);
+    return;
+  }
+
+  if (resultsBaseline) {
+    const warning =
+      resp.status === "limit_reached"
+        ? `<p class="status-warning">${resp.explanation}</p>`
+        : "";
+    renderBaseline(resultsBaseline, warning);
+    return;
+  }
+
+  container.innerHTML = `<p class="status-warning">${resp.explanation || "No response."}</p>`;
+}
+
+async function sendMessage(message) {
+  if (!message.trim()) return;
+  appendMessage("user", message);
+  el("chat-input").value = "";
+  el("send-btn").disabled = true;
+  showLoading("Looking up formulary…");
+
+  try {
+    const body = { message, session_id: sessionId, filters: getFilters() };
+    const res = await fetch(`${API}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    sessionId = data.session_id;
+    turnCount = data.turn_count;
+    el("turn-counter").textContent = `${turnCount}/5 turns`;
+
+    const resp = data.response;
+    appendMessage(
+      "assistant",
+      resp.explanation || resp.clarification_message || "No response.",
+      resp.response_source,
+      resp.citations
+    );
+    renderResults(resp);
+  } catch (err) {
+    appendMessage("assistant", "Sorry, something went wrong. Please try again.");
+    console.error(err);
+  } finally {
+    hideLoading();
+    el("send-btn").disabled = false;
+  }
+}
+
+el("chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  sendMessage(el("chat-input").value);
+});
+
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.addEventListener("click", () => sendMessage(chip.dataset.prompt));
+});
+
+["filter-drug", "filter-dosage", "filter-plan", "filter-year", "filter-ytd"].forEach((id) => {
+  el(id).addEventListener("change", updateFilterBadge);
+  el(id).addEventListener("input", updateFilterBadge);
+});
+
+el("toggle-filters").addEventListener("click", () => {
+  const body = el("filters-body");
+  const hidden = body.style.display === "none";
+  body.style.display = hidden ? "" : "none";
+  el("toggle-filters").textContent = hidden ? "−" : "+";
+});
+
+document.addEventListener("click", (event) => {
+  const ref = event.target.closest(".citation-ref");
+  if (!ref) return;
+  event.preventDefault();
+  openCitation(ref.dataset.citation);
+});
+
+loadDisclaimer();
+loadPlans();
+updateFilterBadge();

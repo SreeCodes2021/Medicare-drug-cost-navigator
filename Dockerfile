@@ -1,3 +1,9 @@
+FROM alpine:3.20 AS frontend-builder
+
+WORKDIR /build
+COPY frontend/src/ ./src/
+RUN mkdir -p dist && cp -a src/. dist/
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -12,8 +18,8 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
-COPY frontend/dist ./frontend/dist
 COPY scripts ./scripts
+COPY --from=frontend-builder /build/dist ./frontend/dist
 
 RUN pip install --no-cache-dir .
 
