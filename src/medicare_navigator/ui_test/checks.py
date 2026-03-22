@@ -74,7 +74,7 @@ CHAT_RESPONSE_UI_FIELDS = [
 SMOKE_MESSAGES = [
     {
         "name": "tier_lookup",
-        "message": "What's the tier and copay for metformin 500mg on plan H1234-045?",
+        "message": "What's the tier and copay for metformin 500mg on plan H8888-001?",
         "expect_statuses": {"ok", "needs_clarification"},
     },
     {
@@ -355,7 +355,7 @@ def check_chat_smoke(getter: HttpGetter, *, timeout_note: str = "") -> CheckRepo
                 {
                     "message": "what if I've spent $400 YTD?",
                     "session_id": data["session_id"],
-                    "filters": {"plan_id": "H1234-045", "drug": "metformin", "dosage": "500mg"},
+                    "filters": {"plan_id": "H8888-001", "drug": "metformin", "dosage": "500mg"},
                 },
             )
             report.add(

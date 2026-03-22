@@ -50,10 +50,18 @@ def _cmd_spuf(args: argparse.Namespace) -> None:
         filters=filters,
         version=version,
         preserve_non_spuf_tables=args.preserve_other,
+        merge_states=args.merge_states,
     )
     stats = result["stats"]
-    print(f"SPUF ingestion complete: {stats['plans']} plans, {stats['formulary_rows']} formulary rows.")
-    print(f"Manifest as_of: {result['as_of']} (source_id={result['source_id']})")
+    loaded = stats["plans"]
+    total_plans = stats.get("total_plans", loaded)
+    print(
+        f"SPUF ingestion complete: {loaded} plans loaded "
+        f"({total_plans} total in DB, {stats['formulary_rows']} formulary rows)."
+    )
+    spuf_manifest = result["manifest"].get("spuf", {})
+    states = spuf_manifest.get("states", filters.states)
+    print(f"Manifest as_of: {result['as_of']} (source_id={result['source_id']}, states={states})")
 
 
 def _cmd_fetch(args: argparse.Namespace) -> None:
@@ -113,6 +121,11 @@ def main() -> None:
         "--preserve-other",
         action="store_true",
         help="Keep cost_trends, alternatives, policy tables when reloading SPUF",
+    )
+    spuf_parser.add_argument(
+        "--merge-states",
+        action="store_true",
+        help="Replace only the selected state(s) in DuckDB; keep other states already loaded",
     )
     spuf_parser.set_defaults(func=_cmd_spuf)
 

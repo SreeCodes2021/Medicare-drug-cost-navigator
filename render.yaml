@@ -13,6 +13,8 @@ services:
       mountPath: /data
       sizeGB: 5
     envVars:
+      - key: PROJECT_ROOT
+        value: /app
       - key: DATA_DIR
         value: /data
       - key: DUCKDB_PATH

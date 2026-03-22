@@ -25,7 +25,8 @@ RUN pip install --no-cache-dir .
 
 RUN chmod +x scripts/docker-start.sh scripts/run-daily-ingest.sh
 
-ENV DATA_DIR=/data \
+ENV PROJECT_ROOT=/app \
+    DATA_DIR=/data \
     DUCKDB_PATH=/data/navigator.duckdb \
     CHROMA_PATH=/data/chroma \
     PYTHONUNBUFFERED=1

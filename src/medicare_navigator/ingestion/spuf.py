@@ -13,7 +13,7 @@ from typing import Any, Iterator
 import yaml
 
 from medicare_navigator.config import settings
-from medicare_navigator.ingestion.manifest import merge_manifest
+from medicare_navigator.ingestion.manifest import load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.ingestion.schema import create_indexes, create_tables
 from medicare_navigator.storage.connection import DuckDBConnection
@@ -244,6 +244,26 @@ def _iter_rows(source: Path, member: str | Path | None) -> Iterator[dict[str, st
         yield from _read_pipe_from_zip(zf, member)
 
 
+def _purge_states(conn, states: list[str]) -> int:
+    """Remove plans and related SPUF rows for the given state codes. Returns plans removed."""
+    if not states:
+        return 0
+    normalized = [s.upper() for s in states]
+    placeholders = ", ".join("?" * len(normalized))
+    rows = conn.execute(
+        f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})",
+        normalized,
+    ).fetchall()
+    plan_keys = [row[0] for row in rows]
+    if not plan_keys:
+        return 0
+    key_placeholders = ", ".join("?" * len(plan_keys))
+    for table in ("formulary", "beneficiary_cost", "pricing"):
+        conn.execute(f"DELETE FROM {table} WHERE plan_key IN ({key_placeholders})", plan_keys)
+    conn.execute(f"DELETE FROM plans WHERE plan_key IN ({key_placeholders})", plan_keys)
+    return len(plan_keys)
+
+
 def _parse_as_of_from_version(version: str) -> str:
     # SPUF.2026.20260115 -> 2026-01-15
     parts = version.replace(".zip", "").split(".")
@@ -260,6 +280,7 @@ def ingest_spuf(
     db: DuckDBConnection | None = None,
     version: str | None = None,
     preserve_non_spuf_tables: bool = False,
+    merge_states: bool = False,
 ) -> dict[str, Any]:
     """Load CMS SPUF into DuckDB. Source may be a .zip or directory of pipe-delimited files."""
     filters = filters or IngestFilters.from_yaml()
@@ -277,12 +298,17 @@ def ingest_spuf(
     db = db or DuckDBConnection()
     conn = db.connect()
     try:
-        if preserve_non_spuf_tables:
+        if merge_states:
+            create_tables(conn, drop_existing=False)
+            purged = _purge_states(conn, filters.states)
+        elif preserve_non_spuf_tables:
             for table in ("plans", "formulary", "beneficiary_cost", "pricing"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             create_tables(conn, drop_existing=False)
+            purged = 0
         else:
             create_tables(conn, drop_existing=True)
+            purged = 0
 
         plans: dict[str, dict[str, Any]] = {}
         formulary_ids: set[str] = set()
@@ -449,14 +475,22 @@ def ingest_spuf(
 
         stats = {
             "plans": len(plans),
+            "plans_purged": purged,
             "formulary_ids": len(formulary_ids),
             "formulary_rows": conn.execute("SELECT COUNT(*) FROM formulary").fetchone()[0],
             "beneficiary_cost_rows": conn.execute(
                 "SELECT COUNT(*) FROM beneficiary_cost"
             ).fetchone()[0],
+            "total_plans": conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0],
         }
     finally:
         conn.close()
+
+    manifest_states = list(filters.states)
+    if merge_states:
+        existing = load_manifest().get("spuf", {})
+        if isinstance(existing, dict) and existing.get("states"):
+            manifest_states = sorted(set(existing["states"]) | set(filters.states))
 
     manifest = merge_manifest(
         {
@@ -465,7 +499,7 @@ def ingest_spuf(
                 "as_of": as_of,
                 "source_id": source_id,
                 "contract_year": filters.contract_year,
-                "states": filters.states,
+                "states": manifest_states,
             },
             "benefit_params": {"contract_year": filters.contract_year, "as_of": as_of},
         }

@@ -26,6 +26,15 @@ medicare-ingest spuf --download
 
 4. Check `GET /api/health` → `data_fresh: true`.
 
+**Low-memory first load (Starter):** ingest one state at a time with `--merge-states`:
+
+```bash
+medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states TX --merge-states
+```
+
+Each run replaces only that state's plans in DuckDB; the CMS zip is still downloaded/read each time. If a run exits with `Killed`, upgrade the Render plan or ingest fewer states.
+
 ### Change cron schedule or instance size
 
 - **Schedule:** edit `ingest.cron` in [`config/deploy.yaml`](../config/deploy.yaml) (UTC), push to GitHub.
