@@ -4,6 +4,22 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_CONFIG_MARKER = "config/ingest_filters.yaml"
+
+
+def _resolve_project_root() -> Path:
+    """Repo root in dev (src layout) and Docker (/app with pip-installed package)."""
+    if env_root := os.environ.get("PROJECT_ROOT"):
+        return Path(env_root)
+    here = Path(__file__).resolve()
+    src_layout = here.parents[2]
+    if (src_layout / _CONFIG_MARKER).is_file():
+        return src_layout
+    for candidate in (Path.cwd(), *Path.cwd().parents):
+        if (candidate / _CONFIG_MARKER).is_file():
+            return candidate
+    return src_layout
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -34,7 +50,7 @@ class Settings(BaseSettings):
     max_tool_rounds: int = 8
     navigator_mode: str = "mcp_agent"
 
-    project_root: Path = Path(__file__).resolve().parents[2]
+    project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property
     def config_dir(self) -> Path:

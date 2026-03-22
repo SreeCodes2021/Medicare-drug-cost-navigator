@@ -154,3 +154,69 @@ def test_formulary_stale_when_contract_year_mismatch(spuf_db, monkeypatch):
     result = formulary_benefit_lookup("S9999-001", "00093721401", contract_year=2025)
     assert result.status == ToolStatus.stale
     assert result.data is not None
+
+
+def test_ingest_spuf_merge_states_fl_then_tx(spuf_db):
+    filters_fl = IngestFilters(
+        contract_year=2026,
+        states=["FL"],
+        pdp_region_codes={"FL": "11"},
+        plan_type_prefixes=["S", "H"],
+    )
+    result_fl = ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters_fl,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    assert result_fl["stats"]["plans"] == 2
+    assert result_fl["stats"]["total_plans"] == 2
+
+    filters_tx = IngestFilters(
+        contract_year=2026,
+        states=["TX"],
+        pdp_region_codes={"TX": "22"},
+        plan_type_prefixes=["S", "H"],
+    )
+    result_tx = ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters_tx,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    assert result_tx["stats"]["plans"] == 1
+    assert result_tx["stats"]["total_plans"] == 3
+    assert result_tx["manifest"]["spuf"]["states"] == ["FL", "TX"]
+
+    repo = PlanRepository(db=spuf_db)
+    assert len(repo.list_plans(state="FL")) == 2
+    assert len(repo.list_plans(state="TX")) == 1
+
+
+def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
+    filters = IngestFilters(
+        contract_year=2026,
+        states=["FL"],
+        pdp_region_codes={"FL": "11"},
+        plan_type_prefixes=["S", "H"],
+    )
+    ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    second = ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    assert second["stats"]["plans_purged"] == 2
+    assert second["stats"]["total_plans"] == 2
+    repo = PlanRepository(db=spuf_db)
+    assert len(repo.list_plans(state="FL")) == 2

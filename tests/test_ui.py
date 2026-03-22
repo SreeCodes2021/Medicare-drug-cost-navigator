@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from medicare_navigator.config import settings
+from tests.spuf_fixture import patch_settings
 from medicare_navigator.ui_test.checks import (
     CHAT_RESPONSE_UI_FIELDS,
     JS_REFERENCED_ELEMENT_IDS,
@@ -18,7 +19,10 @@ from medicare_navigator.ui_test.checks import (
 
 
 @pytest.fixture
-def offline_getter():
+def offline_getter(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
     getter = InProcessGetter()
     yield getter
     getter.close()
