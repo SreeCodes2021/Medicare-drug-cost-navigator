@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,7 +15,16 @@ from medicare_navigator.models.response import ChatResponse
 from medicare_navigator.orchestrator.router import orchestrator
 from medicare_navigator.storage.repository import PlanRepository
 
-app = FastAPI(title="Medicare Drug Cost Navigator", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    from medicare_navigator.ingestion.schema import ensure_schema
+
+    ensure_schema()
+    yield
+
+
+app = FastAPI(title="Medicare Drug Cost Navigator", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
