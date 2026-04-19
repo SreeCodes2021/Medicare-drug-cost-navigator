@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
+import sys
 import zipfile
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from typing import Any, Iterator
@@ -30,6 +31,21 @@ PLAN_FILE_HINTS = ("plan information",)
 FORMULARY_FILE_HINTS = ("basic drugs formulary",)
 BENEFICIARY_COST_FILE_HINTS = ("beneficiary cost",)
 PRICING_FILE_HINTS = ("pricing",)
+
+_PROGRESS_INTERVAL = 500_000
+
+
+def _member_label(member: str | Path | None) -> str:
+    if member is None:
+        return "unknown"
+    name = member if isinstance(member, str) else member.name
+    return name.rsplit("/", 1)[-1].strip()
+
+
+def _progress(msg: str, *, file: str | Path | None = None) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    label = _member_label(file)
+    print(f"[{ts}] [{label}] {msg}", file=sys.stderr, flush=True)
 
 
 @dataclass
@@ -297,10 +313,17 @@ def ingest_spuf(
 
     db = db or DuckDBConnection()
     conn = db.connect()
+    _progress(
+        f"Ingesting SPUF into {db.path} "
+        f"(states={','.join(filters.states)}, merge_states={merge_states})...",
+        file=source,
+    )
     try:
         if merge_states:
             create_tables(conn, drop_existing=False)
             purged = _purge_states(conn, filters.states)
+            if purged:
+                _progress(f"Purged {purged} existing plan(s) for merge.", file="plans")
         elif preserve_non_spuf_tables:
             for table in ("plans", "formulary", "beneficiary_cost", "pricing"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -313,6 +336,7 @@ def ingest_spuf(
         plans: dict[str, dict[str, Any]] = {}
         formulary_ids: set[str] = set()
 
+        _progress("Loading plans...", file=files["plan"])
         for row in _iter_rows(source, files["plan"]):
             if not _plan_in_filter(row, filters):
                 continue
@@ -341,6 +365,11 @@ def ingest_spuf(
             if formulary_id:
                 formulary_ids.add(formulary_id)
 
+        _progress(
+            f"Loaded {len(plans)} plan(s), {len(formulary_ids)} formulary id(s).",
+            file=files["plan"],
+        )
+
         for plan in plans.values():
             conn.execute(
                 """
@@ -361,7 +390,20 @@ def ingest_spuf(
 
         # formulary_id -> list of (ndc, rxcui, tier)
         formulary_drugs: dict[str, list[tuple[str, str, int]]] = {}
+        _progress(
+            "Scanning national formulary file (this may take several minutes)...",
+            file=files["formulary"],
+        )
+        formulary_scanned = 0
         for row in _iter_rows(source, files["formulary"]):
+            formulary_scanned += 1
+            if formulary_scanned % _PROGRESS_INTERVAL == 0:
+                matched = sum(len(v) for v in formulary_drugs.values())
+                _progress(
+                    f"scanned {formulary_scanned:,} rows, "
+                    f"kept {matched:,} for selected plans",
+                    file=files["formulary"],
+                )
             fid = row.get("FORMULARY_ID", "").strip()
             if fid not in formulary_ids:
                 continue
@@ -381,9 +423,17 @@ def ingest_spuf(
             rxcui = row.get("RXCUI", "").strip()
             formulary_drugs.setdefault(fid, []).append((ndc, rxcui, tier))
 
+        matched_drugs = sum(len(v) for v in formulary_drugs.values())
+        _progress(
+            f"scan done: {formulary_scanned:,} rows scanned, "
+            f"{matched_drugs:,} drug entries kept.",
+            file=files["formulary"],
+        )
+
         # plan_key -> tier -> cost shares by channel (initial coverage, 30-day preferred)
         tier_costs: dict[str, dict[int, dict[str, dict[str, Any]]]] = {}
         if files.get("beneficiary_cost"):
+            _progress("Loading beneficiary cost shares...", file=files["beneficiary_cost"])
             for row in _iter_rows(source, files["beneficiary_cost"]):
                 contract_id = row.get("CONTRACT_ID", "").strip()
                 plan_id = row.get("PLAN_ID", "").strip()
@@ -417,12 +467,17 @@ def ingest_spuf(
                     )
 
         default_channel = "preferred_retail"
+        _progress("Inserting formulary rows into DuckDB...", file="formulary")
+        formulary_inserted = 0
         for plan_key, plan in plans.items():
             fid = plan["formulary_id"]
             if not fid or fid not in formulary_drugs:
                 continue
             plan_tiers = tier_costs.get(plan_key, {})
             for ndc, rxcui, tier in formulary_drugs[fid]:
+                formulary_inserted += 1
+                if formulary_inserted % _PROGRESS_INTERVAL == 0:
+                    _progress(f"inserted {formulary_inserted:,} rows", file="formulary")
                 share = plan_tiers.get(tier, {}).get(default_channel)
                 if share:
                     cost_type = share["cost_type"]
@@ -448,8 +503,22 @@ def ingest_spuf(
                     ],
                 )
 
+        _progress(f"inserted {formulary_inserted:,} formulary row(s).", file="formulary")
+
         if files.get("pricing"):
+            _progress(
+                "Scanning pricing file (largest step; may take 20–40 min on Starter)...",
+                file=files["pricing"],
+            )
+            pricing_scanned = 0
+            pricing_inserted = 0
             for row in _iter_rows(source, files["pricing"]):
+                pricing_scanned += 1
+                if pricing_scanned % _PROGRESS_INTERVAL == 0:
+                    _progress(
+                        f"scanned {pricing_scanned:,} rows, inserted {pricing_inserted:,}",
+                        file=files["pricing"],
+                    )
                 contract_id = row.get("CONTRACT_ID", "").strip()
                 plan_id = row.get("PLAN_ID", "").strip()
                 plan_key = f"{contract_id}-{plan_id}"
@@ -470,7 +539,14 @@ def ingest_spuf(
                     "INSERT INTO pricing VALUES (?, ?, ?, ?)",
                     [plan_key, ndc, days_supply, unit_cost],
                 )
+                pricing_inserted += 1
 
+            _progress(
+                f"done: {pricing_scanned:,} rows scanned, {pricing_inserted:,} inserted.",
+                file=files["pricing"],
+            )
+
+        _progress("Creating indexes...", file="navigator.duckdb")
         create_indexes(conn)
 
         stats = {
