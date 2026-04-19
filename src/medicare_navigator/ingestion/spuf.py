@@ -16,7 +16,7 @@ import yaml
 from medicare_navigator.config import settings
 from medicare_navigator.ingestion.manifest import load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
-from medicare_navigator.ingestion.schema import create_indexes, create_tables
+from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
 from medicare_navigator.storage.connection import DuckDBConnection
 
 # CMS SPUF beneficiary cost file column groups by pharmacy channel
@@ -33,6 +33,15 @@ BENEFICIARY_COST_FILE_HINTS = ("beneficiary cost",)
 PRICING_FILE_HINTS = ("pricing",)
 
 _PROGRESS_INTERVAL = 500_000
+_WRITE_PARTS = 10
+
+_FORMULARY_INSERT_SQL = """
+INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+_BENEFICIARY_COST_INSERT_SQL = """
+INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+_PRICING_INSERT_SQL = "INSERT INTO pricing VALUES (?, ?, ?, ?)"
 
 
 def _member_label(member: str | Path | None) -> str:
@@ -46,6 +55,51 @@ def _progress(msg: str, *, file: str | Path | None = None) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     label = _member_label(file)
     print(f"[{ts}] [{label}] {msg}", file=sys.stderr, flush=True)
+
+
+def _part_size(total: int, parts: int = _WRITE_PARTS) -> int:
+    if total <= 0:
+        return 1
+    return max(1, (total + parts - 1) // parts)
+
+
+def _insert_in_parts(
+    conn,
+    sql: str,
+    rows: Iterator[list[Any]],
+    total: int,
+    *,
+    label: str | Path,
+    parts: int = _WRITE_PARTS,
+) -> int:
+    """Insert rows with executemany in ``parts`` batches (default 10)."""
+    if total <= 0:
+        return 0
+    part_size = _part_size(total, parts)
+    batch: list[list[Any]] = []
+    part_num = 0
+    inserted = 0
+    for row in rows:
+        batch.append(row)
+        if len(batch) < part_size:
+            continue
+        part_num += 1
+        conn.executemany(sql, batch)
+        inserted += len(batch)
+        _progress(
+            f"wrote part {part_num}/{parts} ({inserted:,}/{total:,} rows)",
+            file=label,
+        )
+        batch = []
+    if batch:
+        part_num += 1
+        conn.executemany(sql, batch)
+        inserted += len(batch)
+        _progress(
+            f"wrote part {part_num}/{parts} ({inserted:,}/{total:,} rows)",
+            file=label,
+        )
+    return inserted
 
 
 @dataclass
@@ -266,18 +320,26 @@ def _purge_states(conn, states: list[str]) -> int:
         return 0
     normalized = [s.upper() for s in states]
     placeholders = ", ".join("?" * len(normalized))
-    rows = conn.execute(
-        f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})",
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM plans WHERE upper(state) IN ({placeholders})",
         normalized,
-    ).fetchall()
-    plan_keys = [row[0] for row in rows]
-    if not plan_keys:
+    ).fetchone()[0]
+    if count == 0:
         return 0
-    key_placeholders = ", ".join("?" * len(plan_keys))
+    # DuckDB can fail bulk DELETE on indexed tables ("Failed to delete all rows from
+    # index"); drop indexes first and recreate them after ingest completes.
+    drop_spuf_indexes(conn)
+    plan_subquery = f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})"
     for table in ("formulary", "beneficiary_cost", "pricing"):
-        conn.execute(f"DELETE FROM {table} WHERE plan_key IN ({key_placeholders})", plan_keys)
-    conn.execute(f"DELETE FROM plans WHERE plan_key IN ({key_placeholders})", plan_keys)
-    return len(plan_keys)
+        conn.execute(
+            f"DELETE FROM {table} WHERE plan_key IN ({plan_subquery})",
+            normalized,
+        )
+    conn.execute(
+        f"DELETE FROM plans WHERE upper(state) IN ({placeholders})",
+        normalized,
+    )
+    return count
 
 
 def _parse_as_of_from_version(version: str) -> str:
@@ -287,6 +349,97 @@ def _parse_as_of_from_version(version: str) -> str:
         d = parts[-1]
         return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
     return date.today().isoformat()
+
+
+def _count_formulary_insert_rows(
+    plans: dict[str, dict[str, Any]],
+    formulary_drugs: dict[str, list[tuple[str, str, int]]],
+) -> int:
+    return sum(
+        len(formulary_drugs[plan["formulary_id"]])
+        for plan in plans.values()
+        if plan.get("formulary_id") in formulary_drugs
+    )
+
+
+def _iter_formulary_insert_rows(
+    plans: dict[str, dict[str, Any]],
+    formulary_drugs: dict[str, list[tuple[str, str, int]]],
+    tier_costs: dict[str, dict[int, dict[str, dict[str, Any]]]],
+    *,
+    as_of: str,
+    default_channel: str = "preferred_retail",
+) -> Iterator[list[Any]]:
+    for plan_key, plan in plans.items():
+        fid = plan["formulary_id"]
+        if not fid or fid not in formulary_drugs:
+            continue
+        plan_tiers = tier_costs.get(plan_key, {})
+        for ndc, rxcui, tier in formulary_drugs[fid]:
+            share = plan_tiers.get(tier, {}).get(default_channel)
+            if share:
+                cost_type = share["cost_type"]
+                copay = share["copay"]
+                coinsurance = share["coinsurance_pct"]
+            else:
+                cost_type, copay, coinsurance = "unknown", None, None
+            yield [
+                plan_key,
+                format_ndc_display(ndc),
+                rxcui or None,
+                tier,
+                copay,
+                coinsurance,
+                cost_type,
+                default_channel,
+                as_of,
+            ]
+
+
+def _pricing_insert_row(
+    row: dict[str, str],
+    plans: dict[str, dict[str, Any]],
+) -> list[Any] | None:
+    contract_id = row.get("CONTRACT_ID", "").strip()
+    plan_id = row.get("PLAN_ID", "").strip()
+    plan_key = f"{contract_id}-{plan_id}"
+    if plan_key not in plans:
+        return None
+    ndc_raw = row.get("NDC", "").strip()
+    if not ndc_raw:
+        return None
+    try:
+        ndc = format_ndc_display(normalize_ndc(ndc_raw))
+    except ValueError:
+        return None
+    days_supply = _parse_int(row.get("DAYS_SUPPLY")) or 30
+    unit_cost = _parse_float(row.get("UNIT_COST"))
+    if unit_cost is None:
+        return None
+    return [plan_key, ndc, days_supply, unit_cost]
+
+
+def _count_pricing_rows(
+    source: Path,
+    member: str | Path | None,
+    plans: dict[str, dict[str, Any]],
+) -> int:
+    count = 0
+    for row in _iter_rows(source, member):
+        if _pricing_insert_row(row, plans) is not None:
+            count += 1
+    return count
+
+
+def _iter_pricing_insert_rows(
+    source: Path,
+    member: str | Path | None,
+    plans: dict[str, dict[str, Any]],
+) -> Iterator[list[Any]]:
+    for row in _iter_rows(source, member):
+        insert_row = _pricing_insert_row(row, plans)
+        if insert_row is not None:
+            yield insert_row
 
 
 def ingest_spuf(
@@ -432,6 +585,7 @@ def ingest_spuf(
 
         # plan_key -> tier -> cost shares by channel (initial coverage, 30-day preferred)
         tier_costs: dict[str, dict[int, dict[str, dict[str, Any]]]] = {}
+        beneficiary_cost_rows: list[list[Any]] = []
         if files.get("beneficiary_cost"):
             _progress("Loading beneficiary cost shares...", file=files["beneficiary_cost"])
             for row in _iter_rows(source, files["beneficiary_cost"]):
@@ -449,11 +603,7 @@ def ingest_spuf(
                     tier_costs.setdefault(plan_key, {}).setdefault(share["tier"], {})[
                         share["pharmacy_channel"]
                     ] = share
-
-                    conn.execute(
-                        """
-                        INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
+                    beneficiary_cost_rows.append(
                         [
                             plan_key,
                             share["tier"],
@@ -463,88 +613,59 @@ def ingest_spuf(
                             share["cost_type"],
                             share["copay"],
                             share["coinsurance_pct"],
-                        ],
+                        ]
                     )
-
-        default_channel = "preferred_retail"
-        _progress("Inserting formulary rows into DuckDB...", file="formulary")
-        formulary_inserted = 0
-        for plan_key, plan in plans.items():
-            fid = plan["formulary_id"]
-            if not fid or fid not in formulary_drugs:
-                continue
-            plan_tiers = tier_costs.get(plan_key, {})
-            for ndc, rxcui, tier in formulary_drugs[fid]:
-                formulary_inserted += 1
-                if formulary_inserted % _PROGRESS_INTERVAL == 0:
-                    _progress(f"inserted {formulary_inserted:,} rows", file="formulary")
-                share = plan_tiers.get(tier, {}).get(default_channel)
-                if share:
-                    cost_type = share["cost_type"]
-                    copay = share["copay"]
-                    coinsurance = share["coinsurance_pct"]
-                else:
-                    cost_type, copay, coinsurance = "unknown", None, None
-
-                conn.execute(
-                    """
-                    INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        plan_key,
-                        format_ndc_display(ndc),
-                        rxcui or None,
-                        tier,
-                        copay,
-                        coinsurance,
-                        cost_type,
-                        default_channel,
-                        as_of,
-                    ],
+            if beneficiary_cost_rows:
+                _progress(
+                    f"Inserting {len(beneficiary_cost_rows):,} beneficiary cost row(s) "
+                    f"in {_WRITE_PARTS} parts...",
+                    file=files["beneficiary_cost"],
+                )
+                _insert_in_parts(
+                    conn,
+                    _BENEFICIARY_COST_INSERT_SQL,
+                    iter(beneficiary_cost_rows),
+                    len(beneficiary_cost_rows),
+                    label=files["beneficiary_cost"],
                 )
 
+        default_channel = "preferred_retail"
+        formulary_total = _count_formulary_insert_rows(plans, formulary_drugs)
+        _progress(
+            f"Inserting {formulary_total:,} formulary row(s) into DuckDB in {_WRITE_PARTS} parts...",
+            file="formulary",
+        )
+        formulary_inserted = _insert_in_parts(
+            conn,
+            _FORMULARY_INSERT_SQL,
+            _iter_formulary_insert_rows(
+                plans,
+                formulary_drugs,
+                tier_costs,
+                as_of=as_of,
+                default_channel=default_channel,
+            ),
+            formulary_total,
+            label="formulary",
+        )
         _progress(f"inserted {formulary_inserted:,} formulary row(s).", file="formulary")
 
         if files.get("pricing"):
+            _progress("Counting matching pricing rows...", file=files["pricing"])
+            pricing_total = _count_pricing_rows(source, files["pricing"], plans)
             _progress(
-                "Scanning pricing file (largest step; may take 20–40 min on Starter)...",
+                f"Inserting {pricing_total:,} pricing row(s) in {_WRITE_PARTS} parts "
+                "(scanning pricing file; may take 20–40 min on Starter)...",
                 file=files["pricing"],
             )
-            pricing_scanned = 0
-            pricing_inserted = 0
-            for row in _iter_rows(source, files["pricing"]):
-                pricing_scanned += 1
-                if pricing_scanned % _PROGRESS_INTERVAL == 0:
-                    _progress(
-                        f"scanned {pricing_scanned:,} rows, inserted {pricing_inserted:,}",
-                        file=files["pricing"],
-                    )
-                contract_id = row.get("CONTRACT_ID", "").strip()
-                plan_id = row.get("PLAN_ID", "").strip()
-                plan_key = f"{contract_id}-{plan_id}"
-                if plan_key not in plans:
-                    continue
-                ndc_raw = row.get("NDC", "").strip()
-                if not ndc_raw:
-                    continue
-                try:
-                    ndc = format_ndc_display(normalize_ndc(ndc_raw))
-                except ValueError:
-                    continue
-                days_supply = _parse_int(row.get("DAYS_SUPPLY")) or 30
-                unit_cost = _parse_float(row.get("UNIT_COST"))
-                if unit_cost is None:
-                    continue
-                conn.execute(
-                    "INSERT INTO pricing VALUES (?, ?, ?, ?)",
-                    [plan_key, ndc, days_supply, unit_cost],
-                )
-                pricing_inserted += 1
-
-            _progress(
-                f"done: {pricing_scanned:,} rows scanned, {pricing_inserted:,} inserted.",
-                file=files["pricing"],
+            pricing_inserted = _insert_in_parts(
+                conn,
+                _PRICING_INSERT_SQL,
+                _iter_pricing_insert_rows(source, files["pricing"], plans),
+                pricing_total,
+                label=files["pricing"],
             )
+            _progress(f"inserted {pricing_inserted:,} pricing row(s).", file=files["pricing"])
 
         _progress("Creating indexes...", file="navigator.duckdb")
         create_indexes(conn)
