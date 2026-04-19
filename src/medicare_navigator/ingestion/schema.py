@@ -96,6 +96,20 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
     )
 
 
+SPUF_INDEX_NAMES = (
+    "idx_formulary_plan_ndc",
+    "idx_plans_state_year",
+    "idx_beneficiary_cost_lookup",
+    "idx_pricing_plan_ndc",
+)
+
+
+def drop_spuf_indexes(conn) -> None:
+    """Drop SPUF lookup indexes before bulk deletes (DuckDB ART index delete bug)."""
+    for name in SPUF_INDEX_NAMES:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+
 def create_indexes(conn) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_formulary_plan_ndc ON formulary(plan_key, ndc)"

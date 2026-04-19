@@ -5,7 +5,8 @@ from io import BytesIO
 import pytest
 
 from medicare_navigator.config import settings
-from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
+from medicare_navigator.ingestion.schema import create_indexes, create_tables
+from medicare_navigator.ingestion.spuf import IngestFilters, _purge_states, ingest_spuf
 from medicare_navigator.models.tool_result import ToolStatus
 from medicare_navigator.storage.connection import DuckDBConnection
 from medicare_navigator.storage.repository import PlanRepository
@@ -193,6 +194,37 @@ def test_ingest_spuf_merge_states_fl_then_tx(spuf_db):
     repo = PlanRepository(db=spuf_db)
     assert len(repo.list_plans(state="FL")) == 2
     assert len(repo.list_plans(state="TX")) == 1
+
+
+def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
+    conn = spuf_db.connect()
+    try:
+        create_tables(conn, drop_existing=True)
+        conn.execute(
+            "INSERT INTO plans VALUES ('H1290-013', 'H1290', '013', 'FL A', 'MA-PD', 'FL', 0, 2026, 'F1')"
+        )
+        conn.execute(
+            "INSERT INTO plans VALUES ('H1290-014', 'H1290', '014', 'FL B', 'MA-PD', 'FL', 0, 2026, 'F2')"
+        )
+        conn.execute(
+            "INSERT INTO plans VALUES ('S9999-001', 'S9999', '001', 'TX', 'PDP', 'TX', 0, 2026, 'F3')"
+        )
+        rows = [
+            [pk, f"65162-{i:04d}-34", None, 1, None, None, "unknown", "preferred_retail", "2026-01-01"]
+            for pk in ("H1290-013", "H1290-014")
+            for i in range(3000)
+        ]
+        conn.executemany(
+            "INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        create_indexes(conn)
+        purged = _purge_states(conn, ["FL"])
+        assert purged == 2
+        assert conn.execute("SELECT COUNT(*) FROM formulary").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM plans WHERE state = 'TX'").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
