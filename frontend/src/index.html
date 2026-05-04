@@ -27,7 +27,11 @@
         <label>Drug <input type="text" id="filter-drug" placeholder="e.g. metformin" /></label>
         <label>Dosage <input type="text" id="filter-dosage" placeholder="e.g. 500mg" /></label>
         <label>Plan
-          <select id="filter-plan"><option value="">— select plan —</option></select>
+          <div class="plan-row">
+            <select id="filter-plan"><option value="">— select plan —</option></select>
+            <button type="button" id="refresh-plans" class="btn-secondary" title="Reload plan list from database">Refresh</button>
+          </div>
+          <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
         </label>
         <label>Contract year
           <select id="filter-year">
@@ -77,6 +81,6 @@
     </section>
   </main>
 
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

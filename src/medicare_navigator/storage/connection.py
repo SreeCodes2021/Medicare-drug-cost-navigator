@@ -12,7 +12,9 @@ class DuckDBConnection:
         self.path = path or settings.duckdb_path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self) -> duckdb.DuckDBPyConnection:
+    def connect(self, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+        if read_only:
+            return duckdb.connect(str(self.path), read_only=True)
         return duckdb.connect(str(self.path))
 
     def execute(self, sql: str, params: list | None = None) -> duckdb.DuckDBPyConnection:
@@ -28,7 +30,7 @@ class DuckDBConnection:
             raise
 
     def fetchone(self, sql: str, params: list | None = None):
-        conn = self.connect()
+        conn = self.connect(read_only=True)
         try:
             if params:
                 return conn.execute(sql, params).fetchone()
@@ -37,7 +39,7 @@ class DuckDBConnection:
             conn.close()
 
     def fetchall(self, sql: str, params: list | None = None):
-        conn = self.connect()
+        conn = self.connect(read_only=True)
         try:
             if params:
                 return conn.execute(sql, params).fetchall()

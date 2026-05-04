@@ -10,7 +10,14 @@ const PLACEHOLDERS = {
   citations: "No source citations for this response.",
 };
 
+const PLAN_POLL_INTERVAL_MS = 20_000;
+const PLAN_POLL_MAX_ATTEMPTS = 30;
+
 const el = (id) => document.getElementById(id);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function loadDisclaimer() {
   try {
@@ -23,20 +30,62 @@ async function loadDisclaimer() {
   }
 }
 
-async function loadPlans() {
-  try {
-    const res = await fetch(`${API}/api/plans`);
-    const plans = await res.json();
-    const select = el("filter-plan");
-    plans.forEach((p) => {
-      const opt = document.createElement("option");
-      opt.value = p.plan_key;
-      opt.textContent = `${p.plan_name} (${p.plan_key})`;
-      select.appendChild(opt);
-    });
-  } catch (e) {
-    console.warn("Could not load plans", e);
+function updatePlanLoadHint(count, message) {
+  const hint = el("plan-load-hint");
+  if (message) {
+    hint.textContent = message;
+    return;
   }
+  hint.textContent = count > 0 ? `${count} plan(s) loaded` : "No plans in database yet";
+}
+
+function populatePlanSelect(plans) {
+  const select = el("filter-plan");
+  const selected = select.value;
+  while (select.options.length > 1) {
+    select.remove(1);
+  }
+  plans.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.plan_key;
+    opt.textContent = `${p.plan_name} (${p.plan_key})`;
+    select.appendChild(opt);
+  });
+  if (selected && [...select.options].some((o) => o.value === selected)) {
+    select.value = selected;
+  }
+}
+
+async function loadPlans() {
+  const res = await fetch(`${API}/api/plans`);
+  if (!res.ok) {
+    throw new Error(`plans API ${res.status}`);
+  }
+  const plans = await res.json();
+  if (!Array.isArray(plans)) {
+    throw new Error("plans API returned non-array");
+  }
+  populatePlanSelect(plans);
+  updatePlanLoadHint(plans.length);
+  return plans.length;
+}
+
+async function pollPlansUntilLoaded() {
+  for (let attempt = 0; attempt < PLAN_POLL_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const count = await loadPlans();
+      if (count > 0) {
+        return;
+      }
+    } catch (e) {
+      console.warn("Could not load plans", e);
+    }
+    if (attempt < PLAN_POLL_MAX_ATTEMPTS - 1) {
+      updatePlanLoadHint(0, "Waiting for plan data…");
+      await sleep(PLAN_POLL_INTERVAL_MS);
+    }
+  }
+  updatePlanLoadHint(0, "No plans yet — click Refresh after ingest finishes");
 }
 
 function getFilters() {
@@ -399,6 +448,20 @@ document.addEventListener("click", (event) => {
   openCitation(ref.dataset.citation);
 });
 
+el("refresh-plans").addEventListener("click", async () => {
+  const btn = el("refresh-plans");
+  btn.disabled = true;
+  updatePlanLoadHint(0, "Loading plans…");
+  try {
+    await loadPlans();
+  } catch (e) {
+    console.warn("Could not load plans", e);
+    updatePlanLoadHint(0, "Could not load plans — try again shortly");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 loadDisclaimer();
-loadPlans();
+pollPlansUntilLoaded();
 updateFilterBadge();

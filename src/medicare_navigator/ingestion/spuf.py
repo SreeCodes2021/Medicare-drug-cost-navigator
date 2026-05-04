@@ -34,6 +34,7 @@ PRICING_FILE_HINTS = ("pricing",)
 
 _PROGRESS_INTERVAL = 500_000
 _WRITE_PARTS = 10
+_FORMULARY_WRITE_PARTS = 100
 
 _FORMULARY_INSERT_SQL = """
 INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -632,7 +633,8 @@ def ingest_spuf(
         default_channel = "preferred_retail"
         formulary_total = _count_formulary_insert_rows(plans, formulary_drugs)
         _progress(
-            f"Inserting {formulary_total:,} formulary row(s) into DuckDB in {_WRITE_PARTS} parts...",
+            f"Inserting {formulary_total:,} formulary row(s) into DuckDB "
+            f"in {_FORMULARY_WRITE_PARTS} parts...",
             file="formulary",
         )
         formulary_inserted = _insert_in_parts(
@@ -647,6 +649,7 @@ def ingest_spuf(
             ),
             formulary_total,
             label="formulary",
+            parts=_FORMULARY_WRITE_PARTS,
         )
         _progress(f"inserted {formulary_inserted:,} formulary row(s).", file="formulary")
 
