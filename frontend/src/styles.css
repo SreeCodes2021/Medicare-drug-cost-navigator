@@ -101,6 +101,41 @@ body {
   color: var(--muted);
 }
 
+.plan-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.plan-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-secondary {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.plan-load-hint {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.2rem;
+  min-height: 1rem;
+}
+
 .filters-body input, .filters-body select {
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);

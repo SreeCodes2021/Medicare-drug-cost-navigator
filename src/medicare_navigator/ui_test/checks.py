@@ -22,6 +22,8 @@ REQUIRED_ELEMENT_IDS = [
     "filter-drug",
     "filter-dosage",
     "filter-plan",
+    "refresh-plans",
+    "plan-load-hint",
     "filter-year",
     "filter-ytd",
     "filter-alternatives",
