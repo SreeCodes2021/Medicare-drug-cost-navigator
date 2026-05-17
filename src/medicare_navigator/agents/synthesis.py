@@ -5,6 +5,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
+from medicare_navigator.agents.policy import filter_policy_claims
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.source_catalog import (
     formulary_citation_claim,
@@ -190,9 +191,34 @@ def _trend_context_sentence(drug_name: str, points: list[CostTrendPoint]) -> str
     )
 
 
+def _policy_citation_for_claim(
+    claim: dict,
+    tool_artifacts: dict[str, ToolResult],
+) -> Citation:
+    retrieval = tool_artifacts.get("policy_retrieval")
+    as_of = retrieval.as_of_date if retrieval else "2026-01-15"
+    url = url_for_source_id("cms_policy_corpus")
+    label = label_for_source_id("cms_policy_corpus")
+    if retrieval and retrieval.data:
+        for passage in retrieval.data:
+            pid = passage.get("passage_id")
+            if pid == claim.get("source_id") or claim.get("claim", "") in passage.get("text", ""):
+                url = passage.get("url") or url
+                label = passage.get("source_label") or label
+                break
+    return Citation(
+        claim=claim["claim"],
+        source_id="cms_policy_corpus",
+        as_of_date=as_of,
+        source_label=label,
+        url=url,
+    )
+
+
 def _explain_cost_change_answer(
     parsed_query: ParsedQuery,
     tool_artifacts: dict[str, ToolResult],
+    policy_claims: list[dict] | None = None,
 ) -> tuple[str, list[Citation]] | None:
     if not _is_cost_change_query(parsed_query):
         return None
@@ -293,6 +319,16 @@ def _explain_cost_change_answer(
             "Share your year-to-date Part D out-of-pocket spending for a more precise answer."
         )
 
+    if policy_claims:
+        filtered = filter_policy_claims(
+            policy_claims,
+            parsed_query.drug_name,
+            tool_artifacts,
+        )
+        for claim in filtered[:2]:
+            sentences.append(claim["claim"])
+            citations.append(_policy_citation_for_claim(claim, tool_artifacts))
+
     return " ".join(sentences), citations
 
 
@@ -318,7 +354,7 @@ def _deterministic_explanation(
     if follow_up:
         return follow_up
 
-    cost_change = _explain_cost_change_answer(parsed_query, tool_artifacts)
+    cost_change = _explain_cost_change_answer(parsed_query, tool_artifacts, policy_claims)
     if cost_change:
         return cost_change
 
@@ -430,7 +466,7 @@ async def run_synthesis_agent(
             explanation = f"{explanation}\n\n{settings.disclaimer_text}"
         return explanation, citations, "Deterministic follow-up (synthesis)"
 
-    cost_change = _explain_cost_change_answer(parsed_query, tool_artifacts)
+    cost_change = _explain_cost_change_answer(parsed_query, tool_artifacts, policy_claims)
     if cost_change:
         explanation, citations = cost_change
         if settings.disclaimer_text not in explanation:

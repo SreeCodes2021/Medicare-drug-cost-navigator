@@ -1,7 +1,10 @@
 import pytest
 
+from medicare_navigator.config import settings
+from medicare_navigator.ingestion.schema import ensure_schema
 from medicare_navigator.mcp.registry import call_tool, tool_names
 from medicare_navigator.mcp.schemas import openai_tools
+from medicare_navigator.storage.connection import DuckDBConnection
 from tests.spuf_fixture import NDC_METFORMIN, PLAN_FL_MAPD, PLAN_FL_PDP
 
 
@@ -46,3 +49,30 @@ async def test_mcp_formulary_matches_direct():
     )
     assert direct["status"] == "ok"
     assert direct["data"]["tier"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mcp_policy_retrieval_ok_after_seed():
+    result = await call_tool("policy_retrieval", {"query_text": "deductible"})
+    assert result["status"] == "ok"
+    assert result["source_id"] == "cms_policy_corpus"
+    assert result["data"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_policy_retrieval_no_match_empty(tmp_path, monkeypatch):
+    data_dir = tmp_path / "empty"
+    data_dir.mkdir()
+    duckdb_path = data_dir / "empty.duckdb"
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.setattr(settings, "duckdb_path", duckdb_path)
+    monkeypatch.setattr(settings, "chroma_path", data_dir / "chroma")
+    ensure_schema(DuckDBConnection(path=duckdb_path))
+    result = await call_tool("policy_retrieval", {"query_text": "deductible"})
+    assert result["status"] == "no_match"
+
+
+@pytest.mark.asyncio
+async def test_mcp_policy_retrieval_query_text_required():
+    result = await call_tool("policy_retrieval", {})
+    assert result["status"] in ("no_match", "ok")

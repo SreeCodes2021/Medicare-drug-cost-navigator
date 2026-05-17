@@ -1,6 +1,5 @@
 import pytest
 
-from medicare_navigator.agents.policy import filter_policy_claims
 from medicare_navigator.agents.synthesis import _explain_cost_change_answer
 from medicare_navigator.models.query import ParsedQuery
 from medicare_navigator.models.response import CostTrendPoint, FormularyResult
@@ -93,6 +92,64 @@ def test_explain_cost_change_invites_ytd_when_assumed():
     assert "share your year-to-date" in explanation.lower()
 
 
+def test_explain_cost_change_appends_policy_claims():
+    claims = [
+        {
+            "claim": "During the deductible phase you pay the full drug cost until it is met.",
+            "source_id": "part_d_deductible_phase",
+        }
+    ]
+    explanation, citations = _explain_cost_change_answer(
+        _parsed(), _tool_artifacts(), policy_claims=claims
+    )
+    assert "deductible phase" in explanation.lower()
+    assert any(c.source_id == "cms_policy_corpus" for c in citations)
+
+
+def test_explain_cost_change_policy_citations_added():
+    claims = [
+        {
+            "claim": "Initial coverage uses tier copays.",
+            "source_id": "part_d_initial_coverage",
+        }
+    ]
+    _, citations = _explain_cost_change_answer(
+        _parsed(), _tool_artifacts(), policy_claims=claims
+    )
+    assert any(c.source_id == "cms_policy_corpus" for c in citations)
+
+
+def test_explain_cost_change_caps_policy_claims_at_two():
+    claims = [
+        {"claim": f"Policy claim {i}.", "source_id": "part_d_deductible_phase"}
+        for i in range(4)
+    ]
+    explanation, _ = _explain_cost_change_answer(
+        _parsed(), _tool_artifacts(), policy_claims=claims
+    )
+    assert explanation.count("Policy claim") <= 2
+
+
+def test_explain_cost_change_policy_claims_filtered():
+    claims = [
+        {"claim": "IRA negotiation may change costs.", "source_id": "ira_negotiated_prices"},
+        {"claim": "Benefit phases affect what you pay.", "source_id": "part_d_deductible_phase"},
+    ]
+    explanation, _ = _explain_cost_change_answer(
+        _parsed(), _tool_artifacts(), policy_claims=claims
+    )
+    assert "ira" not in explanation.lower()
+    assert "benefit phases" in explanation.lower()
+
+
+def test_explain_cost_change_without_policy_claims_unchanged():
+    with_claims, _ = _explain_cost_change_answer(
+        _parsed(), _tool_artifacts(), policy_claims=None
+    )
+    without, _ = _explain_cost_change_answer(_parsed(), _tool_artifacts())
+    assert with_claims == without
+
+
 def test_explain_cost_change_with_provided_ytd():
     form = _lisinopril_formulary(ytd_oop_spend=400.0, ytd_oop_spend_assumed=False)
     explanation, _ = _explain_cost_change_answer(
@@ -109,25 +166,6 @@ def test_lisinopril_not_ira_negotiated():
     assert is_ira_negotiated("eliquis")
 
 
-def test_filter_policy_claims_drops_ira_for_generic():
-    claims = [
-        {"claim": "IRA negotiation may change costs.", "source_id": "ira_negotiated_prices"},
-        {"claim": "Benefit phases affect what you pay.", "source_id": "cms_part_d_redesign_2026"},
-        {"claim": "A formulary tier change can increase cost sharing.", "source_id": "formulary_tier_explanation"},
-    ]
-    filtered = filter_policy_claims(claims, "lisinopril", {})
-    assert len(filtered) == 1
-    assert filtered[0]["source_id"] == "cms_part_d_redesign_2026"
-
-
-def test_filter_policy_claims_keeps_ira_for_eliquis():
-    claims = [
-        {"claim": "IRA negotiation may change costs for selected drugs.", "source_id": "ira_negotiated_prices"},
-    ]
-    filtered = filter_policy_claims(claims, "eliquis", {})
-    assert len(filtered) == 1
-
-
 @pytest.mark.asyncio
 async def test_pipeline_lisinopril_cost_change_end_to_end(spuf_db):
     response = await orchestrator.run(f"why did lisinopril cost go up on plan {PLAN_FL_PDP}")
@@ -136,4 +174,5 @@ async def test_pipeline_lisinopril_cost_change_end_to_end(spuf_db):
     lower = response.explanation.lower()
     assert "assuming $0" in lower or "lisinopril" in lower
     assert "ira" not in lower
-    assert "policy" not in response.agents_invoked
+    assert "policy" in response.agents_invoked
+    assert "policy_retrieval" in response.tools_invoked

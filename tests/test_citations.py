@@ -147,3 +147,15 @@ def test_enrich_citations_adds_policy_url_for_matching_claim():
     enriched = enrich_citations(citations, artifacts)
 
     assert enriched[0].url == "https://www.cms.gov/files/document/methodology-spuf-2025.pdf"
+
+
+def test_build_citations_from_policy_retrieval_after_hybrid(spuf_db):
+    from medicare_navigator.tools.policy_retrieval import policy_retrieval
+
+    result = policy_retrieval("deductible phase")
+    assert result.status.value == "ok"
+    artifacts = {"policy_retrieval": result.model_dump()}
+    citations = build_citations_from_artifacts(artifacts)
+    assert citations
+    assert all(c.source_id == "cms_policy_corpus" for c in citations)
+    assert all(c.url for c in citations)

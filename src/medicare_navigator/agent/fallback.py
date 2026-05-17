@@ -103,7 +103,19 @@ def _parse_message(message: str) -> ParsedMessage:
         k in text for k in ("trend", "went up", "go up", "increase", "change", "why")
     )
     parsed.wants_alternatives = "alternative" in text
-    parsed.wants_policy = "explain" in text and "cost" in text
+    parsed.wants_policy = any(
+        k in text
+        for k in (
+            "why",
+            "explain",
+            "went up",
+            "go up",
+            "phase",
+            "deductible",
+            "coverage gap",
+            "catastrophic",
+        )
+    )
 
     return parsed
 
@@ -144,6 +156,28 @@ def _format_supply_section(form_data: dict) -> list[str]:
     for assumption in supply.get("assumptions") or []:
         lines.append(f"Assumption: {assumption}")
     return lines
+
+
+async def _append_policy_passages(
+    message: str,
+    drug_name: str,
+    parsed: ParsedMessage,
+    tool_artifacts: dict[str, dict[str, Any]],
+    tools_invoked: list[str],
+    parts: list[str],
+) -> None:
+    if not (parsed.wants_policy or parsed.wants_trend):
+        return
+    query = f"Explain cost factors for {drug_name} message={message}"
+    policy = await call_tool("policy_retrieval", {"query_text": query})
+    tool_artifacts["policy_retrieval"] = policy
+    if "policy_retrieval" not in tools_invoked:
+        tools_invoked.append("policy_retrieval")
+    if policy.get("status") == "ok" and policy.get("data"):
+        for passage in policy["data"][:2]:
+            text = (passage.get("text") or "").strip()
+            if text:
+                parts.append(text)
 
 
 async def run_fallback_navigator(
@@ -285,6 +319,10 @@ async def run_fallback_navigator(
     if alts and alts.get("status") == "ok" and alts.get("data"):
         names = ", ".join(a["drug_name"] for a in alts["data"][:3])
         parts.append(f"Therapeutically equivalent alternatives include: {names}.")
+
+    await _append_policy_passages(
+        message, drug_name, parsed, tool_artifacts, tools_invoked, parts
+    )
 
     if not parts:
         parts.append("I retrieved data for your query but could not build a supported summary.")

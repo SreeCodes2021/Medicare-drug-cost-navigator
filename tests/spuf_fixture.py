@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.policy_corpus import ingest_policy_corpus
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 from medicare_navigator.storage.connection import DuckDBConnection
 
@@ -40,10 +41,24 @@ def _seed_test_drugs(db: DuckDBConnection) -> None:
         conn.close()
 
 
+def seed_policy_corpus(
+    data_dir: Path,
+    duckdb_path: Path | None = None,
+) -> None:
+    """Load curated policy passages for offline retrieval tests."""
+    duckdb_path = duckdb_path or data_dir / "navigator.duckdb"
+    chroma_path = data_dir / "chroma"
+    ingest_policy_corpus(
+        db=DuckDBConnection(path=duckdb_path),
+        chroma_path=chroma_path,
+    )
+
+
 def load_spuf_fixture(
     *,
     data_dir: Path,
     duckdb_path: Path | None = None,
+    seed_policy: bool = True,
 ) -> None:
     """Ingest minimal SPUF fixture into the given data directory."""
     duckdb_path = duckdb_path or data_dir / "navigator.duckdb"
@@ -62,6 +77,8 @@ def load_spuf_fixture(
         preserve_non_spuf_tables=True,
     )
     _seed_test_drugs(db)
+    if seed_policy:
+        seed_policy_corpus(data_dir, duckdb_path)
 
 
 def patch_settings(monkeypatch, data_dir: Path, duckdb_path: Path | None = None) -> Path:
