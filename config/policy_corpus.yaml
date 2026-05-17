@@ -1,0 +1,113 @@
+# CMS-aligned policy passages for policy_retrieval (Part D benefit design).
+as_of: "2026-01-15"
+
+passages:
+  - passage_id: part_d_deductible_phase
+    text: >
+      During the deductible phase of Medicare Part D, beneficiaries pay the full
+      negotiated price for covered drugs until they meet the plan's annual deductible.
+      Cost-sharing copays or coinsurance for formulary tiers do not apply until the
+      deductible is satisfied.
+    source_label: CMS Part D Benefit Design
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"
+
+  - passage_id: part_d_initial_coverage
+    text: >
+      During initial coverage, beneficiaries pay a copayment or coinsurance amount
+      based on the drug's formulary tier rather than the full drug cost. Plans
+      assign each covered drug to a tier that determines the member's cost share.
+    source_label: CMS Part D Benefit Design
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"
+
+  - passage_id: part_d_catastrophic_coverage
+    text: >
+      After a beneficiary's true out-of-pocket spending reaches the annual threshold,
+      they enter catastrophic coverage. In catastrophic coverage, cost-sharing for
+      covered Part D drugs is limited and many beneficiaries pay $0 for covered drugs.
+    source_label: CMS CY 2026 Part D Redesign Instructions
+    url: https://www.cms.gov/newsroom/fact-sheets/final-cy-2026-part-d-redesign-program-instructions
+    as_of_date: "2026-01-15"
+
+  - passage_id: part_d_oop_threshold_2026
+    text: >
+      For contract year 2026, the Part D annual out-of-pocket threshold is $2,100.
+      Once a beneficiary reaches this amount in true out-of-pocket costs, they move
+      into catastrophic coverage for the remainder of the benefit year.
+    source_label: CMS CY 2026 Part D Redesign Instructions
+    url: https://www.cms.gov/newsroom/fact-sheets/final-cy-2026-part-d-redesign-program-instructions
+    as_of_date: "2026-01-15"
+
+  - passage_id: formulary_tier_explanation
+    text: >
+      Medicare Part D plans place drugs on formulary tiers. Each tier has a different
+      level of cost sharing. A higher tier generally means higher member cost, but
+      tier placement is plan-specific and can change when formularies are updated.
+    source_label: CMS SPUF Methodology
+    url: https://www.cms.gov/files/document/methodology-spuf-2025.pdf
+    as_of_date: "2026-01-15"
+
+  - passage_id: ira_negotiated_prices
+    text: >
+      The Inflation Reduction Act Medicare Drug Price Negotiation Program establishes
+      Maximum Fair Prices for selected Part D drugs. Negotiated prices may affect
+      program spending but plan-specific member cost sharing still depends on formulary
+      tier and benefit phase.
+    source_label: CMS Medicare Drug Price Negotiation Program
+    url: https://www.cms.gov/medicare/medicare-drug-price-negotiation
+    as_of_date: "2026-01-15"
+
+  - passage_id: non_covered_formulary
+    text: >
+      If a drug is not on a plan's formulary, the plan does not cover it under Part D
+      benefits. Deductible, initial coverage, and catastrophic cost-sharing rules do
+      not apply to drugs that are not covered on the formulary.
+    source_label: CMS Part D Formulary Guidance
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"
+
+  - passage_id: ytd_oop_tracking
+    text: >
+      A beneficiary's year-to-date out-of-pocket spending determines which benefit
+      phase applies. Without knowing YTD spend, benefit phase estimates assume zero
+      dollars spent so far in the calendar year.
+    source_label: CMS Part D Benefit Design
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"
+
+  - passage_id: national_spending_trends
+    text: >
+      CMS publishes national Medicare Part D spending and average unit cost trends by
+      drug. Rising program average unit cost does not by itself mean a member's plan
+      copay changed; member cost depends on tier and benefit phase on their plan.
+    source_label: CMS Medicare Part D Drug Spending
+    url: https://data.cms.gov/summary-statistics-on-use-and-payments/medicare-medicaid-spending-by-drug/medicare-part-d-spending-by-drug
+    as_of_date: "2026-01-15"
+
+  - passage_id: coverage_gap_redesign
+    text: >
+      Under the Part D benefit redesign, the coverage gap (donut hole) has been
+      replaced with a structure where beneficiaries continue cost sharing during
+      initial coverage until they reach the annual out-of-pocket threshold.
+    source_label: CMS CY 2026 Part D Redesign Instructions
+    url: https://www.cms.gov/newsroom/fact-sheets/final-cy-2026-part-d-redesign-program-instructions
+    as_of_date: "2026-01-15"
+
+  - passage_id: pharmacy_channel_cost_share
+    text: >
+      Part D plans may set different cost sharing for preferred retail, standard
+      retail, and mail-order pharmacy channels. The beneficiary's copay depends on
+      which pharmacy channel and days supply apply to the fill.
+    source_label: CMS Part D Benefit Design
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"
+
+  - passage_id: generic_vs_brand_tiers
+    text: >
+      Generic drugs are often placed on lower formulary tiers than brand-name drugs,
+      which typically means lower copays. However, tier placement is determined by
+      each plan's formulary and is not guaranteed across plans.
+    source_label: CMS Part D Formulary Guidance
+    url: https://www.cms.gov/medicare/prescription-drug-coverage
+    as_of_date: "2026-01-15"

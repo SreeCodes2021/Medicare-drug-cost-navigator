@@ -219,8 +219,17 @@ class Orchestrator:
                 data_as_of["alternatives"] = alt_result.as_of_date
 
         policy_claims = None
+        _POLICY_KEYWORDS = (
+            "why",
+            "explain",
+            "phase",
+            "deductible",
+            "coverage gap",
+            "catastrophic",
+        )
         needs_policy = (
-            "explain_cost_change" not in parsed.intents and "explain" in message.lower()
+            "explain_cost_change" in parsed.intents
+            or any(kw in message.lower() for kw in _POLICY_KEYWORDS)
         )
         if needs_policy and not reuse_artifacts:
             agents_invoked.append("policy")
