@@ -100,8 +100,6 @@ async def run_clarification_agent(
     chat_history: list[dict] | None = None,
 ) -> tuple[str, str]:
     fallback = _deterministic_clarification(intake)
-    if not llm_client._has_credentials():
-        return fallback, llm_client.fallback_label("clarification")
 
     history_block = _format_chat_history(chat_history)
     user_prompt_parts = []
@@ -118,11 +116,11 @@ async def run_clarification_agent(
 
     text = (llm_out.message or "").strip()
     if not text:
-        return fallback, llm_client.fallback_label("clarification")
+        return fallback, llm_client.model_label()
 
     lowered = text.lower()
     if any(word in lowered for word in ("tier", "copay", "covered", "not covered", "eligible")):
-        return fallback, llm_client.fallback_label("clarification")
+        return fallback, llm_client.model_label()
 
     allowed_names = {
         (_format_candidate(c) or "").lower()
@@ -135,6 +133,6 @@ async def run_clarification_agent(
         invented = re.findall(r"did you mean ([a-z0-9 -]+)\??", lowered)
         for guess in invented:
             if guess.strip() not in allowed_names:
-                return fallback, llm_client.fallback_label("clarification")
+                return fallback, llm_client.model_label()
 
     return text, llm_client.model_label()

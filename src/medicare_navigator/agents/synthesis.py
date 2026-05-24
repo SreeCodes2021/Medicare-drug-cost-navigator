@@ -498,9 +498,9 @@ async def run_synthesis_agent(
         parsed_query, tool_artifacts, policy_claims
     )
 
-    response_source = llm_client.fallback_label("synthesis")
+    response_source = llm_client.model_label()
 
-    if llm_client._has_credentials() and llm_out.citations:
+    if llm_out.citations:
         citations = [
             Citation(claim=c.claim, source_id=c.source_id, as_of_date=c.as_of_date or "2026-01-15")
             for c in llm_out.citations

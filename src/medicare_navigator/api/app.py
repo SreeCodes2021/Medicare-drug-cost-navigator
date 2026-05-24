@@ -4,12 +4,14 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from medicare_navigator.config import settings
+from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
 from medicare_navigator.models.query import QuerySlots
 from medicare_navigator.models.response import ChatResponse
 from medicare_navigator.orchestrator.router import orchestrator
@@ -75,14 +77,22 @@ async def health():
     from medicare_navigator.llm.client import llm_client
 
     freshness = data_freshness_summary()
-    return {
-        "status": "ok",
+    llm_ok = llm_client.is_available()
+    body = {
+        "status": "ok" if llm_ok else "degraded",
         "version": "0.1.0",
-        "llm_configured": llm_client._has_credentials(),
-        "llm_source": llm_client.model_label() if llm_client._has_credentials() else llm_client.fallback_label("navigator"),
+        "llm_configured": llm_ok,
+        "llm_source": llm_client.model_label(),
         "navigator_mode": settings.navigator_mode,
         **freshness,
     }
+    if not llm_ok:
+        body["error"] = (
+            "LLM API key is not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY "
+            "matching LLM_PROVIDER."
+        )
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/api/meta/as-of")
@@ -117,16 +127,26 @@ async def query(req: QueryRequest):
     if req.ytd_oop_spend is not None:
         message = f"{message} spent ${req.ytd_oop_spend} YTD".strip()
 
-    response = await orchestrator.run(message=message, filter_slots=filters, session_id=req.session_id)
+    try:
+        response = await orchestrator.run(message=message, filter_slots=filters, session_id=req.session_id)
+    except LLMNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return response
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     filters = _filters_to_slots(req.filters, req.message)
-    response = await orchestrator.run(
-        message=req.message, filter_slots=filters, session_id=req.session_id
-    )
+    try:
+        response = await orchestrator.run(
+            message=req.message, filter_slots=filters, session_id=req.session_id
+        )
+    except LLMNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     from medicare_navigator.session.manager import session_manager
 
     session = session_manager.get_or_create(response.session_id)

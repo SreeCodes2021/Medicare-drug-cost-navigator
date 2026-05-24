@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     max_tool_rounds: int = 8
     navigator_mode: str = "mcp_agent"
 
+    llm_mock_mode: bool = Field(default=False, validation_alias="LLM_MOCK")
+    llm_timeout_seconds: float = Field(default=60.0, validation_alias="LLM_TIMEOUT_SECONDS")
+    llm_max_retries: int = Field(default=2, validation_alias="LLM_MAX_RETRIES")
+
     project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property

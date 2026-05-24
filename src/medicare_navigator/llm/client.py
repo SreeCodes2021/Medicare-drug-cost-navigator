@@ -1,37 +1,22 @@
 from __future__ import annotations
 
-import json
-import re
-from dataclasses import dataclass, field
+import asyncio
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from medicare_navigator.config import settings
+from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
+from medicare_navigator.llm.mock import mock_chat_with_tools, mock_structured_completion
+from medicare_navigator.llm.types import ChatWithToolsResult, ToolCallSpec
 
 T = TypeVar("T", bound=BaseModel)
 
-_FOLLOW_UP_COUNT_RE = re.compile(
-    r"only one|how many alternative|did you find|just one|any other alternative|is that all",
-    re.I,
-)
-
-
-@dataclass
-class ToolCallSpec:
-    id: str
-    name: str
-    arguments: dict[str, Any]
-
-
-@dataclass
-class ChatWithToolsResult:
-    content: str | None
-    tool_calls: list[ToolCallSpec] = field(default_factory=list)
+__all__ = ["LLMClient", "llm_client", "ChatWithToolsResult", "ToolCallSpec"]
 
 
 class LLMClient:
-    """Provider-agnostic LLM adapter with deterministic fallback when no API key."""
+    """Provider-agnostic LLM adapter. Requires API credentials or explicit mock mode."""
 
     def __init__(self) -> None:
         self.provider = settings.llm_provider.lower()
@@ -42,11 +27,21 @@ class LLMClient:
             return bool(settings.openai_api_key)
         return bool(settings.anthropic_api_key)
 
-    def model_label(self) -> str:
-        return f"{self.provider}/{self.model}"
+    def is_available(self) -> bool:
+        return self._has_credentials() or settings.llm_mock_mode
 
-    def fallback_label(self, agent_name: str = "agent") -> str:
-        return f"Deterministic fallback ({agent_name})"
+    def require_available(self) -> None:
+        if not self.is_available():
+            provider = settings.llm_provider
+            raise LLMNotConfiguredError(
+                f"LLM is not configured. Set {provider.upper()}_API_KEY "
+                f"(provider={provider}) or enable LLM_MOCK=1 for local testing."
+            )
+
+    def model_label(self) -> str:
+        if settings.llm_mock_mode:
+            return f"mock/{self.provider}/{self.model}"
+        return f"{self.provider}/{self.model}"
 
     async def structured_completion(
         self,
@@ -55,9 +50,51 @@ class LLMClient:
         response_model: type[T],
         agent_name: str = "agent",
     ) -> T:
-        if not self._has_credentials():
-            return self._fallback_structured(user_prompt, response_model, agent_name)
+        self.require_available()
+        if settings.llm_mock_mode:
+            return mock_structured_completion(user_prompt, response_model, agent_name)
 
+        return await self._with_retry(
+            lambda: self._structured_completion_live(
+                system_prompt, user_prompt, response_model
+            )
+        )
+
+    async def chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatWithToolsResult:
+        self.require_available()
+        if settings.llm_mock_mode:
+            return await mock_chat_with_tools(system_prompt, messages, tools)
+
+        return await self._with_retry(
+            lambda: self._chat_with_tools_live(system_prompt, messages, tools)
+        )
+
+    async def _with_retry(self, coro_factory):
+        last_exc: Exception | None = None
+        for attempt in range(settings.llm_max_retries + 1):
+            try:
+                return await asyncio.wait_for(
+                    coro_factory(), timeout=settings.llm_timeout_seconds
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt < settings.llm_max_retries:
+                    await asyncio.sleep(0.5 * (2**attempt))
+        raise LLMRequestError(
+            f"LLM request failed after {settings.llm_max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc
+
+    async def _structured_completion_live(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+    ) -> T:
         import instructor
 
         if self.provider == "openai":
@@ -84,15 +121,12 @@ class LLMClient:
             response_model=response_model,
         )
 
-    async def chat_with_tools(
+    async def _chat_with_tools_live(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ChatWithToolsResult:
-        if not self._has_credentials():
-            raise RuntimeError("chat_with_tools requires LLM API credentials")
-
         if self.provider == "openai":
             return await self._openai_chat_with_tools(system_prompt, messages, tools)
         return await self._anthropic_chat_with_tools(system_prompt, messages, tools)
@@ -103,6 +137,8 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ChatWithToolsResult:
+        import json
+
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -155,149 +191,6 @@ class LLMClient:
                 )
         content = "\n".join(text_parts).strip() or None
         return ChatWithToolsResult(content=content, tool_calls=tool_calls)
-
-    def _fallback_structured(
-        self, user_prompt: str, response_model: type[T], agent_name: str
-    ) -> T:
-        """Rule-based fallback for local dev without API keys."""
-        if response_model.__name__ == "IntakeLLMOutput":
-            return self._fallback_intake(user_prompt, response_model)
-        if response_model.__name__ == "PolicyLLMOutput":
-            return self._fallback_policy(user_prompt, response_model)
-        if response_model.__name__ == "SynthesisLLMOutput":
-            return self._fallback_synthesis(user_prompt, response_model)
-        if response_model.__name__ == "ClarificationLLMOutput":
-            return response_model.model_validate({"message": ""})
-        return response_model.model_validate({})
-
-    def _fallback_intake(self, user_prompt: str, model: type[T]) -> T:
-        import re
-
-        text = user_prompt.lower()
-        current_message = user_prompt
-        if "current message:" in text:
-            current_message = user_prompt.split("Current message:", 1)[-1].split("\n", 1)[0]
-            text = current_message.lower()
-
-        drug = None
-        dosage = None
-        plan_id = None
-        ytd = None
-        intents = ["tier_lookup"]
-        is_follow_up = "recent conversation:" in user_prompt.lower()
-        follow_up_type = None
-
-        if is_follow_up and _FOLLOW_UP_COUNT_RE.search(current_message):
-            follow_up_type = "clarify_count"
-            intents = ["alternatives"]
-
-        if follow_up_type != "clarify_count":
-            for name in ["metformin", "lisinopril", "atorvastatin", "omeprazole", "eliquis", "januvia", "lipitor"]:
-                if name in text:
-                    drug = name
-                    break
-
-            if not drug:
-                for_match = re.search(r"\bfor\s+([a-zA-Z][a-zA-Z0-9-]*)", current_message, re.I)
-                if for_match:
-                    drug = for_match.group(1).lower()
-
-            if not drug:
-                stop = {
-                    "plan",
-                    "spent",
-                    "show",
-                    "what",
-                    "tier",
-                    "copay",
-                    "alternatives",
-                    "alternative",
-                    "cost",
-                    "the",
-                    "for",
-                    "and",
-                    "only",
-                    "find",
-                    "many",
-                    "that",
-                    "have",
-                    "you",
-                    "did",
-                    "eligible",
-                    "eligibility",
-                    "filling",
-                    "cover",
-                    "covered",
-                }
-                tokens = re.findall(r"[a-zA-Z]{4,}", current_message)
-                for token in tokens:
-                    if token.lower() not in stop:
-                        drug = token.lower()
-                        break
-
-        dose_match = re.search(r"(\d+)\s*mg", text)
-        if dose_match:
-            dosage = f"{dose_match.group(1)}mg"
-
-        plan_match = re.search(r"plan\s+([A-Za-z0-9]+-\d{3})", text, re.I)
-        if not plan_match:
-            plan_match = re.search(r"[A-Za-z]\d{4}-\d{3}", text, re.I)
-        if plan_match:
-            plan_id = plan_match.group(1).upper() if plan_match.lastindex else plan_match.group(0).upper()
-
-        spend_patterns = [
-            r"spent\s+\$?\s*(\d+(?:\.\d+)?)",
-            r"\$(\d+(?:\.\d+)?)\s+ytd",
-        ]
-        for pattern in spend_patterns:
-            spend_match = re.search(pattern, text)
-            if spend_match:
-                ytd = float(spend_match.group(1))
-                break
-
-        if "alternative" in text:
-            intents = ["alternatives"]
-        elif "why" in text or "change" in text or "went up" in text:
-            intents = ["explain_cost_change"]
-        else:
-            intents = ["tier_lookup"]
-
-        return model.model_validate(
-            {
-                "drug": drug,
-                "dosage": dosage,
-                "plan_id": plan_id,
-                "ytd_oop_spend": ytd,
-                "intents": intents,
-                "confidence": 0.8 if drug else 0.2,
-                "is_follow_up": is_follow_up,
-                "follow_up_type": follow_up_type,
-            }
-        )
-
-    def _fallback_policy(self, user_prompt: str, model: type[T]) -> T:
-        return model.model_validate(
-            {
-                "claims": [
-                    {
-                        "claim": "Part D benefit phases and tier placement affect what beneficiaries pay.",
-                        "source_id": "cms_part_d_redesign_2026",
-                    }
-                ]
-            }
-        )
-
-    def _fallback_synthesis(self, user_prompt: str, model: type[T]) -> T:
-        return model.model_validate(
-            {
-                "explanation": (
-                    "Based on the retrieved government data for your query, the drug's formulary tier "
-                    "and cost-sharing apply under your plan's benefit phase. See the structured results "
-                    "and citations for specific figures."
-                ),
-                "citations": [],
-            }
-        )
 
 
 llm_client = LLMClient()

@@ -5,11 +5,11 @@ import time
 import uuid
 from typing import Any
 
-from medicare_navigator.agent.fallback import run_fallback_navigator
 from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
 from medicare_navigator.llm.client import llm_client
+from medicare_navigator.llm.errors import LLMRequestError
 from medicare_navigator.mcp.registry import call_tool, tool_result_json
 from medicare_navigator.mcp.schemas import anthropic_tools, openai_tools
 from medicare_navigator.models.query import QuerySlots
@@ -189,21 +189,15 @@ class Navigator:
 
         session_manager.increment_turn(session)
 
-        if not llm_client._has_credentials():
-            explanation, tool_artifacts, tools_invoked = await run_fallback_navigator(
-                message, filter_slots, chat_history
-            )
-            response_source = llm_client.fallback_label("navigator")
-        else:
-            explanation, tool_artifacts, tools_invoked, response_source = (
-                await self._run_agent_loop(message, filter_slots, chat_history)
-            )
+        explanation, tool_artifacts, tools_invoked, response_source = (
+            await self._run_agent_loop(message, filter_slots, chat_history)
+        )
 
         citations = build_citations_from_artifacts(tool_artifacts)
         explanation, citations, guard_errors = apply_guardrails(
             explanation, tool_artifacts, citations
         )
-        if guard_errors and llm_client._has_credentials():
+        if guard_errors:
             retry_explanation, retry_citations, _ = await self._retry_after_guardrail(
                 message,
                 filter_slots,
@@ -349,11 +343,8 @@ class Navigator:
                 break
 
         if not explanation:
-            explanation, tool_artifacts, tools_invoked = await run_fallback_navigator(
-                message, filter_slots, chat_history
-            )
-            return explanation, tool_artifacts, tools_invoked, llm_client.fallback_label(
-                "navigator"
+            raise LLMRequestError(
+                "Navigator agent did not produce a response within the maximum tool rounds."
             )
 
         return explanation, tool_artifacts, tools_invoked, llm_client.model_label()
