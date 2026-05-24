@@ -44,7 +44,7 @@ async def test_clarification_for_resolved_drug_asks_for_plan():
     assert "tier" not in message.lower()
     assert "copay" not in message.lower()
     assert "covered" not in message.lower()
-    assert "Deterministic fallback" in source
+    assert source.startswith("mock/")
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_clarification_not_found_without_resolved_drug_does_not_crash():
     )
     message, source = await run_clarification_agent("xyzdrug", intake)
     assert message
-    assert "Deterministic fallback" in source
+    assert source.startswith("mock/")
 
 
 @pytest.mark.asyncio

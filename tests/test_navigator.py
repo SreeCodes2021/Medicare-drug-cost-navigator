@@ -1,9 +1,10 @@
 import pytest
 
-from medicare_navigator.agent.fallback import run_fallback_navigator
 from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
 from medicare_navigator.agent.navigator import navigator
 from medicare_navigator.config import settings
+from medicare_navigator.llm.client import llm_client
+from medicare_navigator.llm.errors import LLMNotConfiguredError
 from tests.spuf_fixture import PLAN_FL_PDP
 
 
@@ -18,7 +19,7 @@ def mcp_agent_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_navigator_lisinopril_budgeting_fallback():
+async def test_navigator_lisinopril_budgeting():
     message = (
         f"Why did lisinopril costs go up on plan {PLAN_FL_PDP}? "
         "I want to buy 10 pieces. I have already spent $1000 this year. "
@@ -59,38 +60,35 @@ def test_navigator_prompt_mentions_policy_retrieval():
 
 
 @pytest.mark.asyncio
-async def test_fallback_navigator_includes_policy_on_why_question():
-    explanation, tool_artifacts, tools_invoked = await run_fallback_navigator(
-        f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?"
-    )
-    assert "policy_retrieval" in tools_invoked
-    assert explanation
+async def test_navigator_includes_policy_on_why_question():
+    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
+    assert "policy_retrieval" in response.tools_invoked
+    assert response.explanation
 
 
 @pytest.mark.asyncio
-async def test_fallback_navigator_skips_policy_on_tier_only():
-    _, _, tools_invoked = await run_fallback_navigator(
-        f"lisinopril copay on plan {PLAN_FL_PDP}"
-    )
-    assert "policy_retrieval" not in tools_invoked
+async def test_navigator_skips_policy_on_tier_only():
+    response = await navigator.run(f"lisinopril copay on plan {PLAN_FL_PDP}")
+    assert "policy_retrieval" not in response.tools_invoked
 
 
 @pytest.mark.asyncio
-async def test_fallback_policy_passages_in_explanation():
-    explanation, _, _ = await run_fallback_navigator(
-        f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?"
-    )
-    lower = explanation.lower()
+async def test_navigator_policy_passages_in_explanation():
+    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
+    lower = response.explanation.lower()
     assert "deductible" in lower or "benefit" in lower or "part d" in lower
 
 
 @pytest.mark.asyncio
-async def test_fallback_policy_citations_built():
-    explanation, tool_artifacts, tools_invoked = await run_fallback_navigator(
-        f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?"
-    )
-    from medicare_navigator.guardrails.citations import build_citations_from_artifacts
+async def test_navigator_policy_citations_built():
+    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
+    assert any(c.source_id == "cms_policy_corpus" for c in response.citations)
+    assert response.explanation
 
-    citations = build_citations_from_artifacts(tool_artifacts)
-    assert any(c.source_id == "cms_policy_corpus" for c in citations)
-    assert explanation
+
+def test_llm_requires_configuration(monkeypatch):
+    monkeypatch.setattr(settings, "llm_mock_mode", False)
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    with pytest.raises(LLMNotConfiguredError):
+        llm_client.require_available()

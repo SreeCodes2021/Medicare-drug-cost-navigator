@@ -77,7 +77,7 @@ async def _run_case(case: dict) -> dict:
             result["failures"].append("missing disclaimer in explanation")
 
     if resp.status == "ok" and not resp.citations:
-        # Navigator fallback may build citations from artifacts; allow empty only for clarification-like ok
+        # Mock navigator may build citations from artifacts; allow empty only for clarification-like ok
         if "which drug" not in resp.explanation.lower() and "which medicare plan" not in resp.explanation.lower():
             result["passed"] = False
             result["failures"].append("no citations on ok response")
@@ -88,8 +88,7 @@ async def _run_case(case: dict) -> dict:
 async def run_eval() -> int:
     from medicare_navigator.config import settings
 
-    settings.anthropic_api_key = ""
-    settings.openai_api_key = ""
+    settings.llm_mock_mode = True
     data_dir = settings.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
     filters = IngestFilters(

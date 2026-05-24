@@ -378,10 +378,9 @@ def check_chat_smoke(getter: HttpGetter, *, timeout_note: str = "") -> CheckRepo
     return report
 
 
-def _ensure_deterministic_llm() -> None:
-    """Match tests/conftest.py so offline UI checks do not call external LLMs."""
-    settings.anthropic_api_key = ""
-    settings.openai_api_key = ""
+def _ensure_mock_llm() -> None:
+    """Match tests/conftest.py so offline UI checks use the mock LLM layer."""
+    settings.llm_mock_mode = True
 
 
 def run_checks(
@@ -393,7 +392,7 @@ def run_checks(
 ) -> CheckReport:
     """Run selected UI check groups: static, api, chat."""
     if offline:
-        _ensure_deterministic_llm()
+        _ensure_mock_llm()
     selected = groups or {"static", "api", "chat"}
     report = CheckReport()
 

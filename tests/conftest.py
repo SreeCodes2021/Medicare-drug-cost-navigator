@@ -16,10 +16,9 @@ def ensure_frontend_dist():
 
 
 @pytest.fixture(autouse=True)
-def use_deterministic_llm(monkeypatch):
-    """Force rule-based LLM fallback so tests do not require network access."""
-    monkeypatch.setattr(settings, "anthropic_api_key", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+def use_mock_llm(monkeypatch):
+    """Use offline mock LLM responses instead of live API calls."""
+    monkeypatch.setattr(settings, "llm_mock_mode", True)
 
 
 @pytest.fixture
