@@ -15,10 +15,14 @@ DEFAULT_BASE_URL = "http://localhost:8000"
 REQUIRED_ELEMENT_IDS = [
     "disclaimer-banner",
     "disclaimer-text",
-    "filters-panel",
-    "filter-badge",
-    "toggle-filters",
-    "filters-body",
+    "main-panel",
+    "mode-tab-chat",
+    "mode-tab-guided",
+    "mode-chat",
+    "mode-guided",
+    "guided-body",
+    "guided-error",
+    "guided-submit",
     "filter-drug",
     "filter-dosage",
     "filter-plan",
@@ -26,8 +30,7 @@ REQUIRED_ELEMENT_IDS = [
     "plan-load-hint",
     "filter-year",
     "filter-ytd",
-    "filter-alternatives",
-    "filter-trend",
+    "filter-days-supply",
     "turn-counter",
     "chat-messages",
     "empty-state",
@@ -45,7 +48,7 @@ REQUIRED_ELEMENT_IDS = [
 JS_REFERENCED_ELEMENT_IDS = [
     eid
     for eid in REQUIRED_ELEMENT_IDS
-    if eid not in {"disclaimer-banner", "filters-panel", "results-panel"}
+    if eid not in {"disclaimer-banner", "main-panel", "results-panel", "mode-chat", "mode-guided", "guided-body"}
 ]
 
 REQUIRED_STATIC_PATHS = ["/", "/app.js", "/styles.css"]
@@ -62,9 +65,7 @@ CHAT_RESPONSE_UI_FIELDS = [
     "status",
     "explanation",
     "clarification_message",
-    "formulary",
-    "cost_trend",
-    "alternatives",
+    "estimate",
     "citations",
     "data_as_of",
     "tool_statuses",
@@ -76,12 +77,12 @@ CHAT_RESPONSE_UI_FIELDS = [
 SMOKE_MESSAGES = [
     {
         "name": "tier_lookup",
-        "message": "What's the tier and copay for metformin 500mg on plan H8888-001?",
+        "message": "What's the cost for metformin 500mg on plan H8888-001?",
         "expect_statuses": {"ok", "needs_clarification"},
     },
     {
-        "name": "chip_prompt_alternatives",
-        "message": "Show alternatives to lipitor",
+        "name": "quantity_limit_prompt",
+        "message": "What's the cost for januvia 100mg on plan S9999-001 for a 90 day supply?",
         "expect_statuses": {"ok", "needs_clarification", "not_found"},
     },
 ]
@@ -224,7 +225,15 @@ def check_app_js_contract(js: str) -> CheckReport:
             group="static",
         )
 
-    for fn in ("loadDisclaimer", "loadPlans", "sendMessage", "renderResults", "getFilters"):
+    for fn in (
+        "loadDisclaimer",
+        "loadPlans",
+        "sendMessage",
+        "renderResults",
+        "getFilters",
+        "switchMode",
+        "submitGuidedEstimate",
+    ):
         report.add(
             f"js:function:{fn}",
             f"function {fn}" in js or f"async function {fn}" in js,

@@ -13,12 +13,7 @@ from medicare_navigator.llm.errors import LLMRequestError
 from medicare_navigator.mcp.registry import call_tool, tool_result_json
 from medicare_navigator.mcp.schemas import anthropic_tools, openai_tools
 from medicare_navigator.models.query import QuerySlots
-from medicare_navigator.models.response import (
-    AlternativesResult,
-    CostTrendPoint,
-    FormularyResult,
-    QueryResponse,
-)
+from medicare_navigator.models.response import DrugCostEstimate, QueryResponse
 from medicare_navigator.session.manager import session_manager
 
 
@@ -38,6 +33,8 @@ def _format_filters_context(filters: QuerySlots | None) -> str:
         parts.append(f"dosage={filters.dosage}")
     if filters.plan_id:
         parts.append(f"plan_id={filters.plan_id}")
+    if filters.days_supply is not None:
+        parts.append(f"days_supply={filters.days_supply}")
     if filters.ytd_oop_spend is not None:
         parts.append(f"ytd_oop_spend={filters.ytd_oop_spend}")
     if not parts:
@@ -101,36 +98,22 @@ def _anthropic_tool_result_messages(
 
 def _extract_response_fields(
     tool_artifacts: dict[str, dict[str, Any]],
-) -> tuple[str | None, str | None, FormularyResult | None, list[CostTrendPoint], list[AlternativesResult], dict[str, str]]:
+) -> tuple[str | None, str | None, DrugCostEstimate | None, dict[str, str]]:
     drug_name = None
     rxcui = None
-    formulary = None
-    trends: list[CostTrendPoint] = []
-    alts: list[AlternativesResult] = []
+    estimate = None
     data_as_of: dict[str, str] = {}
 
-    norm = tool_artifacts.get("normalize_drug")
-    if norm and norm.get("data"):
-        selected = norm["data"].get("selected") or (norm["data"].get("candidates") or [{}])[0]
-        drug_name = selected.get("drug_name")
-        rxcui = selected.get("rxcui")
+    result = tool_artifacts.get("estimate_drug_cost")
+    if result and result.get("data"):
+        data = result["data"]
+        drug_name = data.get("drug_name")
+        rxcui = data.get("rxcui")
+        if result.get("status") in ("ok", "not_covered", "quantity_limit_blocked"):
+            estimate = DrugCostEstimate.model_validate(data)
+            data_as_of["estimate"] = result.get("as_of_date", "")
 
-    form = tool_artifacts.get("formulary_benefit_lookup")
-    if form and form.get("data") and form.get("status") in ("ok", "not_covered"):
-        formulary = FormularyResult.model_validate(form["data"])
-        data_as_of["formulary"] = form.get("as_of_date", "")
-
-    trend = tool_artifacts.get("cost_trend_lookup")
-    if trend and trend.get("status") == "ok" and trend.get("data"):
-        trends = [CostTrendPoint.model_validate(p) for p in trend["data"]]
-        data_as_of["spending"] = trend.get("as_of_date", "")
-
-    alt = tool_artifacts.get("alternatives_finder")
-    if alt and alt.get("status") == "ok" and alt.get("data"):
-        alts = [AlternativesResult.model_validate(a) for a in alt["data"]]
-        data_as_of["alternatives"] = alt.get("as_of_date", "")
-
-    return drug_name, rxcui, formulary, trends, alts, data_as_of
+    return drug_name, rxcui, estimate, data_as_of
 
 
 def _log_query(
@@ -146,12 +129,11 @@ def _log_query(
         db = DuckDBConnection()
         conn = db.connect()
         conn.execute(
-            "INSERT INTO query_log VALUES (?, ?, ?, ?, ?, ?, current_timestamp)",
+            "INSERT INTO query_log VALUES (?, ?, ?, ?, ?, current_timestamp)",
             [
                 query_id,
                 session_id or "",
                 json.dumps(tools),
-                json.dumps(["navigator"]),
                 json.dumps(statuses),
                 latency_ms,
             ],
@@ -209,17 +191,12 @@ class Navigator:
                 explanation = retry_explanation
                 citations = retry_citations
 
-        drug_name, rxcui, formulary, trends, alts, data_as_of = _extract_response_fields(
-            tool_artifacts
-        )
+        drug_name, rxcui, estimate, data_as_of = _extract_response_fields(tool_artifacts)
         tool_statuses = {
             name: artifact.get("status", "unknown")
             for name, artifact in tool_artifacts.items()
-            if name in tools_invoked or name.endswith("_lookup") or name.endswith("_finder")
+            if name in tools_invoked
         }
-        for name in tools_invoked:
-            if name in tool_artifacts:
-                tool_statuses[name] = tool_artifacts[name].get("status", "unknown")
 
         status = "ok"
         lower_explanation = explanation.lower()
@@ -230,21 +207,17 @@ class Navigator:
         ):
             status = "needs_clarification"
         else:
-            norm = tool_artifacts.get("normalize_drug")
-            if norm and norm.get("status") in ("not_found", "no_match"):
+            result = tool_artifacts.get("estimate_drug_cost")
+            if result and result.get("status") in ("not_found", "no_match"):
                 status = "not_found"
             else:
-                form = tool_artifacts.get("formulary_benefit_lookup")
-                if form and form.get("status") == "not_found":
+                lookup = tool_artifacts.get("lookup_plan")
+                if (
+                    lookup
+                    and lookup.get("status") == "not_found"
+                    and _parsed_plan_in_message(message)
+                ):
                     status = "not_found"
-                else:
-                    lookup = tool_artifacts.get("lookup_plan")
-                    if (
-                        lookup
-                        and lookup.get("status") == "not_found"
-                        and _parsed_plan_in_message(message)
-                    ):
-                        status = "not_found"
 
         latency = (time.perf_counter() - start) * 1000
         _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
@@ -256,15 +229,12 @@ class Navigator:
             status=status,
             drug_name=drug_name,
             rxcui=rxcui,
-            formulary=formulary,
-            cost_trend=trends,
-            alternatives=alts,
+            estimate=estimate,
             explanation=explanation,
             citations=citations,
             disclaimer=settings.disclaimer_text,
             data_as_of=data_as_of,
             tools_invoked=tools_invoked,
-            agents_invoked=["navigator"],
             tool_statuses=tool_statuses,
             response_source=response_source,
         )
@@ -364,8 +334,7 @@ class Navigator:
                 "content": (
                     "Your prior answer failed validation:\n"
                     + "\n".join(f"- {e}" for e in errors)
-                    + "\nRewrite using ONLY dollar amounts from tool results. "
-                    "Include supply_estimate walkthrough if present."
+                    + "\nRewrite using ONLY dollar amounts from tool results (cost_low/cost_high)."
                 ),
             }
         )

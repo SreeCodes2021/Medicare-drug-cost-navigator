@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 T = TypeVar("T")
 
@@ -12,6 +12,9 @@ class ToolStatus(str, Enum):
     not_covered = "not_covered"
     stale = "stale"
     no_match = "no_match"
+    suppressed = "suppressed"
+    insulin_out_of_scope = "insulin_out_of_scope"
+    quantity_limit_blocked = "quantity_limit_blocked"
 
 
 class ToolResult(BaseModel, Generic[T]):

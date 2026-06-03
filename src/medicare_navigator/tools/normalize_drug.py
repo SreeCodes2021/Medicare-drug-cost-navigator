@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import httpx
-import yaml
 
 from medicare_navigator.config import settings
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
@@ -52,6 +50,39 @@ async def _rxnorm_exact_lookup(name: str) -> list[dict]:
     except httpx.HTTPError:
         pass
     return candidates
+
+
+def _dosage_in_name(name: str, dosage: str) -> bool:
+    return dosage.lower().replace(" ", "") in name.lower().replace(" ", "")
+
+
+async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]:
+    """Resolve to the strength-specific clinical-drug RXCUI (RxNorm TTY SCD/SBD), which is
+    what CMS SPUF formulary rows actually reference — the plain ingredient-level rxcui.json
+    exact match (_rxnorm_exact_lookup) returns the ingredient concept only (e.g. "lovastatin"
+    -> 6472), which will never match a formulary row keyed on "lovastatin 40 MG Oral Tablet"
+    (197905). Without this, any dosage-qualified query would resolve to the wrong RXCUI and
+    be reported as not covered even when the drug is on the formulary."""
+    base = "https://rxnav.nlm.nih.gov/REST"
+    matches: list[dict] = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base}/drugs.json", params={"name": name})
+            if resp.status_code == 200:
+                groups = resp.json().get("drugGroup", {}).get("conceptGroup") or []
+                for group in groups:
+                    tty = group.get("tty")
+                    if tty not in ("SCD", "SBD"):
+                        continue
+                    for prop in group.get("conceptProperties") or []:
+                        concept_name = prop.get("name") or ""
+                        if _dosage_in_name(concept_name, dosage):
+                            matches.append({"rxcui": prop.get("rxcui"), "tty": tty})
+    except httpx.HTTPError:
+        pass
+    # Prefer generic (SCD) over branded (SBD) when both match the requested strength.
+    matches.sort(key=lambda m: 0 if m["tty"] == "SCD" else 1)
+    return [{"rxcui": m["rxcui"], "name": name, "source": "rxnorm_drugs_api"} for m in matches]
 
 
 async def _rxnorm_approximate_lookup(name: str, max_results: int = 5) -> list[dict]:
@@ -128,8 +159,17 @@ async def _collect_drug_candidates(name: str, dosage: str | None = None) -> list
     return candidates[:5]
 
 
-async def _rxnorm_lookup(name: str) -> list[dict]:
-    """Try RxNorm API; fall back to local DuckDB cache."""
+async def _rxnorm_lookup(name: str, dosage: str | None = None) -> list[dict]:
+    """Try RxNorm API; fall back to local DuckDB cache.
+
+    When a dosage is given, prefer the strength-specific clinical-drug RXCUI (matches CMS
+    formulary rows) over the bare ingredient-level exact match.
+    """
+    if dosage:
+        strength_matches = await _rxnorm_strength_specific_lookup(name, dosage)
+        if strength_matches:
+            return strength_matches
+
     candidates = await _rxnorm_exact_lookup(name)
     if not candidates:
         for record in _local_candidates(name):
@@ -147,7 +187,7 @@ async def _rxnorm_lookup(name: str) -> list[dict]:
 
 async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResult[dict]:
     as_of = _manifest_as_of()
-    candidates = await _rxnorm_lookup(drug_name)
+    candidates = await _rxnorm_lookup(drug_name, dosage)
 
     if not candidates:
         near_misses = await _collect_drug_candidates(drug_name, dosage)
@@ -209,18 +249,8 @@ async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResul
     )
 
 
-def load_benefit_params(contract_year: int = 2026) -> dict:
-    path = settings.config_dir / "benefit_params.yaml"
-    with path.open(encoding="utf-8") as f:
-        params = yaml.safe_load(f)
-    if params.get("contract_year") != contract_year:
-        return params
-    return params
-
-
-def compute_benefit_phase(ytd_oop: float, deductible: float, oop_threshold: float) -> str:
+def compute_benefit_phase(ytd_oop: float, deductible: float) -> str:
+    """v1 scope: pre-deductible or initial-coverage only (no catastrophic phase)."""
     if ytd_oop < deductible:
-        return "deductible"
-    if ytd_oop < oop_threshold:
-        return "initial_coverage"
-    return "catastrophic"
+        return "pre_deductible"
+    return "initial_coverage"

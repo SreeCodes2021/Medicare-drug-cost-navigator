@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
-from medicare_navigator.llm.mock import mock_chat_with_tools, mock_structured_completion
+from medicare_navigator.llm.mock import mock_chat_with_tools
 from medicare_navigator.llm.types import ChatWithToolsResult, ToolCallSpec
 
 T = TypeVar("T", bound=BaseModel)
@@ -43,23 +43,6 @@ class LLMClient:
             return f"mock/{self.provider}/{self.model}"
         return f"{self.provider}/{self.model}"
 
-    async def structured_completion(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        response_model: type[T],
-        agent_name: str = "agent",
-    ) -> T:
-        self.require_available()
-        if settings.llm_mock_mode:
-            return mock_structured_completion(user_prompt, response_model, agent_name)
-
-        return await self._with_retry(
-            lambda: self._structured_completion_live(
-                system_prompt, user_prompt, response_model
-            )
-        )
-
     async def chat_with_tools(
         self,
         system_prompt: str,
@@ -88,38 +71,6 @@ class LLMClient:
         raise LLMRequestError(
             f"LLM request failed after {settings.llm_max_retries + 1} attempt(s): {last_exc}"
         ) from last_exc
-
-    async def _structured_completion_live(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        response_model: type[T],
-    ) -> T:
-        import instructor
-
-        if self.provider == "openai":
-            from openai import AsyncOpenAI
-
-            client = instructor.from_openai(AsyncOpenAI(api_key=settings.openai_api_key))
-            return await client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_model=response_model,
-            )
-
-        from anthropic import AsyncAnthropic
-
-        client = instructor.from_anthropic(AsyncAnthropic(api_key=settings.anthropic_api_key))
-        return await client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            response_model=response_model,
-        )
 
     async def _chat_with_tools_live(
         self,

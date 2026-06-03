@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 from medicare_navigator.ingestion.cms_download import download_spuf, resolve_spuf_download
-from medicare_navigator.ingestion.policy_corpus import default_corpus_path, ingest_policy_corpus
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 
 
@@ -63,18 +62,6 @@ def _cmd_spuf(args: argparse.Namespace) -> None:
     spuf_manifest = result["manifest"].get("spuf", {})
     states = spuf_manifest.get("states", filters.states)
     print(f"Manifest as_of: {result['as_of']} (source_id={result['source_id']}, states={states})")
-
-
-def _cmd_policy(args: argparse.Namespace) -> None:
-    source = Path(args.source) if args.source else default_corpus_path()
-    if not source.exists():
-        print(f"Policy corpus source not found: {source}", file=sys.stderr)
-        sys.exit(1)
-    result = ingest_policy_corpus(source)
-    print(
-        f"Policy corpus ingestion complete: {result['passage_count']} passages "
-        f"(as_of={result['as_of']}, source_id={result['source_id']})."
-    )
 
 
 def _cmd_fetch(args: argparse.Namespace) -> None:
@@ -133,7 +120,7 @@ def main() -> None:
     spuf_parser.add_argument(
         "--preserve-other",
         action="store_true",
-        help="Keep cost_trends, alternatives, policy tables when reloading SPUF",
+        help="Keep the drugs and query_log tables when reloading SPUF",
     )
     spuf_parser.add_argument(
         "--merge-states",
@@ -141,13 +128,6 @@ def main() -> None:
         help="Replace only the selected state(s) in DuckDB; keep other states already loaded",
     )
     spuf_parser.set_defaults(func=_cmd_spuf)
-
-    policy_parser = sub.add_parser("policy", help="Ingest curated policy corpus into DuckDB and Chroma")
-    policy_parser.add_argument(
-        "--source",
-        help="Path to policy_corpus.yaml (default: config/policy_corpus.yaml)",
-    )
-    policy_parser.set_defaults(func=_cmd_policy)
 
     fetch_parser = sub.add_parser("fetch", help="Download CMS SPUF zip to data/raw/ without ingesting")
     fetch_parser.add_argument(

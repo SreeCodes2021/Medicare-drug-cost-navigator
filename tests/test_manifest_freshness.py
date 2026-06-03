@@ -50,17 +50,3 @@ def test_freshness_summary_includes_spuf_fields(monkeypatch):
     assert summary["spuf_source_id"] == "cms_spuf_2026_q1"
     assert summary["spuf_as_of"] == "2026-01-15"
     assert summary["spuf_version"] == "SPUF.2026.20260115"
-
-
-def test_policy_corpus_manifest_readable(tmp_path, monkeypatch):
-    from medicare_navigator.ingestion.policy_corpus import ingest_policy_corpus
-    from medicare_navigator.storage.connection import DuckDBConnection
-
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    monkeypatch.setattr(manifest.settings, "data_dir", data_dir)
-    ingest_policy_corpus(
-        db=DuckDBConnection(path=data_dir / "navigator.duckdb"),
-        chroma_path=data_dir / "chroma",
-    )
-    assert manifest.get_as_of("policy_corpus") == "2026-01-15"

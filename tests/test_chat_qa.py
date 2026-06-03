@@ -15,13 +15,10 @@ def test_build_grading_bundle_ok_response():
                     "as_of_date": "2024-01-01",
                 }
             ],
-            "formulary": {"tier": 1, "plan_key": "H1234-045"},
-            "cost_trend": [{"year": 2022, "total_spend": 100.0}],
-            "alternatives": [],
-            "data_as_of": {"formulary": "2024-01-01"},
-            "tool_statuses": {"formulary_benefit_lookup": "ok"},
-            "tools_invoked": ["formulary_benefit_lookup"],
-            "agents_invoked": ["synthesis"],
+            "estimate": {"tiers_matched": [1], "plan_key": "H1234-045"},
+            "data_as_of": {"estimate": "2024-01-01"},
+            "tool_statuses": {"estimate_drug_cost": "ok"},
+            "tools_invoked": ["estimate_drug_cost"],
             "response_source": "Deterministic",
         },
     }
@@ -32,7 +29,7 @@ def test_build_grading_bundle_ok_response():
     assert bundle["session_id"] == "sess-1"
     assert bundle["grading"]["explanation"] == "Tier 1 — $0 copay for metformin."
     assert bundle["grading"]["citations"][0]["source_id"] == "formulary"
-    assert bundle["grading"]["formulary"]["tier"] == 1
+    assert bundle["grading"]["estimate"]["tiers_matched"] == [1]
 
 
 def test_build_grading_bundle_clarification():

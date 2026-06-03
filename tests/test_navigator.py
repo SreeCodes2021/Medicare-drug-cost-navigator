@@ -1,11 +1,11 @@
 import pytest
 
-from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
 from medicare_navigator.agent.navigator import navigator
+from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
 from medicare_navigator.config import settings
 from medicare_navigator.llm.client import llm_client
 from medicare_navigator.llm.errors import LLMNotConfiguredError
-from tests.spuf_fixture import PLAN_FL_PDP
+from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
 
 
 @pytest.fixture(autouse=True)
@@ -13,77 +13,52 @@ def _spuf(spuf_db):
     pass
 
 
-@pytest.fixture(autouse=True)
-def mcp_agent_mode(monkeypatch):
-    monkeypatch.setattr(settings, "navigator_mode", "mcp_agent")
-
-
 @pytest.mark.asyncio
-async def test_navigator_lisinopril_budgeting():
+async def test_navigator_metformin_cost_estimate():
     message = (
-        f"Why did lisinopril costs go up on plan {PLAN_FL_PDP}? "
-        "I want to buy 10 pieces. I have already spent $1000 this year. "
-        "I want help in budgeting."
+        f"What's the cost for metformin 500mg on plan {PLAN_FL_MAPD}? "
+        "I have already spent $1000 this year."
     )
     response = await navigator.run(message)
     assert response.status == "ok"
-    assert response.drug_name == "lisinopril"
-    assert response.formulary is not None
-    assert response.formulary.benefit_phase == "initial_coverage"
-    assert response.formulary.supply_estimate is not None
+    assert response.drug_name == "metformin"
+    assert response.estimate is not None
+    assert response.estimate.benefit_phase == "initial_coverage"
     lower = response.explanation.lower()
-    assert "lisinopril" in lower
-    assert "tier" in lower or "copay" in lower
-    assert "navigator" in response.agents_invoked
+    assert "metformin" in lower
 
 
 @pytest.mark.asyncio
 async def test_navigator_needs_plan_clarification():
-    response = await navigator.run("metformin tier and copay")
+    response = await navigator.run("metformin cost")
     assert response.status in ("ok", "needs_clarification")
     assert "plan" in response.explanation.lower()
 
 
 @pytest.mark.asyncio
-async def test_router_uses_navigator_by_default():
+async def test_router_uses_navigator():
     from medicare_navigator.orchestrator.router import orchestrator
 
-    response = await orchestrator.run(f"lisinopril 10mg copay plan {PLAN_FL_PDP}")
+    response = await orchestrator.run(f"lisinopril 10mg cost plan {PLAN_FL_PDP}")
     assert response.status == "ok"
-    assert response.agents_invoked == ["navigator"]
-
-
-def test_navigator_prompt_mentions_policy_retrieval():
-    assert "policy_retrieval" in NAVIGATOR_SYSTEM_PROMPT
-    assert "deductible" in NAVIGATOR_SYSTEM_PROMPT.lower()
-    assert "catastrophic" in NAVIGATOR_SYSTEM_PROMPT.lower()
 
 
 @pytest.mark.asyncio
-async def test_navigator_includes_policy_on_why_question():
-    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
-    assert "policy_retrieval" in response.tools_invoked
-    assert response.explanation
+async def test_navigator_suppressed_plan_hard_stop():
+    response = await navigator.run(f"metformin cost on plan {PLAN_FL_SUPPRESSED}")
+    assert "suppressed" in response.explanation.lower() or "contact the plan" in response.explanation.lower()
+    assert "$" not in response.explanation.split(response.disclaimer)[0]
 
 
 @pytest.mark.asyncio
-async def test_navigator_skips_policy_on_tier_only():
-    response = await navigator.run(f"lisinopril copay on plan {PLAN_FL_PDP}")
-    assert "policy_retrieval" not in response.tools_invoked
+async def test_navigator_insulin_out_of_scope():
+    response = await navigator.run(f"lantus cost on plan {PLAN_FL_PDP}")
+    assert "insulin" in response.explanation.lower()
 
 
-@pytest.mark.asyncio
-async def test_navigator_policy_passages_in_explanation():
-    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
-    lower = response.explanation.lower()
-    assert "deductible" in lower or "benefit" in lower or "part d" in lower
-
-
-@pytest.mark.asyncio
-async def test_navigator_policy_citations_built():
-    response = await navigator.run(f"Why did lisinopril cost go up on plan {PLAN_FL_PDP}?")
-    assert any(c.source_id == "cms_policy_corpus" for c in response.citations)
-    assert response.explanation
+def test_navigator_prompt_describes_scope():
+    assert "insulin" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "estimate_drug_cost" in NAVIGATOR_SYSTEM_PROMPT
 
 
 def test_llm_requires_configuration(monkeypatch):

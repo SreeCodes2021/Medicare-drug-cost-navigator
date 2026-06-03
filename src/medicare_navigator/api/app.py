@@ -43,10 +43,7 @@ class FilterPayload(BaseModel):
     plan_id: str | None = None
     contract_year: int | None = None
     ytd_oop_spend: float | None = None
-    pharmacy_channel: str | None = None
     days_supply: int | None = None
-    include_alternatives: bool | None = None
-    include_cost_trend: bool | None = None
 
 
 class QueryRequest(BaseModel):
@@ -83,7 +80,6 @@ async def health():
         "version": "0.1.0",
         "llm_configured": llm_ok,
         "llm_source": llm_client.model_label(),
-        "navigator_mode": settings.navigator_mode,
         **freshness,
     }
     if not llm_ok:

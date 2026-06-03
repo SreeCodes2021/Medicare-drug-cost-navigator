@@ -1,17 +1,17 @@
 from medicare_navigator.storage.connection import DuckDBConnection
 from medicare_navigator.storage.repository import (
-    AlternativesRepository,
-    CostTrendRepository,
+    BasicDrugsFormularyRepository,
+    BeneficiaryCostRepository,
     DrugRepository,
-    FormularyRepository,
     PlanRepository,
+    PricingRepository,
 )
 
 __all__ = [
-    "AlternativesRepository",
-    "CostTrendRepository",
+    "BasicDrugsFormularyRepository",
+    "BeneficiaryCostRepository",
     "DuckDBConnection",
     "DrugRepository",
-    "FormularyRepository",
     "PlanRepository",
+    "PricingRepository",
 ]

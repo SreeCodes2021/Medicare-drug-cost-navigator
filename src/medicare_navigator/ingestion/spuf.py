@@ -37,10 +37,10 @@ _WRITE_PARTS = 10
 _FORMULARY_WRITE_PARTS = 100
 
 _FORMULARY_INSERT_SQL = """
-INSERT INTO formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO basic_drugs_formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _BENEFICIARY_COST_INSERT_SQL = """
-INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _PRICING_INSERT_SQL = "INSERT INTO pricing VALUES (?, ?, ?, ?)"
 
@@ -200,12 +200,15 @@ def _plan_type(contract_id: str) -> str:
 
 
 def _plan_in_filter(row: dict[str, str], filters: IngestFilters) -> bool:
+    """Selection filter for which plans to ingest at all (state/plan-type scope).
+
+    Does NOT exclude suppressed plans — PLAN_SUPPRESSED_YN must be persisted and
+    surfaced as a hard-stop at query time (spec Bug 6), not silently dropped here.
+    """
     contract_id = row.get("CONTRACT_ID", "").strip()
     if not contract_id:
         return False
     if contract_id[0] not in filters.plan_type_prefixes:
-        return False
-    if row.get("PLAN_SUPPRESSED_YN", "N").strip().upper() == "Y":
         return False
 
     state = row.get("STATE", "").strip().upper()
@@ -241,6 +244,10 @@ def _parse_int(value: str | None) -> int | None:
         return None
 
 
+def _parse_bool_yn(value: str | None) -> bool:
+    return (value or "").strip().upper() == "Y"
+
+
 def _cost_share_from_type(cost_type: str | None, cost_amt: str | None) -> tuple[str, float | None, float | None]:
     """Map CMS cost type code to (cost_type, copay, coinsurance_pct)."""
     code = (cost_type or "").strip()
@@ -254,13 +261,17 @@ def _cost_share_from_type(cost_type: str | None, cost_amt: str | None) -> tuple[
 
 
 def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
+    """Extract every pharmacy-channel cost share row (no coverage-level/days-supply filtering —
+    spec Bug 1 requires every code/coverage-level row to survive, since the days-supply value
+    here is a CMS CODE (1-4), not a raw day count, and callers must map explicitly."""
     tier = _parse_int(row.get("TIER"))
     if tier is None:
         return []
     coverage_level = _parse_int(row.get("COVERAGE_LEVEL"))
-    days_supply = _parse_int(row.get("DAYS_SUPPLY"))
-    if days_supply is None:
-        days_supply = 1
+    days_supply_code = _parse_int(row.get("DAYS_SUPPLY"))
+    if days_supply_code is None:
+        return []
+    ded_applies_yn = _parse_bool_yn(row.get("DED_APPLIES_YN"))
 
     shares: list[dict[str, Any]] = []
     for channel, (type_col, amt_col) in PHARMACY_CHANNEL_COLUMNS.items():
@@ -273,11 +284,12 @@ def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
             {
                 "tier": tier,
                 "coverage_level": coverage_level if coverage_level is not None else 1,
-                "days_supply": days_supply,
+                "days_supply_code": days_supply_code,
                 "pharmacy_channel": channel,
                 "cost_type": cost_type,
                 "copay": copay,
                 "coinsurance_pct": coinsurance,
+                "ded_applies_yn": ded_applies_yn,
             }
         )
     return shares
@@ -331,7 +343,7 @@ def _purge_states(conn, states: list[str]) -> int:
     # index"); drop indexes first and recreate them after ingest completes.
     drop_spuf_indexes(conn)
     plan_subquery = f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})"
-    for table in ("formulary", "beneficiary_cost", "pricing"):
+    for table in ("beneficiary_cost", "pricing"):
         conn.execute(
             f"DELETE FROM {table} WHERE plan_key IN ({plan_subquery})",
             normalized,
@@ -352,47 +364,43 @@ def _parse_as_of_from_version(version: str) -> str:
     return date.today().isoformat()
 
 
-def _count_formulary_insert_rows(
-    plans: dict[str, dict[str, Any]],
-    formulary_drugs: dict[str, list[tuple[str, str, int]]],
-) -> int:
-    return sum(
-        len(formulary_drugs[plan["formulary_id"]])
-        for plan in plans.values()
-        if plan.get("formulary_id") in formulary_drugs
-    )
+# formulary_id -> version -> list of (ndc, rxcui, tier, ql_yn, ql_amount, ql_days, pa_yn, st_yn)
+FormularyRow = tuple[str, str, int, bool, float | None, int | None, bool, bool]
+
+
+def _select_max_version_rows(
+    formulary_by_version: dict[str, dict[str, list[FormularyRow]]],
+) -> dict[str, list[FormularyRow]]:
+    """Keep only the max FORMULARY_VERSION's rows per formulary_id (spec: avoid stale/duplicate
+    historical-version rows polluting the Bug 5 multi-NDC range)."""
+    selected: dict[str, list[FormularyRow]] = {}
+    for fid, by_version in formulary_by_version.items():
+        best_version = max(by_version, key=lambda v: (v.isdigit(), int(v) if v.isdigit() else 0, v))
+        selected[fid] = by_version[best_version]
+    return selected
+
+
+def _count_formulary_insert_rows(formulary_drugs: dict[str, list[FormularyRow]]) -> int:
+    return sum(len(rows) for rows in formulary_drugs.values())
 
 
 def _iter_formulary_insert_rows(
-    plans: dict[str, dict[str, Any]],
-    formulary_drugs: dict[str, list[tuple[str, str, int]]],
-    tier_costs: dict[str, dict[int, dict[str, dict[str, Any]]]],
+    formulary_drugs: dict[str, list[FormularyRow]],
     *,
     as_of: str,
-    default_channel: str = "preferred_retail",
 ) -> Iterator[list[Any]]:
-    for plan_key, plan in plans.items():
-        fid = plan["formulary_id"]
-        if not fid or fid not in formulary_drugs:
-            continue
-        plan_tiers = tier_costs.get(plan_key, {})
-        for ndc, rxcui, tier in formulary_drugs[fid]:
-            share = plan_tiers.get(tier, {}).get(default_channel)
-            if share:
-                cost_type = share["cost_type"]
-                copay = share["copay"]
-                coinsurance = share["coinsurance_pct"]
-            else:
-                cost_type, copay, coinsurance = "unknown", None, None
+    for fid, rows in formulary_drugs.items():
+        for ndc, rxcui, tier, ql_yn, ql_amount, ql_days, pa_yn, st_yn in rows:
             yield [
-                plan_key,
+                fid,
                 format_ndc_display(ndc),
                 rxcui or None,
                 tier,
-                copay,
-                coinsurance,
-                cost_type,
-                default_channel,
+                ql_yn,
+                ql_amount,
+                ql_days,
+                pa_yn,
+                st_yn,
                 as_of,
             ]
 
@@ -479,7 +487,7 @@ def ingest_spuf(
             if purged:
                 _progress(f"Purged {purged} existing plan(s) for merge.", file="plans")
         elif preserve_non_spuf_tables:
-            for table in ("plans", "formulary", "beneficiary_cost", "pricing"):
+            for table in ("plans", "basic_drugs_formulary", "beneficiary_cost", "pricing"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             create_tables(conn, drop_existing=False)
             purged = 0
@@ -515,6 +523,7 @@ def ingest_spuf(
                 "deductible": _parse_float(row.get("DEDUCTIBLE")) or 0.0,
                 "contract_year": filters.contract_year,
                 "formulary_id": formulary_id,
+                "plan_suppressed": _parse_bool_yn(row.get("PLAN_SUPPRESSED_YN")),
             }
             if formulary_id:
                 formulary_ids.add(formulary_id)
@@ -527,7 +536,7 @@ def ingest_spuf(
         for plan in plans.values():
             conn.execute(
                 """
-                INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     plan["plan_key"],
@@ -539,11 +548,12 @@ def ingest_spuf(
                     plan["deductible"],
                     plan["contract_year"],
                     plan["formulary_id"],
+                    plan["plan_suppressed"],
                 ],
             )
 
-        # formulary_id -> list of (ndc, rxcui, tier)
-        formulary_drugs: dict[str, list[tuple[str, str, int]]] = {}
+        # formulary_id -> version -> list of formulary rows (deduped to max version after scan)
+        formulary_by_version: dict[str, dict[str, list[FormularyRow]]] = {}
         _progress(
             "Scanning national formulary file (this may take several minutes)...",
             file=files["formulary"],
@@ -552,7 +562,9 @@ def ingest_spuf(
         for row in _iter_rows(source, files["formulary"]):
             formulary_scanned += 1
             if formulary_scanned % _PROGRESS_INTERVAL == 0:
-                matched = sum(len(v) for v in formulary_drugs.values())
+                matched = sum(
+                    len(rows) for by_version in formulary_by_version.values() for rows in by_version.values()
+                )
                 _progress(
                     f"scanned {formulary_scanned:,} rows, "
                     f"kept {matched:,} for selected plans",
@@ -575,17 +587,27 @@ def ingest_spuf(
             if tier is None:
                 continue
             rxcui = row.get("RXCUI", "").strip()
-            formulary_drugs.setdefault(fid, []).append((ndc, rxcui, tier))
+            version_str = row.get("FORMULARY_VERSION", "").strip() or "0"
+            formulary_row: FormularyRow = (
+                ndc,
+                rxcui,
+                tier,
+                _parse_bool_yn(row.get("QUANTITY_LIMIT_YN")),
+                _parse_float(row.get("QUANTITY_LIMIT_AMOUNT")),
+                _parse_int(row.get("QUANTITY_LIMIT_DAYS")),
+                _parse_bool_yn(row.get("PRIOR_AUTHORIZATION_YN")),
+                _parse_bool_yn(row.get("STEP_THERAPY_YN")),
+            )
+            formulary_by_version.setdefault(fid, {}).setdefault(version_str, []).append(formulary_row)
 
+        formulary_drugs = _select_max_version_rows(formulary_by_version)
         matched_drugs = sum(len(v) for v in formulary_drugs.values())
         _progress(
             f"scan done: {formulary_scanned:,} rows scanned, "
-            f"{matched_drugs:,} drug entries kept.",
+            f"{matched_drugs:,} drug entries kept (max FORMULARY_VERSION per formulary_id).",
             file=files["formulary"],
         )
 
-        # plan_key -> tier -> cost shares by channel (initial coverage, 30-day preferred)
-        tier_costs: dict[str, dict[int, dict[str, dict[str, Any]]]] = {}
         beneficiary_cost_rows: list[list[Any]] = []
         if files.get("beneficiary_cost"):
             _progress("Loading beneficiary cost shares...", file=files["beneficiary_cost"])
@@ -596,24 +618,18 @@ def ingest_spuf(
                 if plan_key not in plans:
                     continue
                 for share in _extract_cost_shares(row):
-                    # Prefer initial coverage (1) and 30-day supply for default tier cost
-                    if share["coverage_level"] not in (0, 1):
-                        continue
-                    if share["days_supply"] != 1:
-                        continue
-                    tier_costs.setdefault(plan_key, {}).setdefault(share["tier"], {})[
-                        share["pharmacy_channel"]
-                    ] = share
                     beneficiary_cost_rows.append(
                         [
                             plan_key,
                             share["tier"],
                             share["coverage_level"],
-                            share["days_supply"],
+                            share["days_supply_code"],
                             share["pharmacy_channel"],
                             share["cost_type"],
                             share["copay"],
                             share["coinsurance_pct"],
+                            share["ded_applies_yn"],
+                            as_of,
                         ]
                     )
             if beneficiary_cost_rows:
@@ -630,28 +646,21 @@ def ingest_spuf(
                     label=files["beneficiary_cost"],
                 )
 
-        default_channel = "preferred_retail"
-        formulary_total = _count_formulary_insert_rows(plans, formulary_drugs)
+        formulary_total = _count_formulary_insert_rows(formulary_drugs)
         _progress(
-            f"Inserting {formulary_total:,} formulary row(s) into DuckDB "
+            f"Inserting {formulary_total:,} basic_drugs_formulary row(s) into DuckDB "
             f"in {_FORMULARY_WRITE_PARTS} parts...",
-            file="formulary",
+            file="basic_drugs_formulary",
         )
         formulary_inserted = _insert_in_parts(
             conn,
             _FORMULARY_INSERT_SQL,
-            _iter_formulary_insert_rows(
-                plans,
-                formulary_drugs,
-                tier_costs,
-                as_of=as_of,
-                default_channel=default_channel,
-            ),
+            _iter_formulary_insert_rows(formulary_drugs, as_of=as_of),
             formulary_total,
-            label="formulary",
+            label="basic_drugs_formulary",
             parts=_FORMULARY_WRITE_PARTS,
         )
-        _progress(f"inserted {formulary_inserted:,} formulary row(s).", file="formulary")
+        _progress(f"inserted {formulary_inserted:,} basic_drugs_formulary row(s).", file="basic_drugs_formulary")
 
         if files.get("pricing"):
             _progress("Counting matching pricing rows...", file=files["pricing"])
@@ -677,7 +686,7 @@ def ingest_spuf(
             "plans": len(plans),
             "plans_purged": purged,
             "formulary_ids": len(formulary_ids),
-            "formulary_rows": conn.execute("SELECT COUNT(*) FROM formulary").fetchone()[0],
+            "formulary_rows": conn.execute("SELECT COUNT(*) FROM basic_drugs_formulary").fetchone()[0],
             "beneficiary_cost_rows": conn.execute(
                 "SELECT COUNT(*) FROM beneficiary_cost"
             ).fetchone()[0],
@@ -701,7 +710,6 @@ def ingest_spuf(
                 "contract_year": filters.contract_year,
                 "states": manifest_states,
             },
-            "benefit_params": {"contract_year": filters.contract_year, "as_of": as_of},
         }
     )
     return {"stats": stats, "manifest": manifest, "source_id": source_id, "as_of": as_of}
