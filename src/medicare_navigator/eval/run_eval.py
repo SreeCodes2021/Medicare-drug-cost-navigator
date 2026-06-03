@@ -34,24 +34,24 @@ async def _run_case(case: dict) -> dict:
         result["passed"] = False
         result["failures"].append(f"status: expected {expected_status}, got {resp.status}")
 
-    if case.get("expected_tier") is not None and resp.formulary:
-        if resp.formulary.tier != case["expected_tier"]:
+    if case.get("expected_tier") is not None and resp.estimate:
+        if case["expected_tier"] not in resp.estimate.tiers_matched:
             result["passed"] = False
             result["failures"].append(
-                f"tier: expected {case['expected_tier']}, got {resp.formulary.tier}"
+                f"tier: expected {case['expected_tier']}, got {resp.estimate.tiers_matched}"
             )
 
-    if case.get("expected_copay") is not None and resp.formulary and resp.formulary.cost_share:
-        actual = resp.formulary.cost_share.copay
-        if actual != case["expected_copay"]:
+    if case.get("expected_cost") is not None and resp.estimate:
+        actual = resp.estimate.cost_low
+        if actual != case["expected_cost"]:
             result["passed"] = False
-            result["failures"].append(f"copay: expected {case['expected_copay']}, got {actual}")
+            result["failures"].append(f"cost: expected {case['expected_cost']}, got {actual}")
 
-    if case.get("expected_phase") and resp.formulary:
-        if resp.formulary.benefit_phase != case["expected_phase"]:
+    if case.get("expected_phase") and resp.estimate:
+        if resp.estimate.benefit_phase != case["expected_phase"]:
             result["passed"] = False
             result["failures"].append(
-                f"phase: expected {case['expected_phase']}, got {resp.formulary.benefit_phase}"
+                f"phase: expected {case['expected_phase']}, got {resp.estimate.benefit_phase}"
             )
 
     if case.get("expected_tool_status"):
@@ -61,23 +61,16 @@ async def _run_case(case: dict) -> dict:
                 result["passed"] = False
                 result["failures"].append(f"{tool}: expected {status}, got {actual}")
 
-    if case.get("expected_has_trend"):
-        if not resp.cost_trend:
-            result["passed"] = False
-            result["failures"].append("expected cost trend data")
-
-    if case.get("expected_has_supply_estimate"):
-        if not resp.formulary or not resp.formulary.supply_estimate:
-            result["passed"] = False
-            result["failures"].append("expected supply_estimate on formulary result")
-
     if resp.status == "ok" and resp.explanation:
         if "Disclaimer" not in resp.explanation and "informational" not in resp.explanation.lower():
             result["passed"] = False
             result["failures"].append("missing disclaimer in explanation")
 
-    if resp.status == "ok" and not resp.citations:
-        # Mock navigator may build citations from artifacts; allow empty only for clarification-like ok
+    hard_stop_statuses = {"suppressed", "insulin_out_of_scope", "quantity_limit_blocked", "not_covered"}
+    estimate_status = resp.tool_statuses.get("estimate_drug_cost")
+    if resp.status == "ok" and not resp.citations and estimate_status not in hard_stop_statuses:
+        # Mock navigator may build citations from artifacts; allow empty only for clarification-like
+        # ok responses or the spec's hard-stop/no-cost statuses, which have no computed data to cite.
         if "which drug" not in resp.explanation.lower() and "which medicare plan" not in resp.explanation.lower():
             result["passed"] = False
             result["failures"].append("no citations on ok response")
@@ -102,6 +95,15 @@ async def run_eval() -> int:
         filters=filters,
         version="SPUF.2026.20260115",
     )
+    from tests.spuf_fixture import TEST_DRUGS
+    from medicare_navigator.storage.connection import DuckDBConnection
+
+    conn = DuckDBConnection().connect()
+    try:
+        for row in TEST_DRUGS:
+            conn.execute("INSERT INTO drugs VALUES (?, ?, ?, ?, ?)", list(row))
+    finally:
+        conn.close()
     cases = []
     with _queries_path().open(encoding="utf-8") as f:
         for line in f:

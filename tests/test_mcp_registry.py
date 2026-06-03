@@ -1,11 +1,8 @@
 import pytest
 
-from medicare_navigator.config import settings
-from medicare_navigator.ingestion.schema import ensure_schema
 from medicare_navigator.mcp.registry import call_tool, tool_names
 from medicare_navigator.mcp.schemas import openai_tools
-from medicare_navigator.storage.connection import DuckDBConnection
-from tests.spuf_fixture import NDC_METFORMIN, PLAN_FL_MAPD, PLAN_FL_PDP
+from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
 
 
 @pytest.fixture(autouse=True)
@@ -15,23 +12,16 @@ def _spuf(spuf_db):
 
 def test_tool_names():
     names = tool_names()
-    assert "normalize_drug" in names
-    assert "formulary_benefit_lookup" in names
+    assert "estimate_drug_cost" in names
     assert "lookup_plan" in names
-    assert len(names) == 7
+    assert "list_plans" in names
+    assert len(names) == 3
 
 
 def test_openai_tool_schemas():
     tools = openai_tools()
     assert all(t["type"] == "function" for t in tools)
-    assert tools[0]["function"]["name"] == "normalize_drug"
-
-
-@pytest.mark.asyncio
-async def test_mcp_normalize_drug():
-    result = await call_tool("normalize_drug", {"drug_name": "lisinopril", "dosage": "10mg"})
-    assert result["status"] == "ok"
-    assert result["data"]["selected"]["rxcui"] == "29046"
+    assert tools[0]["function"]["name"] == "estimate_drug_cost"
 
 
 @pytest.mark.asyncio
@@ -42,37 +32,43 @@ async def test_mcp_lookup_plan_exact():
 
 
 @pytest.mark.asyncio
-async def test_mcp_formulary_matches_direct():
-    direct = await call_tool(
-        "formulary_benefit_lookup",
-        {"plan_key": PLAN_FL_MAPD, "ndc": NDC_METFORMIN, "ytd_oop_spend": 0},
+async def test_mcp_estimate_drug_cost_ok():
+    result = await call_tool(
+        "estimate_drug_cost",
+        {"plan_key": PLAN_FL_MAPD, "drug_name": "metformin", "ytd_oop_spend": 0},
     )
-    assert direct["status"] == "ok"
-    assert direct["data"]["tier"] == 2
-
-
-@pytest.mark.asyncio
-async def test_mcp_policy_retrieval_ok_after_seed():
-    result = await call_tool("policy_retrieval", {"query_text": "deductible"})
     assert result["status"] == "ok"
-    assert result["source_id"] == "cms_policy_corpus"
-    assert result["data"]
+    assert result["data"]["tiers_matched"] == [2]
+    assert result["data"]["cost_low"] is not None
 
 
 @pytest.mark.asyncio
-async def test_mcp_policy_retrieval_no_match_empty(tmp_path, monkeypatch):
-    data_dir = tmp_path / "empty"
-    data_dir.mkdir()
-    duckdb_path = data_dir / "empty.duckdb"
-    monkeypatch.setattr(settings, "data_dir", data_dir)
-    monkeypatch.setattr(settings, "duckdb_path", duckdb_path)
-    monkeypatch.setattr(settings, "chroma_path", data_dir / "chroma")
-    ensure_schema(DuckDBConnection(path=duckdb_path))
-    result = await call_tool("policy_retrieval", {"query_text": "deductible"})
-    assert result["status"] == "no_match"
+async def test_mcp_estimate_drug_cost_suppressed_plan():
+    result = await call_tool(
+        "estimate_drug_cost",
+        {"plan_key": PLAN_FL_SUPPRESSED, "drug_name": "metformin"},
+    )
+    assert result["status"] == "suppressed"
+    assert result["data"] is None
 
 
 @pytest.mark.asyncio
-async def test_mcp_policy_retrieval_query_text_required():
-    result = await call_tool("policy_retrieval", {})
-    assert result["status"] in ("no_match", "ok")
+async def test_mcp_estimate_drug_cost_insulin_routed():
+    result = await call_tool(
+        "estimate_drug_cost",
+        {"plan_key": PLAN_FL_PDP, "drug_name": "lantus"},
+    )
+    assert result["status"] == "insulin_out_of_scope"
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_plans():
+    result = await call_tool("list_plans", {"state": "FL"})
+    assert result["status"] == "ok"
+    assert any(p["plan_key"] == PLAN_FL_PDP for p in result["data"])
+
+
+@pytest.mark.asyncio
+async def test_mcp_unknown_tool():
+    result = await call_tool("nonexistent_tool", {})
+    assert result["status"] == "not_found"

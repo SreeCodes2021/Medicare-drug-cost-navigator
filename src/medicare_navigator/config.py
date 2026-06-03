@@ -31,7 +31,6 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("./data")
     duckdb_path: Path = Path("./data/navigator.duckdb")
-    chroma_path: Path = Path("./data/chroma")
 
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8000, validation_alias="API_PORT")
@@ -48,7 +47,6 @@ class Settings(BaseSettings):
     session_ttl_minutes: int = 30
     max_chat_turns: int = 5
     max_tool_rounds: int = 8
-    navigator_mode: str = "mcp_agent"
 
     llm_mock_mode: bool = Field(default=False, validation_alias="LLM_MOCK")
     llm_timeout_seconds: float = Field(default=60.0, validation_alias="LLM_TIMEOUT_SECONDS")

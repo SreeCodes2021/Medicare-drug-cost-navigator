@@ -11,10 +11,7 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
             "beneficiary_cost",
             "drugs",
             "plans",
-            "formulary",
-            "cost_trends",
-            "alternatives",
-            "policy_passages",
+            "basic_drugs_formulary",
             "query_log",
             "pricing",
         ):
@@ -33,16 +30,17 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
         CREATE TABLE IF NOT EXISTS plans (
             plan_key VARCHAR PRIMARY KEY, contract_id VARCHAR, plan_id VARCHAR,
             plan_name VARCHAR, plan_type VARCHAR, state VARCHAR,
-            deductible DOUBLE, contract_year INTEGER, formulary_id VARCHAR
+            deductible DOUBLE, contract_year INTEGER, formulary_id VARCHAR,
+            plan_suppressed BOOLEAN DEFAULT FALSE
         )
         """
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS formulary (
-            plan_key VARCHAR, ndc VARCHAR, rxcui VARCHAR, tier INTEGER,
-            copay DOUBLE, coinsurance_pct DOUBLE, cost_type VARCHAR,
-            pharmacy_channel VARCHAR, as_of_date VARCHAR
+        CREATE TABLE IF NOT EXISTS basic_drugs_formulary (
+            formulary_id VARCHAR, ndc VARCHAR, rxcui VARCHAR, tier INTEGER,
+            quantity_limit_yn BOOLEAN, quantity_limit_amount DOUBLE, quantity_limit_days INTEGER,
+            prior_authorization_yn BOOLEAN, step_therapy_yn BOOLEAN, as_of_date VARCHAR
         )
         """
     )
@@ -50,8 +48,9 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
         """
         CREATE TABLE IF NOT EXISTS beneficiary_cost (
             plan_key VARCHAR, tier INTEGER, coverage_level INTEGER,
-            days_supply INTEGER, pharmacy_channel VARCHAR,
-            cost_type VARCHAR, copay DOUBLE, coinsurance_pct DOUBLE
+            days_supply_code INTEGER, pharmacy_channel VARCHAR,
+            cost_type VARCHAR, copay DOUBLE, coinsurance_pct DOUBLE,
+            ded_applies_yn BOOLEAN, as_of_date VARCHAR
         )
         """
     )
@@ -64,32 +63,9 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS cost_trends (
-            rxcui VARCHAR, drug_name VARCHAR, year INTEGER,
-            total_spend DOUBLE, avg_unit_cost DOUBLE, as_of_date VARCHAR
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS alternatives (
-            rxcui VARCHAR, drug_name VARCHAR, ingredient VARCHAR, te_code VARCHAR
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS policy_passages (
-            passage_id VARCHAR PRIMARY KEY, text VARCHAR,
-            source_label VARCHAR, url VARCHAR, as_of_date VARCHAR
-        )
-        """
-    )
-    conn.execute(
-        """
         CREATE TABLE IF NOT EXISTS query_log (
             query_id VARCHAR, session_id VARCHAR, tools_invoked VARCHAR,
-            agents_invoked VARCHAR, statuses VARCHAR, latency_ms DOUBLE,
+            statuses VARCHAR, latency_ms DOUBLE,
             created_at TIMESTAMP DEFAULT current_timestamp
         )
         """
@@ -97,7 +73,7 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
 
 
 SPUF_INDEX_NAMES = (
-    "idx_formulary_plan_ndc",
+    "idx_basic_drugs_formulary",
     "idx_plans_state_year",
     "idx_beneficiary_cost_lookup",
     "idx_pricing_plan_ndc",
@@ -112,14 +88,15 @@ def drop_spuf_indexes(conn) -> None:
 
 def create_indexes(conn) -> None:
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_formulary_plan_ndc ON formulary(plan_key, ndc)"
+        "CREATE INDEX IF NOT EXISTS idx_basic_drugs_formulary "
+        "ON basic_drugs_formulary(formulary_id, rxcui)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_plans_state_year ON plans(state, contract_year)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_beneficiary_cost_lookup "
-        "ON beneficiary_cost(plan_key, tier, pharmacy_channel, coverage_level, days_supply)"
+        "ON beneficiary_cost(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)"
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pricing_plan_ndc ON pricing(plan_key, ndc)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pricing_plan_ndc ON pricing(plan_key, ndc, days_supply)")
 
 
 def ensure_schema(db: DuckDBConnection | None = None) -> None:

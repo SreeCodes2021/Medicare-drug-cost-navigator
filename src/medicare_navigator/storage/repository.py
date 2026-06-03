@@ -6,6 +6,17 @@ from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.storage.connection import DuckDBConnection
 
 
+def ndc_variants(ndc: str) -> list[str]:
+    variants: list[str] = [ndc]
+    try:
+        normalized = normalize_ndc(ndc)
+        variants.append(normalized)
+        variants.append(format_ndc_display(normalized))
+    except ValueError:
+        pass
+    return list(dict.fromkeys(variants))
+
+
 @dataclass
 class DrugRecord:
     drug_name: str
@@ -16,36 +27,17 @@ class DrugRecord:
 
 
 @dataclass
-class FormularyRecord:
-    plan_key: str
-    plan_name: str
-    contract_id: str
-    plan_id: str
+class BasicDrugsFormularyRecord:
+    formulary_id: str
     ndc: str
+    rxcui: str | None
     tier: int
-    copay: float | None
-    coinsurance_pct: float | None
-    cost_type: str
-    deductible: float
+    quantity_limit_yn: bool
+    quantity_limit_amount: float | None
+    quantity_limit_days: int | None
+    prior_authorization_yn: bool
+    step_therapy_yn: bool
     as_of_date: str
-
-
-@dataclass
-class CostTrendRecord:
-    rxcui: str
-    drug_name: str
-    year: int
-    total_spend: float
-    avg_unit_cost: float | None
-    as_of_date: str
-
-
-@dataclass
-class AlternativeRecord:
-    rxcui: str
-    drug_name: str
-    ingredient: str
-    te_code: str
 
 
 class DrugRepository:
@@ -84,8 +76,27 @@ class DrugRepository:
 
 
 class PlanRepository:
+    _COLUMNS = (
+        "plan_key, contract_id, plan_id, plan_name, plan_type, state, "
+        "deductible, contract_year, formulary_id, plan_suppressed"
+    )
+
     def __init__(self, db: DuckDBConnection | None = None) -> None:
         self.db = db or DuckDBConnection()
+
+    def _row_to_dict(self, row) -> dict:
+        return {
+            "plan_key": row[0],
+            "contract_id": row[1],
+            "plan_id": row[2],
+            "plan_name": row[3],
+            "plan_type": row[4],
+            "state": row[5],
+            "deductible": row[6],
+            "contract_year": row[7],
+            "formulary_id": row[8],
+            "plan_suppressed": bool(row[9]),
+        }
 
     def list_plans(
         self,
@@ -106,52 +117,24 @@ class PlanRepository:
             params.append(contract_year)
         where = " AND ".join(clauses)
         rows = self.db.fetchall(
-            f"""
-            SELECT plan_key, contract_id, plan_id, plan_name, plan_type, state, deductible, contract_year
-            FROM plans WHERE {where}
-            ORDER BY plan_name
-            """,
+            f"SELECT {self._COLUMNS} FROM plans WHERE {where} ORDER BY plan_name",
             params,
         )
-        return [
-            {
-                "plan_key": r[0],
-                "contract_id": r[1],
-                "plan_id": r[2],
-                "plan_name": r[3],
-                "plan_type": r[4],
-                "state": r[5],
-                "deductible": r[6],
-                "contract_year": r[7],
-            }
-            for r in rows
-        ]
+        return [self._row_to_dict(r) for r in rows]
 
     def get_plan(self, plan_key: str) -> dict | None:
         row = self.db.fetchone(
-            """
-            SELECT plan_key, contract_id, plan_id, plan_name, plan_type, state, deductible, contract_year
-            FROM plans WHERE plan_key = ?
-            """,
+            f"SELECT {self._COLUMNS} FROM plans WHERE plan_key = ?",
             [plan_key],
         )
         if not row:
             return None
-        return {
-            "plan_key": row[0],
-            "contract_id": row[1],
-            "plan_id": row[2],
-            "plan_name": row[3],
-            "plan_type": row[4],
-            "state": row[5],
-            "deductible": row[6],
-            "contract_year": row[7],
-        }
+        return self._row_to_dict(row)
 
     def fuzzy_match_plan(self, text: str) -> list[dict]:
         rows = self.db.fetchall(
-            """
-            SELECT plan_key, contract_id, plan_id, plan_name, plan_type, state, deductible, contract_year
+            f"""
+            SELECT {self._COLUMNS}
             FROM plans
             WHERE lower(plan_name) LIKE lower(?)
                OR plan_key LIKE lower(?)
@@ -161,117 +144,92 @@ class PlanRepository:
             """,
             [f"%{text}%", f"%{text}%", f"%{text}%"],
         )
+        return [self._row_to_dict(r) for r in rows]
+
+
+class BasicDrugsFormularyRepository:
+    def __init__(self, db: DuckDBConnection | None = None) -> None:
+        self.db = db or DuckDBConnection()
+
+    def get_matches(self, formulary_id: str, rxcui: str) -> list[BasicDrugsFormularyRecord]:
+        rows = self.db.fetchall(
+            """
+            SELECT formulary_id, ndc, rxcui, tier, quantity_limit_yn, quantity_limit_amount,
+                   quantity_limit_days, prior_authorization_yn, step_therapy_yn, as_of_date
+            FROM basic_drugs_formulary
+            WHERE formulary_id = ? AND rxcui = ?
+            """,
+            [formulary_id, rxcui],
+        )
         return [
-            {
-                "plan_key": r[0],
-                "contract_id": r[1],
-                "plan_id": r[2],
-                "plan_name": r[3],
-                "plan_type": r[4],
-                "state": r[5],
-                "deductible": r[6],
-                "contract_year": r[7],
-            }
+            BasicDrugsFormularyRecord(
+                formulary_id=r[0],
+                ndc=r[1],
+                rxcui=r[2],
+                tier=r[3],
+                quantity_limit_yn=bool(r[4]),
+                quantity_limit_amount=r[5],
+                quantity_limit_days=r[6],
+                prior_authorization_yn=bool(r[7]),
+                step_therapy_yn=bool(r[8]),
+                as_of_date=r[9],
+            )
             for r in rows
         ]
 
 
-class FormularyRepository:
+class BeneficiaryCostRepository:
     def __init__(self, db: DuckDBConnection | None = None) -> None:
         self.db = db or DuckDBConnection()
 
-    def _ndc_variants(self, ndc: str) -> list[str]:
-        variants: list[str] = [ndc]
-        try:
-            normalized = normalize_ndc(ndc)
-            variants.append(normalized)
-            variants.append(format_ndc_display(normalized))
-        except ValueError:
-            pass
-        return list(dict.fromkeys(variants))
-
-    def get_beneficiary_cost_share(
+    def get_cost_share(
         self,
         plan_key: str,
         tier: int,
+        *,
+        coverage_level: int,
+        days_supply_code: int | None,
         pharmacy_channel: str = "preferred_retail",
-        coverage_level: int = 1,
-        days_supply: int = 1,
     ) -> tuple[str, float | None, float | None] | None:
+        """Returns (cost_type, copay, coinsurance_pct) for the exact match, or None.
+
+        ``days_supply_code`` may be None when the requested raw days-supply doesn't map to
+        any known CMS code (Section 4's explicit "other" branch) — in that case no cost-share
+        row can be matched, by design (no silent coercion to a nearby code).
+        """
+        if days_supply_code is None:
+            return None
         row = self.db.fetchone(
             """
             SELECT cost_type, copay, coinsurance_pct
             FROM beneficiary_cost
             WHERE plan_key = ? AND tier = ? AND pharmacy_channel = ?
-              AND coverage_level = ? AND days_supply = ?
+              AND coverage_level = ? AND days_supply_code = ?
             """,
-            [plan_key, tier, pharmacy_channel, coverage_level, days_supply],
+            [plan_key, tier, pharmacy_channel, coverage_level, days_supply_code],
         )
-        if not row:
-            row = self.db.fetchone(
-                """
-                SELECT cost_type, copay, coinsurance_pct
-                FROM beneficiary_cost
-                WHERE plan_key = ? AND tier = ? AND pharmacy_channel = ?
-                  AND days_supply = ?
-                ORDER BY coverage_level
-                LIMIT 1
-                """,
-                [plan_key, tier, pharmacy_channel, days_supply],
-            )
         if not row:
             return None
         return row[0], row[1], row[2]
 
-    def get_formulary_entry(
-        self,
-        plan_key: str,
-        ndc: str,
-        pharmacy_channel: str = "preferred_retail",
-    ) -> FormularyRecord | None:
-        variants = self._ndc_variants(ndc)
-        row = None
-        for variant in variants:
-            row = self.db.fetchone(
-                """
-                SELECT f.plan_key, p.plan_name, p.contract_id, p.plan_id, f.ndc, f.tier,
-                       f.copay, f.coinsurance_pct, f.cost_type, p.deductible, f.as_of_date
-                FROM formulary f
-                JOIN plans p ON f.plan_key = p.plan_key
-                WHERE f.plan_key = ? AND (f.ndc = ? OR REPLACE(f.ndc, '-', '') = REPLACE(?, '-', ''))
-                """,
-                [plan_key, variant, variant],
-            )
-            if row:
-                break
+    def get_ded_applies(self, plan_key: str, tier: int) -> bool | None:
+        """DED_APPLIES_YN for this tier (Bug 2 per-tier deductible exemption). Picks the
+        preferred-retail row when available since the flag is a tier-level attribute, not
+        expected to vary by channel/coverage-level/days-supply."""
+        row = self.db.fetchone(
+            """
+            SELECT ded_applies_yn
+            FROM beneficiary_cost
+            WHERE plan_key = ? AND tier = ?
+            ORDER BY CASE WHEN pharmacy_channel = 'preferred_retail' THEN 0 ELSE 1 END,
+                     coverage_level, days_supply_code
+            LIMIT 1
+            """,
+            [plan_key, tier],
+        )
         if not row:
             return None
-
-        cost_type = row[8]
-        copay = row[6]
-        coinsurance = row[7]
-        tier = row[5]
-
-        if pharmacy_channel != "preferred_retail":
-            channel_share = self.get_beneficiary_cost_share(
-                plan_key, tier, pharmacy_channel=pharmacy_channel
-            )
-            if channel_share:
-                cost_type, copay, coinsurance = channel_share
-
-        return FormularyRecord(
-            plan_key=row[0],
-            plan_name=row[1],
-            contract_id=row[2],
-            plan_id=row[3],
-            ndc=row[4],
-            tier=tier,
-            copay=copay,
-            coinsurance_pct=coinsurance,
-            cost_type=cost_type,
-            deductible=row[9],
-            as_of_date=row[10],
-        )
+        return bool(row[0])
 
 
 class PricingRepository:
@@ -279,8 +237,7 @@ class PricingRepository:
         self.db = db or DuckDBConnection()
 
     def get_unit_cost(self, plan_key: str, ndc: str, days_supply: int = 30) -> float | None:
-        variants = FormularyRepository(self.db)._ndc_variants(ndc)
-        for variant in variants:
+        for variant in ndc_variants(ndc):
             row = self.db.fetchone(
                 """
                 SELECT unit_cost FROM pricing
@@ -292,50 +249,3 @@ class PricingRepository:
             if row:
                 return float(row[0])
         return None
-
-
-class CostTrendRepository:
-    def __init__(self, db: DuckDBConnection | None = None) -> None:
-        self.db = db or DuckDBConnection()
-
-    def get_trend(self, rxcui: str) -> list[CostTrendRecord]:
-        rows = self.db.fetchall(
-            """
-            SELECT rxcui, drug_name, year, total_spend, avg_unit_cost, as_of_date
-            FROM cost_trends WHERE rxcui = ? ORDER BY year
-            """,
-            [rxcui],
-        )
-        return [
-            CostTrendRecord(
-                rxcui=r[0],
-                drug_name=r[1],
-                year=r[2],
-                total_spend=r[3],
-                avg_unit_cost=r[4],
-                as_of_date=r[5],
-            )
-            for r in rows
-        ]
-
-
-class AlternativesRepository:
-    def __init__(self, db: DuckDBConnection | None = None) -> None:
-        self.db = db or DuckDBConnection()
-
-    def find_alternatives(self, ingredient: str, exclude_rxcui: str | None = None) -> list[AlternativeRecord]:
-        rows = self.db.fetchall(
-            """
-            SELECT rxcui, drug_name, ingredient, te_code
-            FROM alternatives
-            WHERE lower(ingredient) = lower(?)
-            ORDER BY drug_name
-            """,
-            [ingredient],
-        )
-        results = [
-            AlternativeRecord(rxcui=r[0], drug_name=r[1], ingredient=r[2], te_code=r[3]) for r in rows
-        ]
-        if exclude_rxcui:
-            results = [r for r in results if r.rxcui != exclude_rxcui]
-        return results

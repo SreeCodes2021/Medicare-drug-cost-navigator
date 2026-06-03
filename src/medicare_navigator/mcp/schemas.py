@@ -2,20 +2,42 @@
 
 TOOL_SCHEMAS: list[dict] = [
     {
-        "name": "normalize_drug",
+        "name": "estimate_drug_cost",
         "description": (
-            "Resolve a drug name (and optional dosage) to RxCUI, NDC, and candidate matches."
+            "Estimate the out-of-pocket cost of a single drug fill on a Medicare plan's regular "
+            "formulary. Runs the full resolve-plan -> resolve-drug -> formulary -> pricing -> "
+            "cost-share pipeline server-side and returns a cost range plus any required caveats "
+            "(quantity limits, prior authorization/step therapy, multi-NDC pricing spread, "
+            "unconfirmed coinsurance base). Also used to route insulin and suppressed-plan "
+            "requests to their required out-of-scope / hard-stop messages — call this whenever "
+            "the user asks what a drug will cost on a plan, even before you know if it's covered."
         ),
         "parameters": {
             "type": "object",
             "properties": {
+                "plan_key": {"type": "string", "description": "Exact plan key, e.g. S5678-012"},
                 "drug_name": {"type": "string", "description": "Drug name, e.g. lisinopril"},
                 "dosage": {
                     "type": "string",
                     "description": "Optional strength, e.g. 10mg (not quantity like '10 pieces')",
                 },
+                "days_supply": {
+                    "type": "integer",
+                    "description": "Requested days supply per fill (default 30)",
+                    "default": 30,
+                },
+                "ytd_oop_spend": {
+                    "type": "number",
+                    "description": "Beneficiary's year-to-date out-of-pocket spend (default 0)",
+                    "default": 0,
+                },
+                "pharmacy_channel": {
+                    "type": "string",
+                    "description": "preferred_retail | standard_retail | preferred_mail | standard_mail",
+                    "default": "preferred_retail",
+                },
             },
-            "required": ["drug_name"],
+            "required": ["plan_key", "drug_name"],
         },
     },
     {
@@ -37,7 +59,7 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "list_plans",
-        "description": "List demo Medicare Part D / MA-PD plans with optional filters.",
+        "description": "List Medicare Part D / MA-PD plans with optional filters.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -45,69 +67,6 @@ TOOL_SCHEMAS: list[dict] = [
                 "state": {"type": "string"},
                 "contract_year": {"type": "integer"},
             },
-        },
-    },
-    {
-        "name": "formulary_benefit_lookup",
-        "description": (
-            "Look up formulary tier, cost-sharing, benefit phase, and optional supply cost "
-            "estimate for a drug NDC on a plan."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "plan_key": {"type": "string"},
-                "ndc": {"type": "string"},
-                "ytd_oop_spend": {"type": "number", "default": 0},
-                "ytd_oop_spend_provided": {"type": "boolean", "default": False},
-                "contract_year": {"type": "integer", "default": 2026},
-                "quantity": {
-                    "type": "integer",
-                    "description": "Number of tablets/units for supply estimate",
-                },
-                "fills": {
-                    "type": "integer",
-                    "description": "Number of pharmacy fills for supply estimate",
-                },
-                "days_supply": {
-                    "type": "integer",
-                    "description": "Days supply per fill (default 30)",
-                },
-            },
-            "required": ["plan_key", "ndc"],
-        },
-    },
-    {
-        "name": "cost_trend_lookup",
-        "description": "Multi-year program spending / unit cost trend for a drug by RxCUI.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "rxcui": {"type": "string"},
-            },
-            "required": ["rxcui"],
-        },
-    },
-    {
-        "name": "alternatives_finder",
-        "description": "Find therapeutically equivalent alternative drugs by RxCUI.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "rxcui": {"type": "string"},
-            },
-            "required": ["rxcui"],
-        },
-    },
-    {
-        "name": "policy_retrieval",
-        "description": "Retrieve CMS/regulatory policy passages relevant to a query.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query_text": {"type": "string"},
-            },
-            "required": ["query_text"],
         },
     },
 ]

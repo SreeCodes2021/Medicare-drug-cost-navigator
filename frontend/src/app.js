@@ -4,9 +4,6 @@ let turnCount = 0;
 let resultsBaseline = null;
 
 const PLACEHOLDERS = {
-  formulary: "Select a plan to see tier and copay.",
-  costTrend: "No spending trend data available for this drug.",
-  alternatives: "No therapeutic alternatives found.",
   citations: "No source citations for this response.",
 };
 
@@ -94,24 +91,16 @@ function getFilters() {
   const dosage = el("filter-dosage").value.trim();
   const plan = el("filter-plan").value;
   const year = el("filter-year").value;
+  const daysSupply = el("filter-days-supply").value;
   const ytd = el("filter-ytd").value;
   if (drug) filters.drug = drug;
   if (dosage) filters.dosage = dosage;
   if (plan) filters.plan_id = plan;
   if (year) filters.contract_year = parseInt(year, 10);
+  if (daysSupply) filters.days_supply = parseInt(daysSupply, 10);
   const ytdNum = parseFloat(ytd);
   if (ytd && !Number.isNaN(ytdNum) && ytdNum > 0) filters.ytd_oop_spend = ytdNum;
-  filters.include_alternatives = el("filter-alternatives").checked;
-  filters.include_cost_trend = el("filter-trend").checked;
   return Object.keys(filters).length ? filters : null;
-}
-
-function updateFilterBadge() {
-  const f = getFilters() || {};
-  const count = ["drug", "dosage", "plan_id", "contract_year", "ytd_oop_spend"].filter(
-    (k) => f[k] !== undefined && f[k] !== ""
-  ).length;
-  el("filter-badge").textContent = count;
 }
 
 function escapeAttr(value) {
@@ -170,11 +159,11 @@ function renderExplanationWithCitations(text, citations) {
 }
 
 function openCitation(index) {
-  const el = document.getElementById(`citation-${index}`);
-  if (!el) return;
-  el.open = true;
-  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  const summary = el.querySelector("summary");
+  const citationEl = document.getElementById(`citation-${index}`);
+  if (!citationEl) return;
+  citationEl.open = true;
+  citationEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const summary = citationEl.querySelector("summary");
   if (summary) summary.focus();
 }
 
@@ -219,9 +208,6 @@ function establishBaseline(resp) {
   return {
     drugKey: drugKeyFromResp(resp),
     drug_name: resp.drug_name || null,
-    formulary: resp.formulary || null,
-    cost_trend: resp.cost_trend?.length ? resp.cost_trend : null,
-    alternatives: resp.alternatives?.length ? resp.alternatives : null,
     citations: resp.citations?.length ? resp.citations : null,
     data_as_of: resp.data_as_of || {},
     tool_statuses: resp.tool_statuses || {},
@@ -233,66 +219,10 @@ function mergeResults(baseline, resp) {
   if (resp.drug_name) merged.drug_name = resp.drug_name;
   const key = drugKeyFromResp(resp);
   if (key) merged.drugKey = key;
-  if (resp.formulary != null) merged.formulary = resp.formulary;
-  if (resp.cost_trend?.length) merged.cost_trend = resp.cost_trend;
-  if (resp.alternatives?.length) merged.alternatives = resp.alternatives;
   if (resp.citations?.length) merged.citations = resp.citations;
   if (resp.data_as_of) Object.assign(merged.data_as_of, resp.data_as_of);
   if (resp.tool_statuses) Object.assign(merged.tool_statuses, resp.tool_statuses);
   return merged;
-}
-
-function renderFormularyCard(f) {
-  if (!f) {
-    return `<div class="card"><h3>Formulary &amp; Cost Share</h3><p class="card-placeholder">${PLACEHOLDERS.formulary}</p></div>`;
-  }
-  if (f.covered === false) {
-    return `<div class="card">
-      <h3>Formulary &amp; Cost Share</h3>
-      <p class="status-warning" style="margin-top:0.4rem">Drug not covered on this plan.</p>
-      <p style="margin-top:0.4rem;font-size:0.85rem;color:var(--muted)">${f.plan_name} (${f.plan_key})</p>
-      <p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">Benefit phase and cost-sharing do not apply to non-covered drugs.</p>
-    </div>`;
-  }
-  const cs = f.cost_share || {};
-  const copay = cs.copay != null ? `$${cs.copay.toFixed(2)} copay` : "see plan";
-  const spendLine = f.ytd_oop_spend_assumed
-    ? `<p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">Phase estimate assumes $0 YTD spending (not provided)</p>`
-    : `<p style="font-size:0.8rem;margin-top:0.4rem;color:var(--muted)">YTD OOP: $${f.ytd_oop_spend.toFixed(2)} / $${f.oop_threshold.toFixed(2)}</p>`;
-  return `<div class="card">
-    <h3>Formulary &amp; Cost Share</h3>
-    <div class="value">Tier ${f.tier} — ${copay}</div>
-    <p style="margin-top:0.4rem;font-size:0.85rem;color:var(--muted)">${f.plan_name} (${f.plan_key})</p>
-    <span class="phase-pill phase-${f.benefit_phase}">${(f.benefit_phase || "").replace(/_/g, " ")}</span>
-    ${spendLine}
-  </div>`;
-}
-
-function renderCostTrendCard(trend) {
-  if (!trend?.length) {
-    return `<div class="card"><h3>Cost Trend</h3><p class="card-placeholder">${PLACEHOLDERS.costTrend}</p></div>`;
-  }
-  const max = Math.max(...trend.map((p) => p.total_spend));
-  const bars = trend
-    .map((p) => {
-      const h = Math.round((p.total_spend / max) * 55);
-      return `<div class="trend-bar" style="height:${h}px" title="${p.year}: $${p.total_spend.toLocaleString()}"></div>`;
-    })
-    .join("");
-  const labels = trend.map((p) => p.year).join(" · ");
-  return `<div class="card">
-    <h3>Cost Trend</h3>
-    <div class="trend-bars">${bars}</div>
-    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.3rem">${labels}</p>
-  </div>`;
-}
-
-function renderAlternativesCard(alternatives) {
-  if (!alternatives?.length) {
-    return `<div class="card"><h3>Alternatives</h3><p class="card-placeholder">${PLACEHOLDERS.alternatives}</p></div>`;
-  }
-  const list = alternatives.map((a) => `<li>${a.drug_name} (TE: ${a.te_code || "—"})</li>`).join("");
-  return `<div class="card"><h3>Alternatives</h3><ul style="font-size:0.88rem;padding-left:1.2rem">${list}</ul></div>`;
 }
 
 function renderCitationsCard(citations) {
@@ -330,11 +260,10 @@ function renderBaseline(baseline, warningHtml) {
   if (dates.length) {
     badge.textContent = `Data as of ${dates[0]}`;
     badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
   }
 
-  container.innerHTML += renderFormularyCard(baseline.formulary);
-  container.innerHTML += renderCostTrendCard(baseline.cost_trend);
-  container.innerHTML += renderAlternativesCard(baseline.alternatives);
   container.innerHTML += renderCitationsCard(baseline.citations);
 
   if (baseline.tool_statuses && Object.keys(baseline.tool_statuses).length) {
@@ -384,12 +313,55 @@ function renderResults(resp) {
   container.innerHTML = `<p class="status-warning">${resp.explanation || "No response."}</p>`;
 }
 
-async function sendMessage(message) {
+function switchMode(mode) {
+  const isChat = mode === "chat";
+  el("mode-chat").classList.toggle("hidden", !isChat);
+  el("mode-chat").hidden = !isChat;
+  el("mode-guided").classList.toggle("hidden", isChat);
+  el("mode-guided").hidden = isChat;
+  el("mode-tab-chat").classList.toggle("active", isChat);
+  el("mode-tab-chat").setAttribute("aria-selected", String(isChat));
+  el("mode-tab-guided").classList.toggle("active", !isChat);
+  el("mode-tab-guided").setAttribute("aria-selected", String(!isChat));
+}
+
+function composeGuidedMessage() {
+  const drug = el("filter-drug").value.trim();
+  const dosage = el("filter-dosage").value.trim();
+  const plan = el("filter-plan").value;
+  const daysSupply = el("filter-days-supply").value;
+  const ytd = el("filter-ytd").value;
+
+  const drugPart = dosage ? `${drug} ${dosage}` : drug;
+  let message = `What's the cost for ${drugPart} on plan ${plan}?`;
+  if (daysSupply && daysSupply !== "30") {
+    message += ` ${daysSupply}-day supply.`;
+  }
+  const ytdNum = parseFloat(ytd);
+  if (ytd && !Number.isNaN(ytdNum) && ytdNum > 0) {
+    message += ` YTD spend: $${ytdNum}.`;
+  }
+  return message;
+}
+
+function showGuidedError(message) {
+  const err = el("guided-error");
+  if (!message) {
+    err.textContent = "";
+    err.classList.add("hidden");
+    return;
+  }
+  err.textContent = message;
+  err.classList.remove("hidden");
+}
+
+async function sendMessage(message, { switchToChat = false } = {}) {
   if (!message.trim()) return;
   appendMessage("user", message);
   el("chat-input").value = "";
   el("send-btn").disabled = true;
-  showLoading("Looking up formulary…");
+  el("guided-submit").disabled = true;
+  showLoading("Estimating cost…");
 
   try {
     const body = { message, session_id: sessionId, filters: getFilters() };
@@ -411,13 +383,28 @@ async function sendMessage(message) {
       resp.citations
     );
     renderResults(resp);
+    if (switchToChat) {
+      switchMode("chat");
+    }
   } catch (err) {
     appendMessage("assistant", "Sorry, something went wrong. Please try again.");
     console.error(err);
   } finally {
     hideLoading();
     el("send-btn").disabled = false;
+    el("guided-submit").disabled = false;
   }
+}
+
+function submitGuidedEstimate() {
+  showGuidedError("");
+  const drug = el("filter-drug").value.trim();
+  const plan = el("filter-plan").value;
+  if (!drug || !plan) {
+    showGuidedError("Please enter a drug name and select a plan.");
+    return;
+  }
+  sendMessage(composeGuidedMessage(), { switchToChat: true });
 }
 
 el("chat-form").addEventListener("submit", (e) => {
@@ -429,17 +416,9 @@ document.querySelectorAll(".chip").forEach((chip) => {
   chip.addEventListener("click", () => sendMessage(chip.dataset.prompt));
 });
 
-["filter-drug", "filter-dosage", "filter-plan", "filter-year", "filter-ytd"].forEach((id) => {
-  el(id).addEventListener("change", updateFilterBadge);
-  el(id).addEventListener("input", updateFilterBadge);
-});
-
-el("toggle-filters").addEventListener("click", () => {
-  const body = el("filters-body");
-  const hidden = body.style.display === "none";
-  body.style.display = hidden ? "" : "none";
-  el("toggle-filters").textContent = hidden ? "−" : "+";
-});
+el("mode-tab-chat").addEventListener("click", () => switchMode("chat"));
+el("mode-tab-guided").addEventListener("click", () => switchMode("guided"));
+el("guided-submit").addEventListener("click", submitGuidedEstimate);
 
 document.addEventListener("click", (event) => {
   const ref = event.target.closest(".citation-ref");
@@ -464,4 +443,4 @@ el("refresh-plans").addEventListener("click", async () => {
 
 loadDisclaimer();
 pollPlansUntilLoaded();
-updateFilterBadge();
+switchMode("chat");
