@@ -7,6 +7,13 @@ import duckdb
 from medicare_navigator.config import settings
 
 
+def _is_missing_table_error(exc: BaseException) -> bool:
+    if not isinstance(exc, duckdb.CatalogException):
+        return False
+    message = str(exc).lower()
+    return "does not exist" in message and "table" in message
+
+
 class DuckDBConnection:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or settings.duckdb_path
@@ -35,6 +42,10 @@ class DuckDBConnection:
             if params:
                 return conn.execute(sql, params).fetchone()
             return conn.execute(sql).fetchone()
+        except duckdb.CatalogException as exc:
+            if _is_missing_table_error(exc):
+                return None
+            raise
         finally:
             conn.close()
 
@@ -44,5 +55,9 @@ class DuckDBConnection:
             if params:
                 return conn.execute(sql, params).fetchall()
             return conn.execute(sql).fetchall()
+        except duckdb.CatalogException as exc:
+            if _is_missing_table_error(exc):
+                return []
+            raise
         finally:
             conn.close()

@@ -355,6 +355,22 @@ function showGuidedError(message) {
   err.classList.remove("hidden");
 }
 
+function chatErrorMessage(res, data) {
+  if (typeof data === "string" && data.trim()) {
+    return data.trim();
+  }
+  if (data && typeof data === "object") {
+    const detail = data.detail ?? data.error ?? data.message;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail.trim();
+    }
+    if (Array.isArray(detail) && detail.length) {
+      return detail.map((item) => item.msg || String(item)).join(" ");
+    }
+  }
+  return `The server could not complete that request (${res.status}).`;
+}
+
 async function sendMessage(message, { switchToChat = false } = {}) {
   if (!message.trim()) return;
   appendMessage("user", message);
@@ -370,7 +386,29 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const contentType = res.headers.get("content-type") || "";
+    let data = null;
+    if (contentType.includes("application/json")) {
+      data = await res.json();
+    } else {
+      const text = await res.text();
+      if (!res.ok) {
+        appendMessage("assistant", `Sorry — ${chatErrorMessage(res, text)} Please try again.`);
+        return;
+      }
+      throw new Error(`Unexpected response format (${res.status})`);
+    }
+
+    if (!res.ok) {
+      appendMessage("assistant", `Sorry — ${chatErrorMessage(res, data)} Please try again.`);
+      return;
+    }
+
+    if (!data?.response) {
+      appendMessage("assistant", "Sorry, something went wrong. Please try again.");
+      return;
+    }
+
     sessionId = data.session_id;
     turnCount = data.turn_count;
     el("turn-counter").textContent = `${turnCount}/5 turns`;
