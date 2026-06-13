@@ -10,6 +10,8 @@ export DUCKDB_PATH="${DUCKDB_PATH:-${DATA_DIR}/navigator.duckdb}"
 export CHROMA_PATH="${CHROMA_PATH:-${DATA_DIR}/chroma}"
 mkdir -p "$DATA_DIR" "$CHROMA_PATH" "$(dirname "$DUCKDB_PATH")"
 
+python -c "from medicare_navigator.ingestion.schema import ensure_schema; ensure_schema()"
+
 CRONTAB_FILE="$(mktemp)"
 python "$ROOT/scripts/generate-crontab.py" >"$CRONTAB_FILE"
 supercronic "$CRONTAB_FILE" &
