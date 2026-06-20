@@ -79,6 +79,43 @@ SPUF_INDEX_NAMES = (
     "idx_pricing_plan_ndc",
 )
 
+# Additive migrations for DuckDB files created before a column was introduced.
+# CREATE TABLE IF NOT EXISTS does not alter existing tables on persistent disks.
+SCHEMA_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
+    ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
+)
+
+
+def _table_exists(conn, table: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'main' AND table_name = ?
+        """,
+        [table],
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'main' AND table_name = ? AND column_name = ?
+        """,
+        [table, column],
+    ).fetchone()
+    return row is not None
+
+
+def migrate_schema(conn) -> None:
+    for table, column, col_type in SCHEMA_MIGRATIONS:
+        if _table_exists(conn, table) and not _column_exists(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
 
 def drop_spuf_indexes(conn) -> None:
     """Drop SPUF lookup indexes before bulk deletes (DuckDB ART index delete bug)."""
@@ -104,6 +141,7 @@ def ensure_schema(db: DuckDBConnection | None = None) -> None:
     conn = db.connect()
     try:
         create_tables(conn, drop_existing=False)
+        migrate_schema(conn)
         create_indexes(conn)
     finally:
         conn.close()

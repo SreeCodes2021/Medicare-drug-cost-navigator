@@ -48,3 +48,39 @@ async def test_chat_not_found_when_schema_missing(empty_duckdb, monkeypatch):
     )
     assert response.status == "not_found"
     assert response.explanation
+
+
+def test_ensure_schema_migrates_legacy_plans_table(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "navigator.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE plans (
+            plan_key VARCHAR PRIMARY KEY, contract_id VARCHAR, plan_id VARCHAR,
+            plan_name VARCHAR, plan_type VARCHAR, state VARCHAR,
+            deductible DOUBLE, contract_year INTEGER, formulary_id VARCHAR
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO plans VALUES ('H8888-001', 'H8888', '001', 'Legacy Plan', 'MA-PD', 'FL', 0, 2026, 'f1')"
+    )
+    conn.close()
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DUCKDB_PATH", str(db_path))
+    from medicare_navigator.config import settings
+
+    settings.data_dir = data_dir
+    settings.duckdb_path = db_path
+
+    from medicare_navigator.ingestion.schema import ensure_schema
+
+    ensure_schema(DuckDBConnection(db_path))
+
+    plans = PlanRepository(DuckDBConnection(db_path)).list_plans()
+    assert len(plans) == 1
+    assert plans[0]["plan_key"] == "H8888-001"
+    assert plans[0]["plan_suppressed"] is False
