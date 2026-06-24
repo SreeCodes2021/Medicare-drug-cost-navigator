@@ -23,6 +23,17 @@ _TIER_COPAY_RE = re.compile(
 # reach the user verbatim — an LLM paraphrase must not be allowed to drop them (decision 4).
 _ENFORCED_STATUSES = {"suppressed", "insulin_out_of_scope", "quantity_limit_blocked"}
 
+# Tool outcomes that queried a registered data source but did not produce an estimate.
+_CITABLE_LOOKUP_STATUSES = frozenset(
+    {
+        "not_found",
+        "not_covered",
+        "suppressed",
+        "insulin_out_of_scope",
+        "quantity_limit_blocked",
+    }
+)
+
 
 def extract_source_ids(tool_artifacts: dict[str, dict[str, Any]]) -> set[str]:
     ids: set[str] = set()
@@ -74,6 +85,18 @@ def enrich_citations(
     return enriched
 
 
+def _citation_from_artifact(artifact: dict[str, Any]) -> Citation:
+    source_id = artifact["source_id"]
+    claim = artifact.get("message") or "Record lookup completed."
+    return Citation(
+        claim=claim,
+        source_id=source_id,
+        as_of_date=artifact.get("as_of_date", ""),
+        source_label=label_for_source_id(source_id),
+        url=url_for_source_id(source_id),
+    )
+
+
 def build_citations_from_artifacts(
     tool_artifacts: dict[str, dict[str, Any]],
 ) -> list[Citation]:
@@ -93,6 +116,37 @@ def build_citations_from_artifacts(
                 url=url_for_source_id(source_id),
             )
         )
+    elif (
+        estimate
+        and estimate.get("source_id")
+        and estimate.get("status") in _CITABLE_LOOKUP_STATUSES
+    ):
+        citations.append(_citation_from_artifact(estimate))
+
+    if citations:
+        return citations
+
+    lookup = tool_artifacts.get("lookup_plan")
+    if lookup and lookup.get("source_id"):
+        if lookup.get("status") == "not_found":
+            citations.append(_citation_from_artifact(lookup))
+        elif lookup.get("status") == "ok":
+            data = lookup.get("data")
+            plan = data.get("plan") if isinstance(data, dict) else None
+            if plan:
+                source_id = lookup["source_id"]
+                citations.append(
+                    Citation(
+                        claim=(
+                            f"Plan {plan['plan_key']} ({plan['plan_name']}) "
+                            "found in CMS database"
+                        ),
+                        source_id=source_id,
+                        as_of_date=lookup.get("as_of_date", ""),
+                        source_label=label_for_source_id(source_id),
+                        url=url_for_source_id(source_id),
+                    )
+                )
 
     return citations
 

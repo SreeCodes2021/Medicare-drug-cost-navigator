@@ -104,6 +104,11 @@ def _extract_response_fields(
     estimate = None
     data_as_of: dict[str, str] = {}
 
+    for tool_name in ("estimate_drug_cost", "lookup_plan", "normalize_drug"):
+        result = tool_artifacts.get(tool_name)
+        if result and result.get("as_of_date"):
+            data_as_of[tool_name] = result["as_of_date"]
+
     result = tool_artifacts.get("estimate_drug_cost")
     if result and result.get("data"):
         data = result["data"]
