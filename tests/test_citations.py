@@ -78,6 +78,40 @@ def test_apply_guardrails_force_appends_caveats():
     assert "COINSURANCE NOT CALCULATED" in explanation
 
 
+def test_build_citations_for_plan_not_found():
+    artifacts = {
+        "estimate_drug_cost": {
+            "status": "not_found",
+            "source_id": "cms_spuf_2026_q1",
+            "as_of_date": "2026-01-15",
+            "message": "Plan 'S5678-012' not found.",
+            "data": None,
+        }
+    }
+    citations = build_citations_from_artifacts(artifacts)
+
+    assert len(citations) == 1
+    assert "S5678-012" in citations[0].claim
+    assert citations[0].source_label == "CMS Part D Formulary & Pricing (SPUF)"
+    assert citations[0].url is not None
+
+
+def test_build_citations_for_lookup_plan_not_found():
+    artifacts = {
+        "lookup_plan": {
+            "status": "not_found",
+            "source_id": "cms_spuf_2026_q1",
+            "as_of_date": "2026-01-15",
+            "message": "Plan 'S5678-012' not found.",
+            "data": None,
+        }
+    }
+    citations = build_citations_from_artifacts(artifacts)
+
+    assert len(citations) == 1
+    assert citations[0].claim == "Plan 'S5678-012' not found."
+
+
 def test_apply_guardrails_flags_untraceable_dollar_amount():
     artifacts = {"estimate_drug_cost": _estimate_artifact(cost_low=15.0, cost_high=15.0)}
     _explanation, _citations, errors = apply_guardrails(

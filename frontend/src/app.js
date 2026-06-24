@@ -250,12 +250,10 @@ function renderCitationsCard(citations) {
   return `<div class="card"><h3>Citations</h3><div class="citation-list">${items}</div></div>`;
 }
 
-function renderBaseline(baseline, warningHtml) {
+function renderSourcesPanel({ citations, dataAsOf, toolStatuses } = {}) {
   const container = el("results-content");
-  container.innerHTML = warningHtml || "";
-
-  const asOf = baseline.data_as_of || {};
-  const dates = Object.values(asOf);
+  const asOf = dataAsOf || {};
+  const dates = Object.values(asOf).filter(Boolean);
   const badge = el("data-as-of");
   if (dates.length) {
     badge.textContent = `Data as of ${dates[0]}`;
@@ -264,27 +262,35 @@ function renderBaseline(baseline, warningHtml) {
     badge.classList.add("hidden");
   }
 
-  container.innerHTML += renderCitationsCard(baseline.citations);
+  container.innerHTML = renderCitationsCard(citations);
 
-  if (baseline.tool_statuses && Object.keys(baseline.tool_statuses).length) {
-    const statuses = Object.entries(baseline.tool_statuses)
+  if (toolStatuses && Object.keys(toolStatuses).length) {
+    const statuses = Object.entries(toolStatuses)
       .map(([k, v]) => `${k}: ${v}`)
       .join(" · ");
     container.innerHTML += `<p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Tools: ${statuses}</p>`;
   }
 }
 
-function renderResults(resp) {
-  const container = el("results-content");
+function renderBaseline(baseline) {
+  renderSourcesPanel({
+    citations: baseline.citations,
+    dataAsOf: baseline.data_as_of,
+    toolStatuses: baseline.tool_statuses,
+  });
+}
 
+function renderResults(resp) {
   if (resp.status === "needs_clarification" || resp.status === "not_found") {
     if (!resultsBaseline) {
-      container.innerHTML = `<p class="status-warning">${resp.clarification_message || resp.explanation}</p>`;
-      el("data-as-of").classList.add("hidden");
+      renderSourcesPanel({
+        citations: resp.citations,
+        dataAsOf: resp.data_as_of,
+        toolStatuses: resp.tool_statuses,
+      });
       return;
     }
-    const warning = `<p class="status-warning">${resp.clarification_message || resp.explanation}</p>`;
-    renderBaseline(resultsBaseline, warning);
+    renderBaseline(resultsBaseline);
     return;
   }
 
@@ -302,15 +308,11 @@ function renderResults(resp) {
   }
 
   if (resultsBaseline) {
-    const warning =
-      resp.status === "limit_reached"
-        ? `<p class="status-warning">${resp.explanation}</p>`
-        : "";
-    renderBaseline(resultsBaseline, warning);
+    renderBaseline(resultsBaseline);
     return;
   }
 
-  container.innerHTML = `<p class="status-warning">${resp.explanation || "No response."}</p>`;
+  renderSourcesPanel();
 }
 
 function switchMode(mode) {
