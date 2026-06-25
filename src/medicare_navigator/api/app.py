@@ -6,9 +6,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
@@ -35,6 +38,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _NoCacheFrontendMiddleware(BaseHTTPMiddleware):
+    """Prevent stale index.html/CSS/JS during local dev (browser 304 caching)."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".html", ".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
+app.add_middleware(_NoCacheFrontendMiddleware)
 
 
 class FilterPayload(BaseModel):
@@ -166,4 +184,10 @@ def _build_message_from_fields(req: QueryRequest) -> str:
 
 _frontend = settings.project_root / "frontend" / "dist"
 if _frontend.exists():
+    _no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        return FileResponse(_frontend / "index.html", media_type="text/html", headers=_no_cache)
+
     app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")
