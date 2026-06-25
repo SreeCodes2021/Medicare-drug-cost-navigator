@@ -251,15 +251,18 @@ body {
 }
 
 .empty-state { text-align: center; color: var(--muted); padding: 2rem 1rem; }
-.prompt-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; margin-top: 1rem; }
+.prompt-chips { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; text-align: left; }
 .chip {
   background: #eff6ff;
   border: 1px solid #bfdbfe;
   color: var(--accent);
-  padding: 0.4rem 0.75rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
   cursor: pointer;
+  text-align: left;
+  width: 100%;
 }
 .chip:hover { background: #dbeafe; }
 

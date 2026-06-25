@@ -453,7 +453,7 @@ el("chat-form").addEventListener("submit", (e) => {
 });
 
 document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", () => sendMessage(chip.dataset.prompt));
+  chip.addEventListener("click", () => sendMessage(chip.textContent.trim()));
 });
 
 el("mode-tab-chat").addEventListener("click", () => switchMode("chat"));
