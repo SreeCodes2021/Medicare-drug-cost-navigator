@@ -23,7 +23,7 @@ def use_mock_llm(monkeypatch):
 
 @pytest.fixture
 def spuf_db(tmp_path, monkeypatch):
-    """DuckDB loaded with offline SPUF fixture (FL + TX test plans)."""
+    """DuckDB loaded with offline SPUF fixture (FL test plans)."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     patch_settings(monkeypatch, data_dir)

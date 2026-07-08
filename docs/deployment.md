@@ -26,11 +26,10 @@ medicare-ingest spuf --download
 
 4. Check `GET /api/health` → `data_fresh: true`.
 
-**Low-memory first load (Starter):** ingest one state at a time with `--merge-states`:
+**Low-memory first load (Starter):** ingest Florida only (default in `config/ingest_filters.yaml`):
 
 ```bash
 medicare-ingest spuf --download --states FL --merge-states
-medicare-ingest spuf --download --states TX --merge-states
 ```
 
 Each run replaces only that state's plans in DuckDB; the CMS zip is still downloaded/read each time. If a run exits with `Killed`, upgrade the Render plan or ingest fewer states.
@@ -113,7 +112,7 @@ Alert when `data_fresh` is `false` for more than one check cycle.
 
 ## Data scope
 
-- SPUF ingest filters to **FL + TX** (`config/ingest_filters.yaml`).
+- SPUF ingest filters to **FL** (`config/ingest_filters.yaml`).
 - Cost trends, alternatives, and policy retrieval return `no_match` until real loaders are added.
 
 ## Local development

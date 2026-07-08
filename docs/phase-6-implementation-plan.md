@@ -2,88 +2,147 @@
 
 **Medicare Drug Cost & Benefit-Transparency Navigator**
 
-This document records a scope pivot: the broad conversational assistant built through Phase 5 (`106ad37`) plus three later un-documented commits (`4a60e4a` DuckDB read-only + frontend plan polling, `096b63d` policy corpus ingestion, `968147c` explicit LLM mock mode) was replaced with a single-purpose, deterministic cost estimator per [docs/navigator-implementation-spec.md](./navigator-implementation-spec.md). That spec — not `build-requirements.md` — is now the source of truth for scope.
+This document records what was built in Phase 6 on top of [phase-5-implementation-plan.md](./phase-5-implementation-plan.md). Phase 6 is a **major scope pivot**: the functional specification is now [navigator-implementation-spec.md](./navigator-implementation-spec.md), not the broader [build-requirements.md](../build-requirements.md) multi-agent assistant.
 
-**Base commit:** `968147c` (HEAD at time of writing). This phase's changes are in the working tree, not yet committed.
+**Commit range:** `968147c` (last Phase 5 commit) → `0e69aa2` (HEAD at time of writing). Unstaged / untracked work is excluded.
 
 ---
 
 ## 1. Overview
 
-Phases 1–5 built a broad Medicare assistant: policy Q&A over a Chroma-backed RAG corpus, multi-year cost-trend history, therapeutic alternatives, a clarification agent, and a formulary/cost-share calculator, all orchestrated by an LLM tool-calling loop over 7 MCP tools.
+Phases 1–5 built a broad Medicare assistant: policy Q&A over a Chroma-backed RAG corpus, multi-year cost-trend history, therapeutic alternatives, a clarification agent, and a formulary/cost-share calculator, all orchestrated by an LLM tool-calling loop over seven MCP tools.
 
-Phase 6 discards everything outside a narrower goal: **estimate the out-of-pocket cost of one drug, on one plan's regular formulary, for one fill**, for a non-LIS beneficiary in the pre-deductible or initial-coverage phase — with six specific CMS data-correctness rules ("Bugs" 1–6) handled explicitly rather than glossed over. Insulin, excluded-drug formulary entries, and the catastrophic phase are explicit future work, not silently approximated.
+Phase 6 discards everything outside a narrower goal: **estimate the out-of-pocket cost of one drug, on one plan's regular formulary, for one fill**, for a non-LIS beneficiary in the pre-deductible or initial-coverage phase — with six specific CMS data-correctness rules ("Bugs" 1–6 in the implementation spec) handled explicitly rather than glossed over. Insulin, excluded-drug formulary entries, and the catastrophic phase are explicit future work, not silently approximated.
 
-**Phase 6 scope:** new 4-table SPUF schema that persists previously-discarded CMS fields (`PLAN_SUPPRESSED_YN`, `QUANTITY_LIMIT_`*, `PRIOR_AUTHORIZATION_YN`, `STEP_THERAPY_YN`, `DED_APPLIES_YN`); a single consolidated `estimate_drug_cost` tool implementing the spec's 8-step pipeline and all 6 bugs; a corrected `COVERAGE_LEVEL` code mapping discovered via real CMS data; verbatim-caveat guardrail enforcement; a rewritten frontend (chat + guided estimate tabs, Sources-only side panel — see §7), prompt, mock LLM layer, and test suite (79 tests, all passing).
+Between the Phase 5 doc commit and the pivot, three interim commits landed (`4a60e4a`, `096b63d`, `968147c`). The policy-corpus work from `096b63d` was **fully reverted** in the pivot commit `7f99ea6`. Plan polling and explicit mock mode survived.
 
-**Deleted in Phase 6:** `agents/` (clarification, policy, synthesis), `intake/`, `orchestrator/pipeline.py` (legacy pipeline mode), `ingestion/policy_corpus.py`, `tools/{policy_retrieval,cost_trend,alternatives,ira_drugs,formulary_benefit,supply_estimate}.py`, `config/policy_corpus.yaml`, `config/benefit_params.yaml`, the Chroma vector store, and the `chromadb`/`instructor` dependencies.
+**Phase 6 scope:** new four-table SPUF schema persisting previously-discarded CMS fields (`PLAN_SUPPRESSED_YN`, `QUANTITY_LIMIT_*`, `PRIOR_AUTHORIZATION_YN`, `STEP_THERAPY_YN`, `DED_APPLIES_YN`); a single consolidated `estimate_drug_cost` tool implementing the spec's eight-step pipeline and all six bugs; corrected `COVERAGE_LEVEL` code mapping discovered via real CMS data; verbatim-caveat guardrail enforcement; rewritten frontend (chat + guided estimate tabs, Sources-only side panel); explicit `LLM_MOCK` mode; DuckDB schema migrations for persistent Render disks; production resilience for empty/missing schemas; citations on lookup failures; plan-list polling UX; prompt chips aligned to real FL plans.
+
+**Deleted in Phase 6:** `agents/` (clarification, policy, synthesis), `intake/`, `orchestrator/pipeline.py`, `agent/fallback.py`, `ingestion/policy_corpus.py`, `tools/{policy_retrieval,cost_trend,alternatives,ira_drugs,formulary_benefit,supply_estimate}.py`, `config/{policy_corpus,benefit_params}.yaml`, the Chroma vector store dependency (`chromadb`), and the `instructor` dependency.
+
+**Explicitly unchanged / still deferred:** national multi-state real-data coverage beyond ingested states; insulin / excluded-drugs / catastrophic-phase estimators; CI eval gate on PRs; npm/bundler frontend pipeline; stale references to Chroma in `docs/deployment.md`, `docs/data-sources.md`, and `scripts/docker-start.sh` (directory still created but unused).
 
 ---
 
-## 2. Product boundaries (can / can't)
+## 2. Major scope shift from build-requirements
 
-This section is the user-facing scope contract for Phase 6. The implementation spec ([navigator-implementation-spec.md](./navigator-implementation-spec.md) §1) and system prompt (`agent/prompts.py`) match these boundaries; hard stops are enforced inside `estimate_drug_cost`, not left to the LLM.
+| Area | Phases 1–5 (`build-requirements.md`) | Phase 6 (`navigator-implementation-spec.md`) |
+|---|---|---|
+| Primary user goal | Explain formulary, trends, alternatives, and policy in plain language | Estimate dollar cost for **one drug fill on one plan** |
+| MCP tools | 7 tools (normalize, formulary, cost trend, alternatives, policy retrieval, supply estimate, IRA drugs) | 3 tools (`estimate_drug_cost`, `lookup_plan`, `list_plans`) |
+| Agents | Intake, policy, synthesis, clarification | Single navigator agent with tool-calling loop only |
+| Orchestration | `orchestrator/pipeline.py` legacy mode + navigator mode | `orchestrator/router.py` → `Navigator` only |
+| Policy Q&A | Chroma RAG over `config/policy_corpus.yaml` | Removed entirely |
+| Cost trends / alternatives | DuckDB tables + dedicated tools | Removed entirely |
+| Response model | `FormularyResult`, `CostTrend`, `Alternative`, `SupplyEstimate` | `DrugCostEstimate` only |
+| Frontend results panel | Formulary card, trend bars, alternatives list, citations | **Sources panel** (citations + data-as-of only); cost in chat text |
+| Data correctness | General failure contract (Section 5.5) | Six named CMS bugs with verbatim caveats and hard stops |
+| Source of truth doc | `build-requirements.md` | `navigator-implementation-spec.md` for v1 scope |
+
+`build-requirements.md` remains the long-term product vision. Phase 6 intentionally ships a **trimmed, verifiable slice** where every dollar figure traces to a deterministic eight-step pipeline.
+
+---
+
+## 3. Product boundaries (can / can't)
+
+This section is the user-facing scope contract. The implementation spec and system prompt (`agent/prompts.py`) match these boundaries; hard stops are enforced inside `estimate_drug_cost`, not left to the LLM.
 
 ### Can (in scope)
 
 | Boundary | What the tool does |
-| -------- | ------------------ |
+|---|---|
 | **Medicare Part D** | Estimates drug cost for standalone PDPs and MAPD plans with a Part D benefit, using CMS SPUF quarterly data |
-| **Florida (FL)** | Real CMS data is ingested and verified for FL only (572 plans in the current 2026 zip). Offline fixtures also include TX for tests |
-| **Non-insulin drugs** | Generic or brand drugs on a plan's **regular** (`basic_drugs_formulary`) tier — e.g. lovastatin, metformin, lisinopril |
-| **Orally administered** | Tablets, capsules, and other standard oral formulations (the v1 spec's "standard-tier, orally-administered" scope) |
-| **Non-LIS beneficiaries** | Assumes no Low-Income Subsidy (Extra Help); published copay rows are used as-is |
-| **Pre-deductible or initial-coverage phase** | User supplies year-to-date out-of-pocket spend; tool compares against plan deductible and applies per-tier `DED_APPLIES_YN` overrides (Bug 2) |
-| **One drug, one plan, one fill** | Single cost estimate per request — not a year-long projection or multi-drug comparison |
-| **30 / 60 / 90-day fills** | Standard CMS days-supply codes via the named `DAYS_SUPPLY_CODE_MAP` (Bug 1) |
+| **Ingested states** | Real CMS data verified for **FL** (572 plans in the 2026 zip) |
+| **Non-insulin drugs** | Generic or brand drugs on a plan's **regular** (`basic_drugs_formulary`) tier |
+| **Orally administered** | Tablets, capsules, and other standard oral formulations |
+| **Non-LIS beneficiaries** | Assumes no Low-Income Subsidy; published copay rows used as-is |
+| **Pre-deductible or initial-coverage phase** | User supplies YTD OOP; tool applies per-tier `DED_APPLIES_YN` overrides (Bug 2) |
+| **One drug, one plan, one fill** | Single cost estimate per request |
+| **30 / 60 / 90-day fills** | Standard CMS days-supply codes via `DAYS_SUPPLY_CODE_MAP` (Bug 1) |
 | **Copay cost-sharing** | Returns a dollar estimate when the matched tier's cost-share type is copay |
-| **Prior auth / step therapy** | Surfaces PA or ST as a verbatim caveat; cost is still computed (soft caveat, not a hard stop) |
-| **Multiple NDCs per drug** | Reports a low–high range across all matched manufacturer NDCs (Bug 5) |
-| **Plan lookup** | Resolve a plan by contract–plan ID (`S5921-383`) or list plans in the ingested state(s) |
+| **Prior auth / step therapy** | Surfaces PA or ST as a verbatim caveat; cost still computed (soft caveat) |
+| **Multiple NDCs per drug** | Reports a low–high range across matched manufacturer NDCs (Bug 5) |
+| **Plan lookup** | Resolve by contract–plan ID (`S5921-383`) or list plans in ingested state(s) |
 
-### Can't (out of scope — hard stop or not supported)
+### Can't (out of scope)
 
 | Boundary | What happens instead |
-| -------- | -------------------- |
-| **Other states (beyond ingested data)** | No plan/drug rows unless that state was ingested (`medicare-ingest spuf --states FL`). National multi-state coverage is deferred future work (§13) |
-| **Insulin** | **Hard stop** — `is_insulin()` routes before any formulary lookup. Separate $35/month statutory cap and CMS file (see Q2 in §9) |
-| **Medicaid** | Not supported — tool only reads Medicare Part D SPUF files; no Medicaid formulary or cost-share data |
-| **LIS / Extra Help** | Not supported — no reduced copay/coinsurance tables for subsidized beneficiaries |
-| **Catastrophic coverage phase** | Not computed — TrOOP threshold is not in SPUF; v1 only handles pre-deductible and initial-coverage phases |
-| **Excluded-drug formulary** | Not supported — drugs covered only on enhanced/supplemental formularies are out of scope |
-| **Indication-based restrictions** | Not supported — no matching of beneficiary diagnosis to FDA-approved indication |
-| **Coinsurance dollar amounts** | **Not computed** — when cost-share type is coinsurance, Bug 4 caveat is returned instead of a dollar figure |
-| **Suppressed plans** | **Hard stop** — `PLAN_SUPPRESSED_YN=Y` blocks all downstream lookups (Bug 6) |
-| **Quantity-limit violations** | **Hard stop** — requested days supply exceeds the plan's max single-fill limit (Bug 5b) |
-| **Non-standard fill sizes** | Partial estimate only (ingredient cost, no reliable cost-share) when days supply is not 30/60/90 |
-| **Policy Q&A, alternatives, cost trends** | Removed in Phase 6 — no Chroma RAG corpus, no therapeutic-alternative or multi-year trend tools |
-| **Plan switching / enrollment advice** | Never recommended — informational estimates only |
-| **Medical or financial advice** | Disclaimed in every response |
-| **Real-time pharmacy pricing** | CMS quarterly reference data only; actual pharmacy charge may differ |
+|---|---|
+| **Un-ingested states** | No plan/drug rows unless that state was ingested |
+| **Insulin** | **Hard stop** — `is_insulin()` routes before formulary lookup |
+| **Medicaid** | Not supported — Medicare Part D SPUF only |
+| **LIS / Extra Help** | Not supported |
+| **Catastrophic coverage phase** | Not computed — TrOOP threshold not in SPUF |
+| **Excluded-drug formulary** | Not supported |
+| **Indication-based restrictions** | Not supported |
+| **Coinsurance dollar amounts** | **Not computed** — Bug 4 caveat returned instead |
+| **Suppressed plans** | **Hard stop** — `PLAN_SUPPRESSED_YN=Y` (Bug 6) |
+| **Quantity-limit violations** | **Hard stop** when requested days supply exceeds plan limit (Bug 5b) |
+| **Non-standard fill sizes** | Partial estimate (ingredient cost only) when days supply is not 30/60/90 |
+| **Policy Q&A, alternatives, cost trends** | Removed in Phase 6 |
+| **Plan switching / enrollment advice** | Never recommended |
+| **Real-time pharmacy pricing** | CMS quarterly reference data only |
 
 ---
 
-## 3. Decisions locked for Phase 6
+## 4. Decisions locked for Phase 6
 
-
-| Decision                  | Choice                                                                                        | Rationale                                                                                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tool granularity          | **One consolidated `estimate_drug_cost` tool**, plus small `lookup_plan`/`list_plans` helpers | Hard-stop and ordering rules (suppressed-plan check first, days-supply mapping before any join) must not depend on an LLM correctly sequencing several tool calls |
-| Drug resolution           | `**normalize_drug()` called internally**, not LLM-visible                                     | The insulin hard-stop lives inside drug resolution and must never be a skippable step                                                                             |
-| Suppressed plans (Bug 6)  | **Persist `plan_suppressed`, do not filter at ingest**                                        | The old ingest-time exclusion meant a suppressed plan could never even be selected, so the mandated hard-stop could never fire                                    |
-| Coinsurance (Bug 4)       | **Excluded entirely from the cost range**, never estimated                                    | CMS layout doesn't confirm coinsurance's dollar base; showing a computed figure risks presenting an unverified number as firm                                     |
-| PA / step therapy         | **Soft caveat, cost still computed**                                                          | Spec's "surface as a hard caveat, do not silently compute" contrasts with Bug 6's explicit "not a caveat appended... a hard stop"                                 |
-| `COVERAGE_LEVEL` codes    | **0 = deductible, 1 = initial coverage, 3 = catastrophic** (2 unused)                         | Verified against real 2026 CMS FL data — the initial 1/2 assumption was wrong and would have silently returned incorrect low-ball costs (see §8)                  |
-| Disclaimer enforcement    | **Guardrail force-appends**, not just a prompt instruction                                    | Bug 6 / Bug 4 text must never be droppable by LLM paraphrase — these are safety-critical, not stylistic                                                           |
-| Days-supply mapping       | **Single named lookup** (`tools/days_supply.py`)                                              | Spec Section 4 explicitly forbids inlining/repeating this translation at each join site                                                                           |
-| Multi-NDC pricing (Bug 5) | **Independent per-NDC computation, report low–high range**                                    | Different manufacturers' NDCs can carry different prices or even different tiers; picking one arbitrarily hides that spread                                       |
-
+| Decision | Choice | Rationale |
+|---|---|---|
+| Tool granularity | **One consolidated `estimate_drug_cost` tool** + `lookup_plan` / `list_plans` helpers | Hard-stop ordering (suppressed check first; days-supply mapping before joins) must not depend on LLM tool-call sequencing |
+| Drug resolution | **`normalize_drug()` called internally**, not LLM-visible | Insulin hard-stop lives inside drug resolution |
+| Suppressed plans (Bug 6) | **Persist `plan_suppressed`, do not filter at ingest** | Ingest-time exclusion prevented the mandated hard-stop from ever firing |
+| Coinsurance (Bug 4) | **Excluded from cost range**, never estimated | CMS layout does not confirm coinsurance dollar base |
+| PA / step therapy | **Soft caveat, cost still computed** | Contrasts with Bug 6's explicit hard stop |
+| `COVERAGE_LEVEL` codes | **0 = deductible, 1 = initial coverage, 3 = catastrophic** (2 unused) | Verified against real 2026 FL data — initial 1/2 assumption was wrong |
+| Disclaimer enforcement | **Guardrail force-appends**, not prompt-only | Bug 4/6 text must never be dropped by LLM paraphrase |
+| Days-supply mapping | **Single named lookup** (`tools/days_supply.py`) | Spec forbids inlining at each join site |
+| Multi-NDC pricing (Bug 5) | **Independent per-NDC computation, low–high range** | Different manufacturers can differ in tier and price |
+| LLM without API key | **`LLM_MOCK=1` explicit mode**; 503 on `/api/health` and chat when unconfigured | Replaced silent heuristic fallback (`agent/fallback.py` deleted) |
+| Persistent disk schema | **`migrate_schema()` additive ALTERs** | Render disks survive deploys; `CREATE TABLE IF NOT EXISTS` does not add new columns |
+| API read paths | **Read-only DuckDB connections** for `fetchone`/`fetchall` | Safe concurrent reads during background ingest |
+| Frontend during ingest | **Poll `/api/plans` every 20s** (max 30 attempts) + Refresh button | Phase 5 deferred UX item, shipped in `4a60e4a` |
+| Lookup failures in UI | **Show citations and data-as-of** even for `not_found` / `not_covered` | User sees which source was queried (`f29959e`) |
 
 ---
 
-## 4. New DB schema
+## 5. Architecture (post-pivot)
 
-Rebuilt from scratch — `data/navigator.duckdb` and `data/chroma/` were deleted, not migrated.
+```mermaid
+flowchart TB
+    UI[frontend/src chat + guided tabs]
+    API[FastAPI /api/chat]
+    Nav[Navigator agent]
+    LLM[Anthropic or OpenAI or LLM_MOCK]
+    MCP[MCP registry 3 tools]
+    Tool[estimate_drug_cost 8-step pipeline]
+    DB[(DuckDB SPUF tables)]
+
+    UI --> API --> Nav --> LLM
+    Nav --> MCP --> Tool --> DB
+    Nav --> Guard[citations guardrails]
+```
+
+The orchestrator is a thin router — no legacy pipeline mode:
+
+```python
+# orchestrator/router.py
+return await navigator.run(message, filter_slots=filter_slots, session_id=session_id)
+```
+
+MCP tools (down from 7):
+
+| Tool | Role |
+|---|---|
+| `estimate_drug_cost` | Eight-step deterministic cost pipeline |
+| `lookup_plan` | Resolve plan by key or search text |
+| `list_plans` | List ingested plans (powers `/api/plans` and guided form) |
+
+---
+
+## 6. New DB schema
+
+Rebuilt from scratch for greenfield installs — existing Render disks get additive migrations instead of full rebuild.
 
 ```
 plans                    plan_key PK, contract_id, plan_id, plan_name, plan_type, state,
@@ -95,237 +154,249 @@ basic_drugs_formulary     formulary_id, ndc, rxcui, tier, quantity_limit_yn,
 
 pricing                   plan_key, ndc, days_supply (raw day count), unit_cost
 
-beneficiary_cost          plan_key, tier, coverage_level, days_supply_code (CMS 1-4
-                          CODE, not a day count), pharmacy_channel, cost_type, copay,
-                          coinsurance_pct, ded_applies_yn, as_of_date
+beneficiary_cost          plan_key, tier, coverage_level, days_supply_code (CMS 1–4),
+                          pharmacy_channel, cost_type, copay, coinsurance_pct,
+                          ded_applies_yn, as_of_date
 ```
 
-Removed: `cost_trends`, `alternatives`, `policy_passages` (served only deleted features).
+**Removed tables:** `cost_trends`, `alternatives`, `policy_passages`.
 
-Ingestion (`ingestion/spuf.py`) changes: `PLAN_SUPPRESSED_YN` exclusion removed from `_plan_in_filter`; `basic_drugs_formulary` dedupes to the max `FORMULARY_VERSION` per `(formulary_id, contract_year)`; `_extract_cost_shares` no longer discards every `days_supply`/`coverage_level` value except 1 — every CMS code now survives ingestion.
+**Schema migrations** (`ingestion/schema.py`):
 
----
+```python
+SCHEMA_MIGRATIONS = (
+    ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
+    ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
+)
+```
 
-## 5. `estimate_drug_cost` — the consolidated tool
+`ensure_schema()` calls `create_tables(drop_existing=False)` → `migrate_schema()` → `create_indexes()`. Invoked on FastAPI lifespan and in `scripts/docker-start.sh` before uvicorn.
 
-`src/medicare_navigator/tools/estimate_drug_cost.py` runs spec Section 3's 8 steps as one deterministic async function:
+**Ingestion changes** (`ingestion/spuf.py`):
 
-1. Resolve plan → hard stop if `plan_suppressed` (Bug 6, verbatim message)
-2. Resolve drug via `normalize_drug()` → hard stop if insulin (Section 6, future work)
-3. Formulary lookup → screen every matched NDC against `QUANTITY_LIMIT_*` (Bug 5b); surface PA/step-therapy as a caveat
-4. Map requested days-supply to its CMS code via the single named `DAYS_SUPPLY_CODE_MAP` (Bug 1) — an unmapped value (not 30/60/90) takes the explicit "other" branch, never silently coerced
-5. Price each surviving NDC: `unit_cost × ceil(days_supply / 1)` (Bug 3 — ceil, never floor/round)
-6. Determine benefit phase from YTD spend vs. plan deductible; override per-tier via `DED_APPLIES_YN` (Bug 2, disclaimer always attached)
-7. Cost-share lookup; coinsurance-typed NDCs are excluded from the range, not estimated (Bug 4)
-8. Assemble `DrugCostEstimate`: low–high range across surviving NDCs (Bug 5), with every triggered caveat attached verbatim
-
-New supporting modules: `tools/days_supply.py`, `tools/insulin.py` (hardcoded name/ingredient allowlist), `tools/disclaimers.py` (verbatim caveat strings as named constants — single source of truth for tool code and tests).
-
----
-
-## 6. LLM, prompt, and guardrail changes
-
-- `agent/prompts.py` — narrow system prompt describing the exact v1 scope, instructing verbatim caveat relay and a hard stop on `suppressed`/`insulin_out_of_scope`/`quantity_limit_blocked` statuses.
-- `llm/mock.py` — simplified to the single-tool flow; a dropped drug-name fallback branch (length-based token guess when the local RxNorm cache has no match) was restored after real-data testing exposed the regression.
-- `guardrails/citations.py` — `apply_guardrails` now force-appends any tool-returned caveat or hard-stop message not verbatim-present in the LLM's explanation. Two false positives were found and fixed during this phase:
-  - `_has_formulary_evidence` required `data` to be truthy, so a legitimate `not_covered` result (which has `data=None` by design) was mistaken for an unbacked "tier/copay" claim and triggered a garbled retry.
-  - The dollar-amount traceability check ran against hard-stop messages too, so insulin's own disclosed "$35/month cap" text was flagged as an untraceable figure.
-- `llm/client.py` — `structured_completion`/`instructor` removed (only served the deleted legacy pipeline).
+- `PLAN_SUPPRESSED_YN` no longer filtered at ingest — suppressed plans persist for Bug 6 hard stop
+- `basic_drugs_formulary` dedupes to max `FORMULARY_VERSION` per `(formulary_id, contract_year)`
+- `_extract_cost_shares` retains **all** `days_supply` / `coverage_level` CMS codes (not just code 1)
+- Phase 5 batch inserts, progress logging, `--merge-states`, and index drop/recreate unchanged
 
 ---
 
-## 7. Frontend rewrite (chat + guided estimate)
+## 7. `estimate_drug_cost` — the consolidated tool
 
-The Phase 6 UI is a second rewrite on top of the Phase 5 committed static UI (`frontend/src/`). It aligns the interface with the narrower cost-estimator scope: cost and caveats live in the **chat transcript** (LLM explanation); the right panel is **Sources only** (citations + data-as-of), not structured formulary/trend/alternative cards.
+`src/medicare_navigator/tools/estimate_drug_cost.py` runs spec Section 3's eight steps as one deterministic async function:
 
-### Layout
+1. Resolve plan → hard stop if `plan_suppressed` (Bug 6)
+2. Resolve drug via `normalize_drug()` → hard stop if insulin
+3. Formulary lookup → screen NDCs against `QUANTITY_LIMIT_*` (Bug 5b); PA/ST soft caveat
+4. Map days supply via `DAYS_SUPPLY_CODE_MAP` (Bug 1); unmapped values take explicit "other" branch
+5. Price each surviving NDC: `unit_cost × ceil(days_supply / 1)` (Bug 3)
+6. Benefit phase from YTD vs deductible; per-tier `DED_APPLIES_YN` override (Bug 2)
+7. Cost-share lookup; coinsurance NDCs excluded from range (Bug 4)
+8. Assemble `DrugCostEstimate`: low–high range, all triggered caveats attached verbatim
 
-| Before (Phase 5 / early Phase 6) | After (current) |
-| -------------------------------- | --------------- |
-| 3-column grid: filters sidebar · chat · results | 2-column grid: **main panel** · **Sources** panel |
-| Filters always visible in left sidebar | Filters moved into **Guided estimate** tab |
-| Results: formulary card + cost-trend bars + alternatives list + citations | Results: **citations only** (+ data-as-of badge, tool-status footer) |
-| `filter-alternatives` / `filter-trend` checkboxes | Removed — those backend tools were deleted |
-| Collapsible filter panel with badge count | Removed — replaced by tabbed input modes |
+Supporting modules:
 
-### Dual input modes (`switchMode`)
+| Module | Role |
+|---|---|
+| `tools/days_supply.py` | `DAYS_SUPPLY_CODE_MAP` — 30→1, 60→4, 90→2 |
+| `tools/insulin.py` | `is_insulin()` name/ingredient allowlist |
+| `tools/disclaimers.py` | Verbatim Bug 2/4/5/5b/6 and insulin messages |
+| `tools/lookup_plan.py` | Plan resolution helper exposed to MCP |
 
-The main panel has two ARIA tabbed modes:
+New `ToolStatus` values: `suppressed`, `insulin_out_of_scope`, `quantity_limit_blocked`.
 
-1. **Ask in chat** (default) — free-form textarea; optional filters from the guided form are still sent via `getFilters()` when populated.
-2. **Guided estimate** — structured form: drug, dosage, plan (with refresh + poll), contract year, **days supply** (30/60/90), YTD out-of-pocket. **Get estimate** validates drug + plan, composes a natural-language prompt (`composeGuidedMessage`), calls the same `/api/chat` path, then **switches to the chat tab** so the user sees the full assistant reply.
+---
 
-Loading copy changed from "Looking up formulary…" to **"Estimating cost…"**.
+## 8. LLM, prompt, and guardrail changes
+
+### Explicit mock mode (`968147c`)
+
+- Deleted `agent/fallback.py` (silent heuristic answers when LLM unavailable)
+- `llm/client.py`: `is_available()` true when API key **or** `LLM_MOCK=1`
+- `llm/errors.py`: `LLMNotConfiguredError`, `LLMRequestError`
+- `/api/health` returns **503 degraded** when LLM not configured
+- `/api/chat` and `/api/query` return **503** / **502** with structured error detail
+- `llm/mock.py`: simplified single-tool mock flow for offline tests and eval
+
+### Navigator (`agent/navigator.py`)
+
+- Extracts `DrugCostEstimate` from `estimate_drug_cost` artifacts
+- Sets `not_found` when tool returns `not_found`/`no_match`, or `lookup_plan` fails on a parsed plan ID in the message
+- Guardrail retry on citation/dollar-amount validation failure
+
+### Guardrails (`guardrails/citations.py`)
+
+- `apply_guardrails` force-appends tool caveats and hard-stop messages not verbatim in LLM output
+- `_ENFORCED_STATUSES`: `suppressed`, `insulin_out_of_scope`, `quantity_limit_blocked`
+- **`f29959e`:** `build_citations_from_artifacts` emits citations for lookup failures (`not_found`, `not_covered`, suppressed, insulin, quantity-limit) so the Sources panel shows what was queried
+- Fixed false positives: `not_covered` no longer triggers dollar-amount retry; insulin "$35/month" text in hard-stop message no longer flagged as untraceable
+
+### Dependencies removed (`pyproject.toml`)
+
+- `chromadb` — policy RAG removed
+- `instructor` — structured completion only served deleted pipeline
+
+### Render config
+
+- `CHROMA_PATH` removed from `render.yaml` and `.env.example`
+- `scripts/docker-start.sh` still `mkdir -p` for `$CHROMA_PATH` (harmless legacy; no code reads it)
+
+---
+
+## 9. Frontend rewrite
+
+Phase 6 is a second rewrite on the Phase 5 static UI. Cost and caveats live in the **chat transcript**; the right panel is **Sources only**.
+
+### Layout change
+
+| Before (Phase 5) | After (Phase 6) |
+|---|---|
+| 3-column: filters · chat · results | 2-column: **main panel** · **Sources** |
+| Filters always in left sidebar | Filters in **Guided estimate** tab |
+| Formulary card + trend bars + alternatives + citations | **Citations only** + data-as-of badge + tool-status footer |
+| `filter-alternatives` / `filter-trend` checkboxes | Removed |
+
+### Dual input modes
+
+1. **Ask in chat** — free-form textarea; optional guided-form filters still sent via `getFilters()`
+2. **Guided estimate** — drug, dosage, plan (with Refresh + poll), contract year, days supply (30/60/90), YTD OOP. **Get estimate** composes a natural-language prompt, calls `/api/chat`, switches to chat tab
+
+### Plan polling (`4a60e4a`)
+
+- `pollPlansUntilLoaded()`: 20s interval, max 30 attempts while DB empty
+- `plan-load-hint` status text; **Refresh** button reloads `/api/plans`
+- Prompt chips updated to real FL plan `S5921-383` (`0e69aa2`)
+
+### Error handling (`eeedba0`)
+
+- `chatErrorMessage()` parses FastAPI JSON `detail`, plain text, and validation arrays
+- User-visible assistant message on 502/503 instead of silent failure
+
+### Lookup failure Sources (`f29959e`)
+
+- `renderResults()` shows citations/data-as-of for `needs_clarification` and `not_found` when no baseline exists
+
+### Cache busting (`0e69aa2`)
+
+- `_NoCacheFrontendMiddleware` in `api/app.py`: `Cache-Control: no-cache` on `/`, `.html`, `.js`, `.css`
+- `index.html` meta tag + `?v=` query params on static assets
 
 ### Cost display model
 
-The UI does **not** render a dedicated cost-range card from `response.estimate` (`DrugCostEstimate`). Dollar figures and verbatim caveats appear in the assistant message body (`explanation`), with inline citation links. The API still returns `estimate` for citations/guardrails/tests (`CHAT_RESPONSE_UI_FIELDS` documents it), but the frontend treats chat text as the primary cost surface.
-
-### Copy and prompt chips
-
-- Subtitle: *"Estimate what a single drug fill will cost on a Medicare plan"*
-- Empty-state chips retargeted to cost estimates (metformin cost, 90-day lisinopril, YTD spend scenario) — alternatives/trend chips removed
-- Results placeholder: *"Source citations will appear here after you get an estimate."*
-
-### Files touched
-
-```
-frontend/src/
-├── index.html    # main-panel, mode tabs, guided form, Sources header
-├── app.js        # switchMode, submitGuidedEstimate, composeGuidedMessage;
-│                 # removed renderFormularyCard/renderCostTrendCard/renderAlternativesCard
-└── styles.css    # 2-col layout, mode-tab/guided styles; removed phase-pill/trend-bar CSS
-
-src/medicare_navigator/ui_test/checks.py   # element-ID contract, smoke messages, JS fn checks
-tests/test_ui.py                           # dist contract tests (unchanged structure)
-```
-
-### UI test contract updates
-
-`ui_test/checks.py` now requires:
-
-- New IDs: `main-panel`, `mode-tab-chat`, `mode-tab-guided`, `mode-chat`, `mode-guided`, `guided-body`, `guided-error`, `guided-submit`, `filter-days-supply`
-- Removed IDs: `filters-panel`, `filter-badge`, `toggle-filters`, `filters-body`, `filter-alternatives`, `filter-trend`
-- New JS functions: `switchMode`, `submitGuidedEstimate`
-- `CHAT_RESPONSE_UI_FIELDS`: `estimate` replaces `formulary` / `cost_trend` / `alternatives`
-- Smoke messages retargeted to cost-estimate queries (including a 90-day quantity-limit scenario)
-
-Run UI checks:
-
-```bash
-medicare-ui-test run --offline
-# or
-pytest tests/test_ui.py -v
-```
+The UI does **not** render a dedicated cost-range card from `response.estimate`. Dollar figures appear in the assistant `explanation`. API still returns `estimate` for tests and guardrails.
 
 ---
 
-## 8. Real-data findings (FL-only ingest)
+## 10. Production resilience (`5ed9e7e`, `eeedba0`)
 
-Per the approved plan, the already-cached real CMS SPUF zip (`data/raw/SPUF_2026_20260408.zip`) was re-ingested restricted to FL only (`medicare-ingest spuf --source ... --states FL`): 572 plans, 188,841 formulary rows, 5,726,853 pricing rows, 60,314 beneficiary-cost rows.
-
-This surfaced one substantive correctness bug that the synthetic fixtures didn't catch: real `COVERAGE_LEVEL` values are **0** (deductible), **1** (initial coverage), and **3** (catastrophic — ~$0 copay/coinsurance in 99%+ of real rows, consistent with the IRA's post-2025 catastrophic-phase redesign). Code **2** never appears. The implementation had assumed 1/2; left uncorrected, it would have silently matched the wrong phase's cost-share row (in one traced case, a real coinsurance-typed drug would have wrongly resolved to a $0 catastrophic-phase copay row and returned a confidently wrong "free" estimate instead of the correct "coinsurance not calculated" caveat). Fixed in `estimate_drug_cost.py`; fixtures updated to match.
-
-Other real-data checks: quantity-limit blocking (Bug 5b) and coinsurance exclusion (Bug 4) both confirmed against real rows. No suppressed plans or multi-NDC-per-formulary drugs happened to appear in this FL slice — both remain covered by the fixture-based unit tests per the plan's contingency.
-
----
-
-## 9. Example queries and responses
-
-**These run against a real plan and real Sonnet** (`claude-sonnet-4-6` via the live Anthropic API, `response_source: anthropic/claude-sonnet-4-6`), not the mock LLM or synthetic fixture data. The plan is `S5921-383` — **AARP Medicare Rx Preferred from UHC (PDP)**, a real Florida PDP from the CMS SPUF zip ingested restricted to FL (§8). The drug in Q1 is lovastatin 40mg, RXCUI `197905` (its real RxNorm clinical-drug identifier), on the plan's real tier-1/NDC/pricing/cost-share rows.
-
-(Earlier drafts of this section used `H8888-001` / `S9999-001` — those are **not real plans**; they're synthetic fixture plans defined in `tests/fixtures/spuf/plan information.txt` for offline/mock testing. This section now reflects a genuine live run instead.)
-
-### Q1 — a normal, single-NDC cost estimate, with a real per-tier deductible exemption
-
-> **User:** "How much will lovastatin 40mg cost me on Medicare plan S5921-383? I have not spent anything out of pocket yet this year."
-
-**Bot (real Sonnet):**
-
-> Great news — here are theS5921-383 details for your lovastatin 40mg on **AARP Medicare Rx Preferred from UHC (PDP)** (plan S5921-383, Florida, 2026):
->
-> **Estimated cost for a 30-day fill: $5.00**
->
-> Lovastatin is covered on **Tier 1** of this plan's formulary, which is typically the lowest-cost generic tier. With $0 in year-to-date out-of-pocket spending, you are currently in the **pre-deductible phase** (this plan has a $130 deductible). The $5.00 estimate reflects your cost-share in that phase.
->
-> ---
->
-> This estimate assumes the deductible-phase determination is based on your reported YTD spend and this plan's per-tier deductible rule as published by CMS. Some plans exempt certain tiers from the deductible; if your actual pharmacy charge differs from this estimate, your plan's tier-specific deductible treatment is the most likely reason. Confirm with your plan.
->
-> ---
->
-> **General Disclaimer:** These figures are government reference data for the current quarter and are not real-time pharmacy pricing. Your actual cost at the pharmacy may differ based on your specific circumstances, pharmacy network, benefit phase, and plan rules. Always confirm your cost-share with your plan or pharmacist before filling a prescription.
->
-> *Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice, financial advice, or insurance enrollment guidance. Costs shown are an estimate based on CMS-published plan data for the current quarter, not a guarantee of actual pharmacy charge or real-time pricing. Confirm any information with your doctor, pharmacist, or Medicare plan before making decisions.*
-
-Under the hood: `$0` YTD spend is below the plan's real $130 deductible, so the raw phase is `pre_deductible` — but tier 1 on this real plan has `DED_APPLIES_YN=N` (deductible-exempt), so Bug 2's per-tier override applies the real initial-coverage $5.00 copay row instead of full price. The tool returns `benefit_phase: pre_deductible` (the *raw* phase) while the actual $5.00 figure already reflects the override — the Bug 2 caveat is what discloses this to the user, and Sonnet correctly relayed it verbatim rather than paraphrasing it away.
-
-### Q2 — an out-of-scope drug, routed to a hard stop
-
-> **User:** "How much will Lantus insulin cost me on Medicare plan S5921-383?"
-
-**Bot (real Sonnet):**
-
-> Insulin cost estimates are not supported by this tool. Insulin has a separate statutory $35/month cap that does not depend on deductible or benefit-phase status, and CMS publishes it under a different file than the one this estimator uses. Please check your plan's insulin-specific pricing directly.
->
-> ---
->
-> *Disclaimer: This tool provides government reference data for the current quarter and is not a guarantee of actual pharmacy pricing. Always confirm costs directly with your plan or pharmacist before making healthcare decisions.*
->
-> Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice, financial advice, or insurance enrollment guidance. Costs shown are an estimate based on CMS-published plan data for the current quarter, not a guarantee of actual pharmacy charge or real-time pricing. Confirm any information with your doctor, pharmacist, or Medicare plan before making decisions.
-
-No formulary or pricing lookup is attempted — `is_insulin()` routes the request to the future-scope message before step 3 of the pipeline ever runs. Sonnet relayed the tool's message essentially verbatim and added its own short disclaimer on top of it, and the guardrail's own force-appended general disclaimer still ran regardless, giving the double disclaimer seen above.
+| Change | Behavior |
+|---|---|
+| Read-only DuckDB reads | `DuckDBConnection.fetchone/fetchall` use `read_only=True`; swallow missing-table `CatalogException` → `None` / `[]` |
+| Empty disk bootstrap | `ensure_schema()` on lifespan + docker-start before serving |
+| Legacy disk migration | `migrate_schema()` adds `plan_suppressed`, `ded_applies_yn` to pre-Phase-6 tables |
+| Graceful empty DB | `/api/plans` returns `[]`; chat returns `not_found` with explanation when schema exists but no matching rows |
+| Tests | `tests/test_db_resilience.py`, `tests/test_connection.py`, `tests/test_health.py` |
 
 ---
 
-## 10. Test coverage
+## 11. Real-data findings (FL-only ingest)
 
+The cached CMS SPUF zip (`data/raw/SPUF_2026_20260408.zip`) re-ingested with `--states FL`: **572 plans**, 188,841 formulary rows, 5,726,853 pricing rows, 60,314 beneficiary-cost rows.
 
-| File                               | Covers                                                                                                                                                           |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/test_estimate_drug_cost.py` | Dedicated coverage of Bugs 1–6, insulin routing, suppressed-plan hard stop, PA/ST soft caveat                                                                    |
-| `tests/test_spuf_ingest.py`        | New schema, suppressed-plan persistence, `FORMULARY_VERSION` dedup, QL/PA/ST/DED_APPLIES_YN ingestion, all days-supply codes/coverage levels surviving ingestion |
-| `tests/test_mcp_registry.py`       | `estimate_drug_cost`/`lookup_plan`/`list_plans` tool dispatch, suppressed/insulin routing at the MCP layer                                                       |
-| `tests/test_navigator.py`          | End-to-end agent loop: cost estimate, plan clarification, suppressed hard stop, insulin routing                                                                  |
-| `tests/test_citations.py`          | Citation building against the new artifact shape; guardrail force-append for hard-stop messages and caveats                                                      |
-| `tests/test_ui.py`                 | Frontend dist contract: element IDs, JS↔HTML parity, API smoke chat; `CHAT_RESPONSE_UI_FIELDS` includes `estimate` (not formulary/trend/alternatives) |
-| `ui_test/checks.py`                | Guided-estimate element IDs, `switchMode`/`submitGuidedEstimate` JS contract, cost-focused smoke messages |
+**COVERAGE_LEVEL correction:** real values are **0** (deductible), **1** (initial coverage), **3** (catastrophic). Code **2** never appears. The pre-pivot 1/2 assumption would have matched wrong cost-share rows (e.g. returning $0 catastrophic copay instead of Bug 4 coinsurance disclaimer). Fixed in `estimate_drug_cost.py`; fixtures updated.
 
+Other real-data checks: quantity-limit blocking (Bug 5b) and coinsurance exclusion (Bug 4) confirmed. No suppressed plans or multi-NDC-per-formulary drugs in the FL slice — covered by fixture unit tests.
 
-**79 tests pass.** Run:
+### Example live query (plan `S5921-383`, lovastatin 40mg, $0 YTD)
+
+- Plan: **AARP Medicare Rx Preferred from UHC (PDP)**, Florida 2026
+- Raw phase: `pre_deductible` ($130 deductible, $0 YTD)
+- Tier 1 has `DED_APPLIES_YN=N` → Bug 2 override applies $5.00 initial-coverage copay
+- Tool returns `benefit_phase: pre_deductible` with $5.00 reflecting the override; Bug 2 caveat discloses tier exemption
+
+(`H8888-001` / `S9999-001` are **fixture-only** synthetic plans for offline tests, not real CMS plans.)
+
+---
+
+## 12. Test coverage
+
+| File | Covers |
+|---|---|
+| `tests/test_estimate_drug_cost.py` | Bugs 1–6, insulin, suppressed plan, PA/ST caveat |
+| `tests/test_spuf_ingest.py` | New schema, suppressed persistence, FORMULARY_VERSION dedup, QL/PA/ST/DED_APPLIES_YN, all days-supply/coverage codes |
+| `tests/test_mcp_registry.py` | Three-tool dispatch, suppressed/insulin routing |
+| `tests/test_navigator.py` | End-to-end agent: cost estimate, clarification, hard stops |
+| `tests/test_citations.py` | Artifact citations, guardrail force-append, lookup-failure citations |
+| `tests/test_db_resilience.py` | Missing schema, legacy migration, empty-DB chat |
+| `tests/test_connection.py` | Read-only connection behavior |
+| `tests/test_health.py` | `/api/health` degraded when LLM unconfigured |
+| `tests/test_ui.py` | Frontend dist contract; `estimate` in `CHAT_RESPONSE_UI_FIELDS` |
+| `ui_test/checks.py` | Guided-estimate IDs, `switchMode`/`submitGuidedEstimate`, cost smoke messages |
+
+**85 tests pass** (2 integration tests deselected by default). Run:
 
 ```bash
 scripts/build-frontend.sh   # optional; conftest runs it if needed
 pytest tests/ -v
 ```
 
-`medicare-eval` was also updated (`eval/queries.jsonl`, `eval/run_eval.py`) and passes 11/11 cases against the offline fixture.
+`medicare-eval` passes **12/12** cases against the offline fixture with `LLM_MOCK=1`.
+
+**Deleted test files** (features removed): `test_clarification.py`, `test_intake.py`, `test_follow_up.py`, `test_explain_cost_change.py`, `test_pipeline_policy.py`, `test_policy_agent.py`, `test_policy_corpus.py`, `test_policy_retrieval.py`, `test_supply_estimate.py`, `test_synthesis.py`, `test_tools.py`.
 
 ---
 
-## 11. Repo layout (Phase 6 changes)
+## 13. Repo layout (Phase 6 additions / changes)
 
 ```
+docs/
+├── navigator-implementation-spec.md   # new — v1 scope + Bugs 1–6
+└── phase-6-implementation-plan.md     # this file
+
 src/medicare_navigator/
 ├── tools/
-│   ├── estimate_drug_cost.py      # new — the consolidated 8-step tool
-│   ├── days_supply.py             # new — single named DAYS_SUPPLY_CODE_MAP
-│   ├── insulin.py                 # new — is_insulin() allowlist
-│   └── disclaimers.py             # new — verbatim caveat/message constants
+│   ├── estimate_drug_cost.py          # new — consolidated 8-step tool
+│   ├── days_supply.py                 # new
+│   ├── insulin.py                     # new
+│   ├── disclaimers.py                 # new
+│   └── lookup_plan.py                 # kept / simplified
 ├── ingestion/
-│   ├── schema.py                  # new 4-table shape
-│   └── spuf.py                    # persists plan_suppressed/QL/PA/ST/DED_APPLIES_YN
-├── storage/repository.py          # BasicDrugsFormularyRepository, BeneficiaryCostRepository
-├── models/response.py             # DrugCostEstimate replaces FormularyResult/SupplyEstimate/...
-├── mcp/{schemas,registry}.py      # 3 tools instead of 7
-├── agent/{prompts,navigator}.py   # narrow prompt; DrugCostEstimate-based response assembly
-├── llm/mock.py                    # single-tool mock flow
-└── guardrails/citations.py        # verbatim-caveat enforcement guardrail
+│   ├── schema.py                      # 4-table shape + migrations
+│   └── spuf.py                        # QL/PA/ST/DED_APPLIES_YN + plan_suppressed
+├── storage/
+│   ├── connection.py                  # read-only fetch + missing-table handling
+│   └── repository.py                  # BasicDrugsFormularyRepository, BeneficiaryCostRepository
+├── models/response.py                 # DrugCostEstimate; removed trend/alternative types
+├── mcp/{schemas,registry}.py          # 3 tools
+├── agent/{prompts,navigator}.py       # narrow scope prompt
+├── llm/{client,mock,errors,types}.py  # explicit mock mode
+├── guardrails/citations.py            # verbatim enforcement + failure citations
+├── orchestrator/router.py             # navigator-only (pipeline deleted)
+└── api/app.py                         # LLM error HTTP codes, no-cache middleware
 
-frontend/src/                      # 2-col layout: chat/guided tabs + Sources panel (§7)
-│   ├── index.html                 # mode tabs, guided form, days-supply select
-│   ├── app.js                     # cost in chat explanation; citations in Sources panel
-│   └── styles.css
+frontend/src/                          # 2-col chat/guided + Sources
+scripts/docker-start.sh                # ensure_schema before uvicorn
 
-src/medicare_navigator/ui_test/    # medicare-ui-test CLI; updated Phase 6 contracts
-
-(deleted) agents/, intake/, orchestrator/pipeline.py,
-          ingestion/policy_corpus.py,
-          tools/{policy_retrieval,cost_trend,alternatives,ira_drugs,
-                 formulary_benefit,supply_estimate}.py,
-          config/{policy_corpus,benefit_params}.yaml
+(deleted)
+  agents/, intake/, orchestrator/pipeline.py, agent/fallback.py,
+  ingestion/policy_corpus.py,
+  tools/{policy_retrieval,cost_trend,alternatives,ira_drugs,formulary_benefit,supply_estimate}.py,
+  config/{policy_corpus,benefit_params}.yaml
 ```
 
 ---
 
-## 12. How to run
+## 14. How to run
 
 ```bash
+# Build frontend for local dev / tests
+scripts/build-frontend.sh
+
 # Local — offline fixture
 medicare-ingest spuf --source tests/fixtures/spuf
-uvicorn medicare_navigator.api.app:app --reload --port 8000
+LLM_MOCK=1 uvicorn medicare_navigator.api.app:app --reload --port 8000
 
-# Local — real CMS data, FL only
+# Local — real CMS data, FL only (low memory: add --merge-states)
 medicare-ingest spuf --source data/raw/SPUF_2026_20260408.zip --states FL
 
 # UI contract checks
@@ -335,18 +406,44 @@ medicare-ui-test run --offline
 pytest tests/ -v
 
 # Eval
-LLM_MOCK=true python -m medicare_navigator.eval.run_eval
+LLM_MOCK=1 python -m medicare_navigator.eval.run_eval
+
+# Docker (builds frontend inside image)
+docker build -t medicare-navigator .
+docker run -p 8000:8000 -v medicare-data:/data \
+  -e ANTHROPIC_API_KEY=sk-... medicare-navigator
 ```
 
 ---
 
-## 13. Phase 6 → future work (deferred, per spec Section 6)
+## 15. Commits in Phase 6
 
-- Insulin cost-share (separate $35/month statutory cap, separate CMS file, no benefit-phase dependency)
-- Excluded-drugs formulary (enhanced/supplemental plan coverage only)
-- Indication-based coverage restrictions
-- Catastrophic-phase computation (annual statutory TrOOP threshold, not present in any SPUF file)
-- Fully automatic benefit-phase detection purely from YTD dollar input (v1 still requires the explicit per-tier deductible check)
-- A confirmed coinsurance base, once available from an authoritative CMS source, to replace the Bug 4 disclaimer with an actual computation
-- National (beyond FL) real-data ingest and multi-state verification of Bug 5/Bug 6 real-world examples, which did not appear in the FL-only slice
+| Commit | Summary |
+|---|---|
+| `106ad37` | Add Phase 5 implementation plan (documentation only) |
+| `4a60e4a` | Read-only DuckDB reads; frontend plan polling + Refresh button |
+| `096b63d` | Policy corpus ingestion + pipeline integration **(reverted in `7f99ea6`)** |
+| `968147c` | Explicit `LLM_MOCK` mode; delete silent `agent/fallback.py`; `/api/health` degraded state |
+| `7f99ea6` | **Pivot:** Phase 6 MCP cost navigator; delete legacy agents/tools/Chroma; new spec + schema + frontend |
+| `5ed9e7e` | DuckDB `migrate_schema()` for legacy persistent databases |
+| `eeedba0` | Missing-schema graceful handling; chat error messages in frontend; `ensure_schema` in docker-start |
+| `f29959e` | Citations and data-as-of for lookup failures in Sources panel |
+| `0e69aa2` | Real-plan prompt chips (`S5921-383`); no-cache middleware + asset versioning |
 
+---
+
+## 16. Phase 6 → Phase 7 (deferred)
+
+Not in Phase 6 (committed scope):
+
+- **Insulin cost-share** — separate $35/month statutory cap, separate CMS file
+- **Excluded-drugs formulary** — enhanced/supplemental plan coverage only
+- **Indication-based coverage restrictions**
+- **Catastrophic-phase computation** — annual TrOOP threshold not in SPUF
+- **Confirmed coinsurance base** — replace Bug 4 disclaimer with computation when authoritative
+- **National multi-state ingest** — expand beyond FL real-data verification; automate multi-state `--merge-states`
+- **CI eval gate** — `.github/workflows` running `pytest` + `medicare-eval` on PRs
+- **Frontend bundler** — minification, cache-busting build step (current copy-is-build)
+- **Doc cleanup** — remove stale Chroma references from `deployment.md`, `data-sources.md`, deployment-agent skill
+
+See [navigator-implementation-spec.md](./navigator-implementation-spec.md) Section 6 and [build-requirements.md](../build-requirements.md) Section 9 for longer-term acceptance criteria.

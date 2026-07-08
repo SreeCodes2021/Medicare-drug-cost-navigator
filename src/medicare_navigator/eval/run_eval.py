@@ -86,8 +86,8 @@ async def run_eval() -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     filters = IngestFilters(
         contract_year=2026,
-        states=["FL", "TX"],
-        pdp_region_codes={"FL": "11", "TX": "22"},
+        states=["FL"],
+        pdp_region_codes={"FL": "11"},
         plan_type_prefixes=["S", "H"],
     )
     ingest_spuf(

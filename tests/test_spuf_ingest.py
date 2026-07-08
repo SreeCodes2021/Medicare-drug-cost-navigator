@@ -6,7 +6,7 @@ import pytest
 
 from medicare_navigator.config import settings
 from medicare_navigator.ingestion.schema import create_indexes, create_tables
-from medicare_navigator.ingestion.spuf import IngestFilters, _purge_states, ingest_spuf
+from medicare_navigator.ingestion.spuf import IngestFilters, _purge_states, _pricing_insert_row, ingest_spuf
 from medicare_navigator.storage.connection import DuckDBConnection
 from medicare_navigator.storage.repository import PlanRepository
 
@@ -21,43 +21,41 @@ def spuf_db(tmp_path, monkeypatch):
     return DuckDBConnection(path=db_path)
 
 
-def _all_states_filters(**overrides) -> IngestFilters:
+def _fl_filters(**overrides) -> IngestFilters:
     defaults = dict(
         contract_year=2026,
-        states=["FL", "TX"],
-        pdp_region_codes={"FL": "11", "TX": "22"},
+        states=["FL"],
+        pdp_region_codes={"FL": "11"},
         plan_type_prefixes=["S", "H"],
     )
     defaults.update(overrides)
     return IngestFilters(**defaults)
 
 
-def test_ingest_spuf_fixture_loads_fl_tx_plans(spuf_db):
+def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
     result = ingest_spuf(
         FIXTURE_DIR,
-        filters=_all_states_filters(),
+        filters=_fl_filters(),
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
 
-    # 4 plans total: S9999-001 (FL), S9999-002 (TX), H8888-001 (FL), S9999-003 (FL, suppressed)
-    assert result["stats"]["plans"] == 4
+    # 3 plans total: S9999-001 (FL), H8888-001 (FL), S9999-003 (FL, suppressed)
+    assert result["stats"]["plans"] == 3
     assert result["stats"]["formulary_rows"] >= 3
     assert result["source_id"] == "cms_spuf_2026_q1"
 
     repo = PlanRepository(db=spuf_db)
     fl_plans = repo.list_plans(state="FL")
-    tx_plans = repo.list_plans(state="TX")
     assert len(fl_plans) == 3
-    assert len(tx_plans) == 1
     assert any(p["plan_key"] == "S9999-001" for p in fl_plans)
     assert any(p["plan_key"] == "H8888-001" for p in fl_plans)
-    assert tx_plans[0]["plan_key"] == "S9999-002"
+    assert any(p["plan_key"] == "S9999-003" for p in fl_plans)
 
 
 def test_suppressed_plan_is_ingested_not_filtered(spuf_db):
     """Bug 6: suppressed plans must still be selectable, not silently dropped at ingest."""
-    ingest_spuf(FIXTURE_DIR, filters=_all_states_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
     repo = PlanRepository(db=spuf_db)
     plan = repo.get_plan("S9999-003")
     assert plan is not None
@@ -71,7 +69,7 @@ def test_suppressed_plan_is_ingested_not_filtered(spuf_db):
 def test_formulary_version_dedup_keeps_max_version(spuf_db):
     """FORM0001 has a stale version-00000 row (tier=9, bogus) that must be dropped in favor
     of version 00001."""
-    ingest_spuf(FIXTURE_DIR, filters=_all_states_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
     conn = spuf_db.connect()
     try:
         rows = conn.execute(
@@ -85,7 +83,7 @@ def test_formulary_version_dedup_keeps_max_version(spuf_db):
 
 
 def test_quantity_limit_and_pa_st_columns_ingested(spuf_db):
-    ingest_spuf(FIXTURE_DIR, filters=_all_states_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
     conn = spuf_db.connect()
     try:
         ql_row = conn.execute(
@@ -105,7 +103,7 @@ def test_quantity_limit_and_pa_st_columns_ingested(spuf_db):
 def test_beneficiary_cost_keeps_all_days_supply_codes_and_coverage_levels(spuf_db):
     """Bug 1: every days_supply CODE (1-4) and coverage_level must survive ingestion,
     not just code 1 / coverage_level 1."""
-    ingest_spuf(FIXTURE_DIR, filters=_all_states_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
     conn = spuf_db.connect()
     try:
         codes = conn.execute(
@@ -137,11 +135,11 @@ def test_ingest_spuf_from_zip_archive(spuf_db, tmp_path):
 
     result = ingest_spuf(
         zip_path,
-        filters=_all_states_filters(),
+        filters=_fl_filters(),
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 4
+    assert result["stats"]["plans"] == 3
 
 
 def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
@@ -159,15 +157,15 @@ def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
 
     result = ingest_spuf(
         outer_path,
-        filters=_all_states_filters(),
+        filters=_fl_filters(),
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 4
+    assert result["stats"]["plans"] == 3
 
 
-def test_ingest_spuf_merge_states_fl_then_tx(spuf_db):
-    filters_fl = _all_states_filters(states=["FL"], pdp_region_codes={"FL": "11"})
+def test_ingest_spuf_merge_states_fl_only(spuf_db):
+    filters_fl = _fl_filters()
     result_fl = ingest_spuf(
         FIXTURE_DIR,
         filters=filters_fl,
@@ -177,22 +175,10 @@ def test_ingest_spuf_merge_states_fl_then_tx(spuf_db):
     )
     assert result_fl["stats"]["plans"] == 3
     assert result_fl["stats"]["total_plans"] == 3
-
-    filters_tx = _all_states_filters(states=["TX"], pdp_region_codes={"TX": "22"})
-    result_tx = ingest_spuf(
-        FIXTURE_DIR,
-        filters=filters_tx,
-        db=spuf_db,
-        version="SPUF.2026.20260115",
-        merge_states=True,
-    )
-    assert result_tx["stats"]["plans"] == 1
-    assert result_tx["stats"]["total_plans"] == 4
-    assert result_tx["manifest"]["spuf"]["states"] == ["FL", "TX"]
+    assert result_fl["manifest"]["spuf"]["states"] == ["FL"]
 
     repo = PlanRepository(db=spuf_db)
     assert len(repo.list_plans(state="FL")) == 3
-    assert len(repo.list_plans(state="TX")) == 1
 
 
 def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
@@ -209,7 +195,7 @@ def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
         )
         conn.execute(
             "INSERT INTO plans VALUES "
-            "('S9999-001', 'S9999', '001', 'TX', 'PDP', 'TX', 0, 2026, 'F3', FALSE)"
+            "('S9999-001', 'S9999', '001', 'CA PDP', 'PDP', 'CA', 0, 2026, 'F3', FALSE)"
         )
         rows = [
             [pk, 1, 1, 1, "preferred_retail", "unknown", None, None, False, "2026-01-01"]
@@ -224,13 +210,13 @@ def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
         purged = _purge_states(conn, ["FL"])
         assert purged == 2
         assert conn.execute("SELECT COUNT(*) FROM beneficiary_cost").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM plans WHERE state = 'TX'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM plans WHERE state = 'CA'").fetchone()[0] == 1
     finally:
         conn.close()
 
 
 def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
-    filters = _all_states_filters(states=["FL"], pdp_region_codes={"FL": "11"})
+    filters = _fl_filters(states=["FL"], pdp_region_codes={"FL": "11"})
     ingest_spuf(
         FIXTURE_DIR,
         filters=filters,
@@ -249,3 +235,33 @@ def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
     assert second["stats"]["total_plans"] == 3
     repo = PlanRepository(db=spuf_db)
     assert len(repo.list_plans(state="FL")) == 3
+
+
+def test_pricing_insert_row_preserves_literal_zero_days_supply():
+    """DAYS_SUPPLY='0' is falsy in Python; a plain `or 30` default would silently mislabel
+    this row as a 30-day price instead of preserving the CMS-published value of 0."""
+    plans = {"S9999-001": {}}
+    row = {
+        "CONTRACT_ID": "S9999",
+        "PLAN_ID": "001",
+        "NDC": "00093721401",
+        "DAYS_SUPPLY": "0",
+        "UNIT_COST": "0.15",
+    }
+    insert_row = _pricing_insert_row(row, plans)
+    assert insert_row is not None
+    assert insert_row[2] == 0
+
+
+def test_pricing_insert_row_defaults_missing_days_supply_to_30():
+    plans = {"S9999-001": {}}
+    row = {
+        "CONTRACT_ID": "S9999",
+        "PLAN_ID": "001",
+        "NDC": "00093721401",
+        "DAYS_SUPPLY": "",
+        "UNIT_COST": "0.15",
+    }
+    insert_row = _pricing_insert_row(row, plans)
+    assert insert_row is not None
+    assert insert_row[2] == 30

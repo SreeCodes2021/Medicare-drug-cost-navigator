@@ -13,7 +13,6 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "spuf"
 # Plan keys from tests/fixtures/spuf/
 PLAN_FL_PDP = "S9999-001"
 PLAN_FL_MAPD = "H8888-001"
-PLAN_TX_PDP = "S9999-002"
 PLAN_FL_SUPPRESSED = "S9999-003"
 
 NDC_METFORMIN = "00093-7214-01"
@@ -57,8 +56,8 @@ def load_spuf_fixture(
     db = DuckDBConnection(path=duckdb_path)
     filters = IngestFilters(
         contract_year=2026,
-        states=["FL", "TX"],
-        pdp_region_codes={"FL": "11", "TX": "22"},
+        states=["FL"],
+        pdp_region_codes={"FL": "11"},
         plan_type_prefixes=["S", "H"],
     )
     ingest_spuf(

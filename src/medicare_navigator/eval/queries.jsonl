@@ -1,7 +1,7 @@
 {"id": "eval-001", "message": "metformin 500mg cost on H8888-001", "expected_status": "ok", "expected_tier": 2, "expected_cost": 8.0, "expected_tool_status": {"estimate_drug_cost": "ok"}}
 {"id": "eval-002", "message": "metformin 500mg cost plan S9999-001", "expected_status": "ok", "expected_tier": 1, "expected_cost": 5.0, "expected_tool_status": {"estimate_drug_cost": "ok"}}
 {"id": "eval-003", "message": "xyznonexistentdrug 500mg plan H8888-001", "expected_status": "not_found"}
-{"id": "eval-004", "message": "cost for januvia 100mg on plan S9999-002", "expected_status": "ok", "expected_tool_status": {"estimate_drug_cost": "not_covered"}}
+{"id": "eval-004", "message": "cost for januvia 100mg on plan H8888-001", "expected_status": "ok", "expected_tool_status": {"estimate_drug_cost": "not_covered"}}
 {"id": "eval-005", "message": "metformin 500mg plan ZZZZ-999", "expected_status": "not_found"}
 {"id": "eval-006", "message": "lisinopril 10mg cost plan S9999-001", "expected_status": "ok"}
 {"id": "eval-007", "message": "metformin cost", "expected_status": "needs_clarification"}
@@ -9,3 +9,4 @@
 {"id": "eval-009", "message": "metformin 500mg cost S9999-001 spent $800 YTD", "expected_status": "ok", "expected_phase": "initial_coverage"}
 {"id": "eval-010", "message": "cost for lantus on plan S9999-001", "expected_status": "ok", "expected_tool_status": {"estimate_drug_cost": "insulin_out_of_scope"}}
 {"id": "eval-011", "message": "metformin cost plan S9999-003", "expected_status": "ok", "expected_tool_status": {"estimate_drug_cost": "suppressed"}}
+{"id": "eval-012", "message": "cost for januvia 100mg on plan S9999-001 for a 90-day supply", "expected_status": "ok", "expected_tool_status": {"estimate_drug_cost": "quantity_limit_blocked"}}

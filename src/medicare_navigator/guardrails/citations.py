@@ -151,8 +151,8 @@ def build_citations_from_artifacts(
     return citations
 
 
-def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[str]:
-    amounts: set[str] = set()
+def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[float]:
+    amounts: set[float] = set()
     estimate = tool_artifacts.get("estimate_drug_cost")
     if not estimate or not estimate.get("data"):
         return amounts
@@ -162,8 +162,7 @@ def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[st
         for field in ("cost_low", "cost_high"):
             value = data.get(field)
             if value is not None:
-                amounts.add(f"${float(value):.2f}")
-                amounts.add(f"${float(value):.0f}")
+                amounts.add(round(float(value), 2))
 
     return amounts
 
@@ -217,8 +216,12 @@ def apply_guardrails(
     if dollars_in_text:
         allowed = _allowed_dollar_amounts(tool_artifacts)
         for amount in dollars_in_text:
-            normalized = amount.replace(" ", "")
-            if normalized not in allowed and amount not in allowed:
+            digits = amount.replace("$", "").replace(" ", "")
+            try:
+                value = round(float(digits), 2)
+            except ValueError:
+                value = None
+            if value is None or value not in allowed:
                 errors.append(f"Dollar amount {amount} not traceable to tool results.")
 
     # Safety-critical caveats/hard-stop messages must reach the user verbatim, not just be
