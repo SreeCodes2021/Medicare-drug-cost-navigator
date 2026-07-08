@@ -4,9 +4,9 @@ insulin/suppressed-plan hard stops and prior-authorization/step-therapy caveat."
 import pytest
 
 from medicare_navigator.models.tool_result import ToolStatus
-from medicare_navigator.tools.disclaimers import BUG2_CAVEAT, BUG4_CAVEAT
+from medicare_navigator.tools.disclaimers import BUG2_CAVEAT, BUG4_CAVEAT, NO_COST_SHARE_DATA_MESSAGE
 from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost
-from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP, PLAN_FL_SUPPRESSED, PLAN_TX_PDP
+from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +171,7 @@ async def test_plan_not_found():
 
 @pytest.mark.asyncio
 async def test_drug_not_on_formulary():
-    result = await estimate_drug_cost(plan_key=PLAN_TX_PDP, drug_name="omeprazole")
+    result = await estimate_drug_cost(plan_key=PLAN_FL_MAPD, drug_name="omeprazole")
     assert result.status == ToolStatus.not_covered
 
 
@@ -181,3 +181,36 @@ async def test_ma_pd_zero_deductible_plan_always_initial_coverage():
     assert result.status == ToolStatus.ok
     assert result.data.benefit_phase == "initial_coverage"
     assert result.data.cost_low == pytest.approx(8.00)
+
+
+@pytest.mark.asyncio
+async def test_missing_cost_share_row_is_flagged_not_silently_empty():
+    """Live-reproduced gap: tier 1 has beneficiary_cost rows for DAYS_SUPPLY codes 1 (30-day)
+    and 4 (60-day) only — no code 2 (90-day) row. A 90-day, post-deductible request for
+    metformin must not come back status=ok with blank cost_low/cost_high and no explanation;
+    it must carry NO_COST_SHARE_DATA_MESSAGE, and must NOT claim a (nonexistent) multi-NDC
+    price range via the Bug 5 caveat."""
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=90, ytd_oop_spend=700
+    )
+    assert result.status == ToolStatus.ok
+    assert result.data.cost_low is None
+    assert result.data.cost_high is None
+    assert NO_COST_SHARE_DATA_MESSAGE in result.data.caveats
+    assert not any("formulary NDCs" in c for c in result.data.caveats)
+
+
+@pytest.mark.asyncio
+async def test_unmapped_days_supply_without_cost_does_not_claim_ingredient_cost():
+    """days_supply=45 has no beneficiary_cost CODE at all (Section 4's "other" branch). In the
+    initial-coverage phase there is no pricing-table fallback, so no ingredient cost is ever
+    computed either — the caveat must not falsely claim "the estimate below reflects ingredient
+    cost only" when cost_low/cost_high are both None."""
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=45, ytd_oop_spend=700
+    )
+    assert result.status == ToolStatus.ok
+    assert result.data.cost_low is None
+    assert result.data.cost_high is None
+    assert any("45-day supply" in c for c in result.data.caveats)
+    assert not any("reflects ingredient cost only" in c for c in result.data.caveats)

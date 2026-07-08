@@ -34,6 +34,12 @@ INSULIN_OUT_OF_SCOPE_MESSAGE = (
     "plan's insulin-specific pricing directly."
 )
 
+NO_COST_SHARE_DATA_MESSAGE = (
+    "This plan's CMS-published cost-share file does not include a matching record for this "
+    "drug's tier, benefit phase, and days-supply combination, so no dollar estimate could be "
+    "computed. Contact your plan or pharmacist for the actual cost."
+)
+
 
 def bug5_caveat(*, matched_ndc_count: int, same_tier: bool, tiers: list[int]) -> str:
     if same_tier:
@@ -56,6 +62,21 @@ def bug5b_message(*, requested_days_supply: int, max_allowed_days_supply: int) -
         f"This plan's quantity limit does not permit a {requested_days_supply}-day supply in a "
         f"single fill. The maximum fill size this plan allows is a {max_allowed_days_supply}-day "
         "supply."
+    )
+
+
+def unmapped_days_supply_caveat(*, days_supply: int, has_cost: bool) -> str:
+    if has_cost:
+        return (
+            f"A {days_supply}-day supply does not match this plan's standard 30/60/90-day "
+            "cost-share codes; the estimate below reflects ingredient cost only — cost-sharing "
+            "(copay/coinsurance) could not be determined for this fill size."
+        )
+    return (
+        f"A {days_supply}-day supply does not match this plan's standard 30/60/90-day "
+        "cost-share codes, and no ingredient-cost or cost-sharing data could be found for this "
+        "fill size either. No dollar estimate could be computed — contact your plan or "
+        "pharmacist."
     )
 
 

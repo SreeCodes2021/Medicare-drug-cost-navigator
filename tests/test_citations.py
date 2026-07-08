@@ -118,3 +118,13 @@ def test_apply_guardrails_flags_untraceable_dollar_amount():
         "Metformin costs $999.99 on this plan.", artifacts
     )
     assert any("999.99" in e for e in errors)
+
+
+def test_apply_guardrails_allows_dollar_amount_missing_trailing_zero():
+    """$31.5 and $31.50 are the same number — a naive string-exact allowlist (built from
+    f"{value:.2f}") would reject the former as "untraceable" even though it matches cost_low."""
+    artifacts = {"estimate_drug_cost": _estimate_artifact(cost_low=31.5, cost_high=31.5)}
+    _explanation, _citations, errors = apply_guardrails(
+        "Omeprazole costs $31.5 on this plan.", artifacts
+    )
+    assert errors == []

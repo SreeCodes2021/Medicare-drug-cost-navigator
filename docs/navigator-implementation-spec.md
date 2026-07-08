@@ -41,19 +41,33 @@ Explicitly out of scope for v1 (see Section 6 — Future Work):
 
 4. Days-supply mapping  see Section 4 — required before any join on days supply
 
-5. Pricing lookup       pricing[CONTRACT_ID, PLAN_ID, NDC, DAYS_SUPPLY]
+5. Pricing lookup       Runs ONLY when step 6 (evaluated first, below)
+                        resolves the matched TIER to the pre-deductible
+                        phase — during the deductible, the beneficiary pays
+                        the plan's full negotiated price, not a copay.
+                        Steps 5 and 7 are mutually exclusive per matched
+                        TIER: never both, never summed.
+                        pricing[CONTRACT_ID, PLAN_ID, NDC, DAYS_SUPPLY]
                        -> UNIT_COST
                        -> apply per-unit -> per-fill conversion (see Section 5, Bug 3)
                        -> if multiple NDCs matched in step 3: compute a cost
-                          for EACH NDC, then report low-high range (Bug 6)
+                          for EACH NDC, then report low-high range (Bug 5)
 
-6. Phase determination  compare YTD spend to plan_information.DEDUCTIBLE
+6. Phase determination  Evaluate this BEFORE step 5 or step 7 — its result
+                        (per matched TIER) decides which of them runs.
+                        compare YTD spend to plan_information.DEDUCTIBLE
                        -> phase = 0 (pre-deductible) or 1 (initial coverage)
                        -> per-tier override: check DED_APPLIES_YN for the
                           matched TIER before trusting the YTD-vs-deductible
-                          comparison (see Section 5, Bug 2)
+                          comparison (see Section 5, Bug 2) — an exempt tier
+                          routes straight to step 7's copay even while the
+                          beneficiary is pre-deductible overall
 
-7. Cost-share lookup    beneficiary_cost[CONTRACT_ID, PLAN_ID, TIER,
+7. Cost-share lookup    Runs ONLY when step 6 resolves the matched TIER to
+                        the initial-coverage phase (deductible met, or the
+                        tier is exempt) — the plan's copay/coinsurance
+                        applies instead of step 5's full price.
+                        beneficiary_cost[CONTRACT_ID, PLAN_ID, TIER,
                         COVERAGE_LEVEL, DAYS_SUPPLY]
                        -> COST_TYPE_PREF / COST_AMT_PREF (and NONPREF, MAIL_*)
                        -> if COST_TYPE_PREF == 2 (coinsurance):

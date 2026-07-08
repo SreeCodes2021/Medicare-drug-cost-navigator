@@ -23,9 +23,11 @@ from medicare_navigator.tools.disclaimers import (
     BUG4_CAVEAT,
     BUG6_MESSAGE,
     INSULIN_OUT_OF_SCOPE_MESSAGE,
+    NO_COST_SHARE_DATA_MESSAGE,
     bug5_caveat,
     bug5b_message,
     pa_st_caveat,
+    unmapped_days_supply_caveat,
 )
 from medicare_navigator.tools.insulin import is_insulin
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase, normalize_drug
@@ -34,12 +36,6 @@ SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 
 # Bug 3: absent per-drug dosing data, assume 1 dose unit ("pill") per day.
 DAYS_PER_DOSE_UNIT_DEFAULT = 1
-
-UNMAPPED_DAYS_SUPPLY_CAVEAT_TEMPLATE = (
-    "A {days_supply}-day supply does not match this plan's standard 30/60/90-day cost-share "
-    "codes; the estimate below reflects ingredient cost only — cost-sharing (copay/coinsurance) "
-    "could not be determined for this fill size."
-)
 
 
 def _source_id() -> str:
@@ -225,11 +221,22 @@ async def estimate_drug_cost(
 
     matched_ndc_count = len(surviving)
     same_tier = len(set(tiers_matched)) <= 1
+    has_cost = bool(ndc_costs)
 
     caveats: list[str] = [BUG2_CAVEAT]
     if any_coinsurance_excluded:
         caveats.append(BUG4_CAVEAT)
-    if matched_ndc_count > 1:
+    if days_supply_code is None:
+        # "other" branch (Section 4): the raw days-supply doesn't map to a beneficiary_cost
+        # CODE at all. Wording differs depending on whether the pre-deductible pricing lookup
+        # (keyed on raw days_supply, not the CODE) still produced a number.
+        caveats.append(unmapped_days_supply_caveat(days_supply=days_supply, has_cost=has_cost))
+    elif not has_cost and not any_coinsurance_excluded:
+        # days_supply mapped to a valid CODE, but no beneficiary_cost/pricing row matched this
+        # plan/tier/phase/channel — a CMS data gap, not a coinsurance exclusion (Bug 4) or an
+        # unmapped days-supply (above). Must not be a silent "ok" with blank numbers.
+        caveats.append(NO_COST_SHARE_DATA_MESSAGE)
+    if matched_ndc_count > 1 and has_cost:
         caveats.append(
             bug5_caveat(matched_ndc_count=matched_ndc_count, same_tier=same_tier, tiers=tiers_matched)
         )
@@ -242,8 +249,6 @@ async def estimate_drug_cost(
         )
     if pa_flag or st_flag:
         caveats.append(pa_st_caveat(prior_authorization=pa_flag, step_therapy=st_flag))
-    if days_supply_code is None:
-        caveats.append(UNMAPPED_DAYS_SUPPLY_CAVEAT_TEMPLATE.format(days_supply=days_supply))
 
     cost_low = min(ndc_costs) if ndc_costs else None
     cost_high = max(ndc_costs) if ndc_costs else None

@@ -421,7 +421,8 @@ def _pricing_insert_row(
         ndc = format_ndc_display(normalize_ndc(ndc_raw))
     except ValueError:
         return None
-    days_supply = _parse_int(row.get("DAYS_SUPPLY")) or 30
+    parsed_days_supply = _parse_int(row.get("DAYS_SUPPLY"))
+    days_supply = parsed_days_supply if parsed_days_supply is not None else 30
     unit_cost = _parse_float(row.get("UNIT_COST"))
     if unit_cost is None:
         return None

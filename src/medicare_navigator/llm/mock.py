@@ -198,6 +198,15 @@ def _tool_result(messages: list[dict[str, Any]], tool_name: str) -> dict[str, An
     id_to_name = _tool_use_ids(messages)
     for msg in reversed(messages):
         if msg.get("role") == "tool":
+            # OpenAI-format tool result message: {"role": "tool", "tool_call_id": ..., "content": <json str>}
+            if id_to_name.get(msg.get("tool_call_id", "")) != tool_name:
+                continue
+            payload = msg.get("content")
+            if isinstance(payload, str):
+                try:
+                    return json.loads(payload)
+                except json.JSONDecodeError:
+                    return None
             continue
         content = msg.get("content")
         if not isinstance(content, list):

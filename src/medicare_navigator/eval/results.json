@@ -22,7 +22,7 @@
   },
   {
     "id": "eval-004",
-    "message": "cost for januvia 100mg on plan S9999-002",
+    "message": "cost for januvia 100mg on plan H8888-001",
     "actual_status": "ok",
     "passed": true,
     "failures": []
@@ -72,6 +72,13 @@
   {
     "id": "eval-011",
     "message": "metformin cost plan S9999-003",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-012",
+    "message": "cost for januvia 100mg on plan S9999-001 for a 90-day supply",
     "actual_status": "ok",
     "passed": true,
     "failures": []
