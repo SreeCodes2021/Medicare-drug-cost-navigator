@@ -999,7 +999,7 @@ Fixture-only plans (not real CMS):
 | `H8888-001` | MA-PD test plan |
 | `S9999-001` | PDP test plan |
 
-Prompt chips in `frontend/src/index.html` use the seeded demo plan `S9999-001` so they resolve out of the box against the fixture/demo database without requiring a full state ingest first. `S5921-383` (AARP Medicare Rx Preferred from UHC, FL 2026) is a real plan used as a worked example in [business-solution.md](./business-solution.md#33-verified-example); it requires a real CMS FL ingest to resolve.
+Prompt chips in `frontend/src/index.html` use `S5921-383` (AARP Medicare Rx Preferred from UHC, FL 2026), a real plan also used as a worked example in [business-solution.md](./business-solution.md#33-verified-example). It requires a real CMS FL ingest to resolve — the test plan keys above (`S9999-001`, `H8888-001`) only resolve against the offline SPUF fixture used in tests/eval and are never seeded in deployed environments, so they must not be used in user-facing UI copy.
 
 ### 14.5 UI contract tests
 
