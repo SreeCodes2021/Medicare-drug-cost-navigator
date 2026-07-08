@@ -228,7 +228,7 @@ sequenceDiagram
 | **Disclaimer banner** | Always-visible notice: informational only; not medical, financial, or enrollment advice |
 | **Ask in Chat tab** | Free-form natural language with session follow-ups (max 5 turns) |
 | **Guided Estimate tab** | Structured form: drug, dosage, plan, contract year, days supply, YTD OOP |
-| **Prompt chips** | Example queries using the seeded demo plan `S9999-001`, so they resolve out of the box against the demo-seeded database without requiring a full state ingest first |
+| **Prompt chips** | Example queries using the real plan `S5921-383` (AARP Medicare Rx Preferred from UHC, FL 2026), so they resolve once a real CMS FL ingest has run — see [§3.3](#33-verified-example) |
 | **Plan polling** | Auto-refreshes plan list every 20s during CMS data ingest |
 | **Sources panel** | Citations, data-as-of badge, tool status footer |
 | **Error handling** | Parses 502/503 API errors into user-visible messages |
