@@ -22,10 +22,8 @@ body {
 }
 
 .disclaimer-banner {
-  position: fixed;
+  position: sticky;
   top: 0;
-  left: 0;
-  right: 0;
   z-index: 1000;
   background: var(--disclaimer-bg);
   border-bottom: 2px solid var(--disclaimer-border);
@@ -40,7 +38,6 @@ body {
 .disclaimer-icon { flex-shrink: 0; }
 
 .app-header {
-  margin-top: 4.5rem;
   padding: 1rem 1.5rem 0.5rem;
   text-align: center;
 }
