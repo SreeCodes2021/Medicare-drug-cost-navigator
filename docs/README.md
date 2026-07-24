@@ -6,6 +6,8 @@ Developer-facing documentation for the **Medicare Drug Cost & Benefit-Transparen
 |---|---|---|
 | **[Developer Guide](./developer-guide.md)** | All developers | **Start here.** Stack, architecture, setup, run, test, deploy, API, troubleshooting |
 | [Business Solution](./business-solution.md) | Product / stakeholders | Executive summary, problem statement, v1 capabilities, architecture, compliance, roadmap |
+| [National Impact and Scope](./national-impact-and-scope.md) | Stakeholders / non-technical | Plain-English, sourced case for why this matters nationally and by state — real CMS/GAO/MedPAC/ASPE figures, current scope vs. full scope |
+| [State Coverage Analysis](./state-coverage-analysis.md) | Product / data | Real CMS SPUF plan counts and beneficiary counts by state, methodology for scope-expansion decisions |
 | [Navigator Implementation Spec](./navigator-implementation-spec.md) | Product / backend | v1 scope, 8-step cost pipeline, Bugs 1–6, days-supply mapping |
 | [Phase 6 Implementation Plan](./phase-6-implementation-plan.md) | Maintainers | What shipped in Phase 6, decisions, commit history |
 | [Deployment](./deployment.md) | DevOps | Render, cron ingest, persistent disk, monitoring |
