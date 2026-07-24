@@ -15,7 +15,7 @@ def test_tool_names():
     assert "estimate_drug_cost" in names
     assert "lookup_plan" in names
     assert "list_plans" in names
-    assert len(names) == 3
+    assert len(names) == 4
 
 
 def test_openai_tool_schemas():

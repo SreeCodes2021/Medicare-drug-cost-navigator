@@ -8,11 +8,12 @@ from pydantic import BaseModel
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
 from medicare_navigator.llm.mock import mock_chat_with_tools
-from medicare_navigator.llm.types import ChatWithToolsResult, ToolCallSpec
+from medicare_navigator.llm.models import ModelSpec, resolve_model
+from medicare_navigator.llm.types import ChatWithToolsResult, TokenUsage, ToolCallSpec
 
 T = TypeVar("T", bound=BaseModel)
 
-__all__ = ["LLMClient", "llm_client", "ChatWithToolsResult", "ToolCallSpec"]
+__all__ = ["LLMClient", "llm_client", "ChatWithToolsResult", "ToolCallSpec", "TokenUsage"]
 
 
 class LLMClient:
@@ -22,39 +23,53 @@ class LLMClient:
         self.provider = settings.llm_provider.lower()
         self.model = settings.llm_model
 
-    def _has_credentials(self) -> bool:
-        if self.provider == "openai":
+    def _has_credentials(self, provider: str | None = None) -> bool:
+        active = (provider or self.provider).lower()
+        if active == "openai":
             return bool(settings.openai_api_key)
         return bool(settings.anthropic_api_key)
 
     def is_available(self) -> bool:
-        return self._has_credentials() or settings.llm_mock_mode
+        if settings.llm_mock_mode:
+            return True
+        return bool(settings.openai_api_key) or bool(settings.anthropic_api_key)
 
-    def require_available(self) -> None:
-        if not self.is_available():
-            provider = settings.llm_provider
+    def require_available(self, provider: str | None = None) -> None:
+        active = (provider or self.provider).lower()
+        if not self._has_credentials(active) and not settings.llm_mock_mode:
+            hint = settings.llm_configuration_hint(active)
             raise LLMNotConfiguredError(
-                f"LLM is not configured. Set {provider.upper()}_API_KEY "
-                f"(provider={provider}) or enable LLM_MOCK=1 for local testing."
+                f"LLM is not configured for provider '{active}'. {hint} "
+                "Alternatively, enable LLM_MOCK=1 for local testing."
             )
 
-    def model_label(self) -> str:
+    def model_label(self, model: str | None = None, provider: str | None = None) -> str:
+        spec = resolve_model(model)
+        active_provider = provider or spec.provider
+        active_model = model or spec.id
         if settings.llm_mock_mode:
-            return f"mock/{self.provider}/{self.model}"
-        return f"{self.provider}/{self.model}"
+            return f"mock/{active_provider}/{active_model}"
+        return f"{active_provider}/{active_model}"
+
+    def resolve_request(self, model: str | None = None) -> ModelSpec:
+        spec = resolve_model(model)
+        self.require_available(spec.provider)
+        return spec
 
     async def chat_with_tools(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        *,
+        model: str | None = None,
     ) -> ChatWithToolsResult:
-        self.require_available()
+        spec = self.resolve_request(model)
         if settings.llm_mock_mode:
-            return await mock_chat_with_tools(system_prompt, messages, tools)
+            return await mock_chat_with_tools(system_prompt, messages, tools, model=spec.id)
 
         return await self._with_retry(
-            lambda: self._chat_with_tools_live(system_prompt, messages, tools)
+            lambda: self._chat_with_tools_live(system_prompt, messages, tools, spec)
         )
 
     async def _with_retry(self, coro_factory):
@@ -77,16 +92,18 @@ class LLMClient:
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        spec: ModelSpec,
     ) -> ChatWithToolsResult:
-        if self.provider == "openai":
-            return await self._openai_chat_with_tools(system_prompt, messages, tools)
-        return await self._anthropic_chat_with_tools(system_prompt, messages, tools)
+        if spec.provider == "openai":
+            return await self._openai_chat_with_tools(system_prompt, messages, tools, spec.id)
+        return await self._anthropic_chat_with_tools(system_prompt, messages, tools, spec.id)
 
     async def _openai_chat_with_tools(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        model: str,
     ) -> ChatWithToolsResult:
         import json
 
@@ -95,7 +112,7 @@ class LLMClient:
         client = AsyncOpenAI(api_key=settings.openai_api_key)
         oai_messages = [{"role": "system", "content": system_prompt}, *messages]
         response = await client.chat.completions.create(
-            model=self.model,
+            model=model,
             messages=oai_messages,
             tools=tools,
             tool_choice="auto",
@@ -108,19 +125,26 @@ class LLMClient:
                 tool_calls.append(
                     ToolCallSpec(id=tc.id, name=tc.function.name, arguments=args)
                 )
-        return ChatWithToolsResult(content=choice.content, tool_calls=tool_calls)
+        usage = TokenUsage()
+        if response.usage:
+            usage = TokenUsage(
+                input_tokens=response.usage.prompt_tokens or 0,
+                output_tokens=response.usage.completion_tokens or 0,
+            )
+        return ChatWithToolsResult(content=choice.content, tool_calls=tool_calls, usage=usage)
 
     async def _anthropic_chat_with_tools(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        model: str,
     ) -> ChatWithToolsResult:
         from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         response = await client.messages.create(
-            model=self.model,
+            model=model,
             max_tokens=4096,
             system=system_prompt,
             messages=messages,
@@ -141,7 +165,13 @@ class LLMClient:
                     )
                 )
         content = "\n".join(text_parts).strip() or None
-        return ChatWithToolsResult(content=content, tool_calls=tool_calls)
+        usage = TokenUsage()
+        if response.usage:
+            usage = TokenUsage(
+                input_tokens=response.usage.input_tokens or 0,
+                output_tokens=response.usage.output_tokens or 0,
+            )
+        return ChatWithToolsResult(content=content, tool_calls=tool_calls, usage=usage)
 
 
 llm_client = LLMClient()

@@ -2,6 +2,16 @@ const API = window.location.origin;
 let sessionId = null;
 let turnCount = 0;
 let resultsBaseline = null;
+let allPlans = [];
+let planListHighlight = -1;
+let sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+
+const DEFAULT_MODEL = "gpt-5.4-nano";
+const MODEL_OPTIONS = [
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  { id: "gpt-5.4-nano", label: "GPT-5.4 Nano" },
+  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+];
 
 const PLACEHOLDERS = {
   citations: "No source citations for this response.",
@@ -10,10 +20,426 @@ const PLACEHOLDERS = {
 const PLAN_POLL_INTERVAL_MS = 20_000;
 const PLAN_POLL_MAX_ATTEMPTS = 30;
 
+const BENEFIT_PHASE_LABELS = {
+  pre_deductible: "Pre-deductible",
+  initial_coverage: "Initial coverage",
+  catastrophic: "Catastrophic coverage",
+};
+
+const PHARMACY_CHANNEL_ROWS = [
+  ["preferred_retail", "Preferred retail"],
+  ["standard_retail", "Standard retail"],
+  ["preferred_mail", "Preferred mail-order"],
+  ["standard_mail", "Standard mail-order"],
+];
+
+const FIELD_TIPS = {
+  section_plan_fill: "Drug, dosage, plan, and fill length used for this estimate.",
+  section_benefit: "Formulary coverage, deductible, tier, and Part D benefit phase.",
+  section_channel: "Plan cost share and estimated out-of-pocket by pharmacy type.",
+  drug: "Medication name on the plan formulary.",
+  dosage: "Strength and form you asked about.",
+  plan: "Medicare Part D plan name and contract ID.",
+  days_supply: "How many days one prescription fill is intended to cover.",
+  covered: "Whether the drug is on this plan’s formulary.",
+  deductible: "Annual drug deductible before the plan pays its share.",
+  tier: "Formulary cost tier; higher tiers usually cost more.",
+  ded_applies: "Whether costs for this tier count toward the deductible (Y/N).",
+  benefit_phase: "Part D phase from your year-to-date out-of-pocket spend.",
+  effective_phase: "Phase used to price this fill after plan rules.",
+  ytd_spend: "Out-of-pocket Part D drug costs you entered for this year.",
+  annual_oop_cap: "Most you pay out of pocket for Part D drugs in the year.",
+  remaining_oop: "Out-of-pocket dollars left before catastrophic coverage.",
+  projected_annual_oop: "Rough yearly out-of-pocket if you keep this fill schedule.",
+  channel: "Pharmacy type (retail or mail-order, preferred or standard).",
+  plan_copay: "Fixed copay from plan data for this tier and channel.",
+  plan_coinsurance: "Coinsurance percentage from plan data.",
+  applied_copay: "Copay amount used for this fill after benefit rules.",
+  applied_coinsurance: "Coinsurance percentage used for this estimate.",
+  est_cost: "Estimated amount you pay for this fill at that channel.",
+  preferred_retail: "In-network retail pharmacy with the lowest cost share.",
+  standard_retail: "Retail pharmacy with standard (non-preferred) cost share.",
+  preferred_mail: "Plan’s preferred mail-order pharmacy.",
+  standard_mail: "Mail-order with standard cost share.",
+};
+
 const el = (id) => document.getElementById(id);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatTokenCount(count) {
+  return new Intl.NumberFormat("en-US").format(count);
+}
+
+function formatCostUsd(amount) {
+  if (amount == null || Number.isNaN(amount)) return "$0.00";
+  if (amount < 0.01) return `$${amount.toFixed(4)}`;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+}
+
+function formatUsageMeta(usage) {
+  if (!usage) return "";
+  const parts = [];
+  if (usage.total_tokens != null) {
+    parts.push(`${formatTokenCount(usage.total_tokens)} tokens`);
+  }
+  if (usage.cost_usd != null) {
+    parts.push(formatCostUsd(usage.cost_usd));
+  }
+  return parts.join(" · ");
+}
+
+function updateSessionUsageDisplay() {
+  const totalTokens = sessionUsage.inputTokens + sessionUsage.outputTokens;
+  el("session-usage").textContent = `${formatTokenCount(totalTokens)} tokens · ${formatCostUsd(sessionUsage.costUsd)}`;
+}
+
+function accumulateSessionUsage(usage) {
+  if (!usage) return;
+  sessionUsage.inputTokens += usage.input_tokens || 0;
+  sessionUsage.outputTokens += usage.output_tokens || 0;
+  sessionUsage.costUsd += usage.cost_usd || 0;
+  updateSessionUsageDisplay();
+}
+
+function getSelectedModel() {
+  return el("model-select").value || DEFAULT_MODEL;
+}
+
+function populateModelSelect() {
+  const select = el("model-select");
+  select.innerHTML = "";
+  MODEL_OPTIONS.forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.label;
+    if (model.id === DEFAULT_MODEL) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  });
+}
+
+function formatCurrency(amount) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+}
+
+function formatCostRange(low, high) {
+  if (low != null && high != null) {
+    if (low === high) return formatCurrency(low);
+    return `${formatCurrency(low)}–${formatCurrency(high)}`;
+  }
+  if (low != null) return formatCurrency(low);
+  if (high != null) return formatCurrency(high);
+  return null;
+}
+
+function formatNa(value, formatter = String) {
+  if (value == null || value === "") return "NA";
+  return formatter(value);
+}
+
+function formatPercent(pct) {
+  if (pct == null || Number.isNaN(pct)) return "NA";
+  return `${pct}%`;
+}
+
+function formatShareCopay(copay) {
+  if (copay == null) return "NA";
+  return formatCurrency(copay);
+}
+
+function formatShareCoinsurance(pct) {
+  if (pct == null) return "NA";
+  return formatPercent(pct);
+}
+
+function formatChannelCost(channel) {
+  if (!channel) return "NA";
+  if (channel.coinsurance && channel.cost_low == null && channel.cost_high == null) {
+    return "NA (coinsurance)";
+  }
+  return formatCostRange(channel.cost_low, channel.cost_high) || "NA";
+}
+
+function formatDedApplies(value) {
+  if (value === "Y" || value === "N") return value;
+  return "NA";
+}
+
+function tierLabel(estimate) {
+  const tiers = estimate.tiers_matched || [];
+  if (!tiers.length) return null;
+  if (estimate.same_tier !== false && tiers.length === 1) {
+    return `Tier ${tiers[0]}`;
+  }
+  return `Tiers ${tiers.join(", ")}`;
+}
+
+function benefitPhaseLabel(phase) {
+  if (!phase) return null;
+  return BENEFIT_PHASE_LABELS[phase] || phase.replace(/_/g, " ");
+}
+
+function estimateCardVariant(estimate) {
+  if (estimate.quantity_limit_blocked || estimate.covered === false) {
+    return "estimate-card--blocked";
+  }
+  if (estimate.caveats?.length) {
+    return "estimate-card--warning";
+  }
+  return "";
+}
+
+function renderEstimateCardHtml(estimate, { compact = false } = {}) {
+  if (!estimate) return "";
+
+  const variant = estimateCardVariant(estimate);
+  const cost = formatCostRange(estimate.cost_low, estimate.cost_high);
+  const tier = tierLabel(estimate);
+  const phase = benefitPhaseLabel(estimate.benefit_phase);
+  const days = estimate.days_supply ? `${estimate.days_supply}-day fill` : null;
+  const drug = escapeHtml(estimate.drug_name || "Drug");
+  const plan = escapeHtml(
+    estimate.plan_name && estimate.plan_key
+      ? `${estimate.plan_name} (${estimate.plan_key})`
+      : estimate.plan_key || estimate.plan_name || ""
+  );
+
+  const badges = [tier, days, phase].filter(Boolean);
+  const badgeHtml = badges
+    .map((b) => `<span class="estimate-badge">${escapeHtml(b)}</span>`)
+    .join("");
+
+  let costHtml = "";
+  if (estimate.quantity_limit_blocked) {
+    costHtml = `<div class="estimate-cost estimate-cost--blocked">Fill blocked</div>`;
+    if (estimate.max_allowed_days_supply) {
+      costHtml += `<p class="estimate-note">Max allowed days supply: ${estimate.max_allowed_days_supply}</p>`;
+    }
+  } else if (estimate.covered === false) {
+    costHtml = `<div class="estimate-cost estimate-cost--blocked">Not covered</div>`;
+  } else if (cost) {
+    costHtml = `<div class="estimate-cost">${escapeHtml(cost)}</div>`;
+  }
+
+  const caveats = estimate.caveats || [];
+  const caveatHtml = caveats.length
+    ? `<ul class="estimate-caveats">${caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
+    : "";
+
+  const compactClass = compact ? " estimate-card--compact" : "";
+
+  return `
+    <div class="estimate-card ${variant}${compactClass}" role="region" aria-label="Cost estimate">
+      <div class="estimate-card-header">
+        <span class="estimate-drug">${drug}</span>
+        ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+      </div>
+      ${costHtml}
+      ${badgeHtml ? `<div class="estimate-meta">${badgeHtml}</div>` : ""}
+      ${caveatHtml}
+    </div>`;
+}
+
+function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
+  if (!data) return "";
+
+  const drug = escapeHtml(data.drug_name || "Drug");
+  const dosageLine = data.dosage
+    ? `<span class="estimate-dosage">${escapeHtml(data.dosage)}</span>`
+    : "";
+  const plan = escapeHtml(
+    data.plan_name && data.plan_key
+      ? `${data.plan_name} (${data.plan_key})`
+      : data.plan_key || data.plan_name || ""
+  );
+  const covered =
+    data.covered === true ? "Yes" : data.covered === false ? "No" : "NA";
+  const deductible = formatNa(data.deductible, (v) => formatCurrency(v));
+  const tier = data.tier != null ? `Tier ${data.tier}` : "NA";
+  const benefitPhase = benefitPhaseLabel(data.benefit_phase) || "NA";
+  const effectivePhase = benefitPhaseLabel(data.effective_phase) || "NA";
+  const days = data.days_supply ? `${data.days_supply}-day fill` : "NA";
+  const ytd =
+    data.ytd_oop_spend != null ? formatCurrency(data.ytd_oop_spend) : "NA";
+
+  const channelRows = PHARMACY_CHANNEL_ROWS.map(([key, label]) => {
+    const channel = data.channels?.[key];
+    return `<tr>
+      <th scope="row">${withFieldInfo(label, key)}</th>
+      <td>${escapeHtml(formatShareCopay(channel?.plan_copay))}</td>
+      <td>${escapeHtml(formatShareCoinsurance(channel?.plan_coinsurance_pct))}</td>
+      <td>${escapeHtml(formatShareCopay(channel?.applied_copay))}</td>
+      <td>${escapeHtml(formatShareCoinsurance(channel?.applied_coinsurance_pct))}</td>
+      <td>${escapeHtml(formatChannelCost(channel))}</td>
+    </tr>`;
+  }).join("");
+
+  const annualFacts = [
+    data.annual_oop_cap != null
+      ? `<div><dt>${withFieldInfo("Annual OOP cap", "annual_oop_cap")}</dt><dd>${escapeHtml(formatCurrency(data.annual_oop_cap))}</dd></div>`
+      : "",
+    data.remaining_oop_headroom != null
+      ? `<div><dt>${withFieldInfo("Remaining before cap", "remaining_oop")}</dt><dd>${escapeHtml(formatCurrency(data.remaining_oop_headroom))}</dd></div>`
+      : "",
+    data.annual_budget_cost_low != null
+      ? `<div><dt>${withFieldInfo("Projected annual OOP (this drug)", "projected_annual_oop")}</dt><dd>${escapeHtml(
+          data.annual_budget_cost_low === data.annual_budget_cost_high
+            ? formatCurrency(data.annual_budget_cost_low)
+            : `${formatCurrency(data.annual_budget_cost_low)}–${formatCurrency(data.annual_budget_cost_high)}`
+        )}</dd></div>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+
+  const caveats = data.caveats || [];
+  const caveatHtml = caveats.length
+    ? `<ul class="estimate-caveats">${caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
+    : "";
+
+  const blockedHtml = data.quantity_limit_blocked
+    ? `<p class="estimate-note estimate-note--blocked">Fill blocked${
+        data.max_allowed_days_supply
+          ? ` — max ${data.max_allowed_days_supply}-day supply`
+          : ""
+      }</p>`
+    : "";
+
+  const compactClass = compact ? " estimate-card--compact" : "";
+  const variant = data.quantity_limit_blocked || data.covered === false ? "estimate-card--blocked" : "estimate-card--warning";
+
+  return `
+    <div class="estimate-card ${variant}${compactClass}" role="region" aria-label="Multi-channel cost estimate">
+      <div class="estimate-card-header">
+        <span class="estimate-drug">${drug}</span>
+        ${dosageLine}
+        ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+      </div>
+      ${blockedHtml}
+      <section class="estimate-section" aria-labelledby="estimate-plan-fill-heading">
+        <h4 class="estimate-section-title" id="estimate-plan-fill-heading">${withFieldInfo("Plan & fill", "section_plan_fill")}</h4>
+        <dl class="estimate-facts">
+          <div><dt>${withFieldInfo("Drug", "drug")}</dt><dd>${drug}</dd></div>
+          <div><dt>${withFieldInfo("Dosage", "dosage")}</dt><dd>${escapeHtml(data.dosage ? data.dosage : "NA")}</dd></div>
+          <div><dt>${withFieldInfo("Plan", "plan")}</dt><dd>${plan || "NA"}</dd></div>
+          <div><dt>${withFieldInfo("Days supply", "days_supply")}</dt><dd>${escapeHtml(days)}</dd></div>
+        </dl>
+      </section>
+      <section class="estimate-section" aria-labelledby="estimate-benefit-heading">
+        <h4 class="estimate-section-title" id="estimate-benefit-heading">${withFieldInfo("Benefit context", "section_benefit")}</h4>
+        <dl class="estimate-facts">
+          <div><dt>${withFieldInfo("Covered", "covered")}</dt><dd>${escapeHtml(covered)}</dd></div>
+          <div><dt>${withFieldInfo("Deductible", "deductible")}</dt><dd>${escapeHtml(deductible)}</dd></div>
+          <div><dt>${withFieldInfo("Tier", "tier")}</dt><dd>${escapeHtml(tier)}</dd></div>
+          <div><dt>${withFieldInfo("Deductible applies to tier", "ded_applies")}</dt><dd>${escapeHtml(formatDedApplies(data.ded_applies_yn))}</dd></div>
+          <div><dt>${withFieldInfo("Benefit phase", "benefit_phase")}</dt><dd>${escapeHtml(benefitPhase)}</dd></div>
+          <div><dt>${withFieldInfo("Effective phase", "effective_phase")}</dt><dd>${escapeHtml(effectivePhase)}</dd></div>
+          <div><dt>${withFieldInfo("YTD spend", "ytd_spend")}</dt><dd>${escapeHtml(ytd)}</dd></div>
+          ${annualFacts}
+        </dl>
+      </section>
+      <section class="estimate-section" aria-labelledby="estimate-channel-heading">
+        <h4 class="estimate-section-title" id="estimate-channel-heading">${withFieldInfo("This fill by channel", "section_channel")}</h4>
+        <div class="channel-cost-table-wrap">
+          <table class="channel-cost-table channel-cost-table--wide">
+            <caption class="sr-only">Cost share and estimated cost by pharmacy channel</caption>
+            <thead>
+              <tr>
+                <th scope="col">${withFieldInfo("Channel", "channel")}</th>
+                <th scope="col">${withFieldInfo("Plan copay", "plan_copay")}</th>
+                <th scope="col">${withFieldInfo("Plan coinsurance", "plan_coinsurance")}</th>
+                <th scope="col">${withFieldInfo("Applied copay", "applied_copay")}</th>
+                <th scope="col">${withFieldInfo("Applied coinsurance", "applied_coinsurance")}</th>
+                <th scope="col">${withFieldInfo("Est. cost", "est_cost")}</th>
+              </tr>
+            </thead>
+            <tbody>${channelRows}</tbody>
+          </table>
+        </div>
+      </section>
+      ${caveatHtml}
+    </div>`;
+}
+
+function buildEstimatePayload() {
+  const drug = el("filter-drug").value.trim();
+  const dosage = el("filter-dosage").value.trim();
+  const plan = el("filter-plan").value;
+  const daysSupply = parseInt(el("filter-days-supply").value, 10) || 30;
+  const ytdRaw = el("filter-ytd").value;
+  const payload = {
+    plan_id: plan,
+    drug,
+    days_supply: daysSupply,
+    ytd_oop_spend: 0,
+  };
+  if (dosage) payload.dosage = dosage;
+  const ytdNum = parseFloat(ytdRaw);
+  if (ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0) {
+    payload.ytd_oop_spend = ytdNum;
+  }
+  return payload;
+}
+
+function syncGuidedFormFromEstimate(data) {
+  if (!data) return;
+  if (data.drug_name) {
+    el("filter-drug").value = data.drug_name;
+  }
+  if (data.dosage != null) {
+    el("filter-dosage").value = data.dosage;
+  }
+  if (data.plan_key && allPlans.length) {
+    const plan = allPlans.find((p) => p.plan_key === data.plan_key);
+    if (plan) selectPlan(plan);
+    else {
+      el("filter-plan").value = data.plan_key;
+      el("filter-plan-input").value = data.plan_name
+        ? `${data.plan_name} (${data.plan_key})`
+        : data.plan_key;
+    }
+  }
+  if (data.days_supply != null) {
+    const daysEl = el("filter-days-supply");
+    const val = String(data.days_supply);
+    if ([...daysEl.options].some((o) => o.value === val)) {
+      daysEl.value = val;
+    }
+  }
+  if (data.ytd_oop_spend != null && !Number.isNaN(data.ytd_oop_spend)) {
+    el("filter-ytd").value = String(data.ytd_oop_spend);
+  }
+}
+
+function renderDeterministicEstimate(resp, { citations, toolStatuses, dataAsOf } = {}) {
+  const asOf = dataAsOf || {};
+  const dates = [resp.as_of_date, ...Object.values(asOf)].filter(Boolean);
+  const badge = el("data-as-of");
+  if (dates.length) {
+    badge.textContent = `Data as of ${dates[0]}`;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+  const container = el("results-content");
+  if (!resp.data) {
+    container.innerHTML = `<p class="card-placeholder">${escapeHtml(resp.message || "No estimate available.")}</p>`;
+    container.innerHTML += renderCitationsCard(citations);
+    return;
+  }
+  const estimateHtml = renderMultiChannelEstimateCardHtml(resp.data, { compact: true });
+  container.innerHTML = estimateHtml + renderCitationsCard(citations);
+  syncGuidedFormFromEstimate(resp.data);
+  if (toolStatuses && Object.keys(toolStatuses).length) {
+    const statuses = Object.entries(toolStatuses)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(" · ");
+    container.innerHTML += `<p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Tools: ${statuses}</p>`;
+  }
 }
 
 async function loadDisclaimer() {
@@ -27,6 +453,21 @@ async function loadDisclaimer() {
   }
 }
 
+function initDisclaimerCollapse() {
+  const banner = el("disclaimer-banner");
+  if (!banner) return;
+  const mobile = window.matchMedia("(max-width: 639px)");
+  const setCollapsed = () => {
+    if (mobile.matches) {
+      banner.removeAttribute("open");
+    } else {
+      banner.setAttribute("open", "");
+    }
+  };
+  setCollapsed();
+  mobile.addEventListener("change", setCollapsed);
+}
+
 function updatePlanLoadHint(count, message) {
   const hint = el("plan-load-hint");
   if (message) {
@@ -36,21 +477,147 @@ function updatePlanLoadHint(count, message) {
   hint.textContent = count > 0 ? `${count} plan(s) loaded` : "No plans in database yet";
 }
 
-function populatePlanSelect(plans) {
-  const select = el("filter-plan");
-  const selected = select.value;
-  while (select.options.length > 1) {
-    select.remove(1);
-  }
-  plans.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.plan_key;
-    opt.textContent = `${p.plan_name} (${p.plan_key})`;
-    select.appendChild(opt);
+function formatPlanLabel(plan) {
+  const state = plan.state || "";
+  const prefix = state ? `${state} — ` : "";
+  return `${prefix}${plan.plan_name} (${plan.plan_key})`;
+}
+
+function planSearchText(plan) {
+  return `${plan.state || ""} ${plan.plan_name} ${plan.plan_key}`.toLowerCase();
+}
+
+function sortPlans(plans) {
+  return [...plans].sort((a, b) => {
+    const stateCmp = (a.state || "").localeCompare(b.state || "");
+    if (stateCmp !== 0) return stateCmp;
+    return (a.plan_name || "").localeCompare(b.plan_name || "");
   });
-  if (selected && [...select.options].some((o) => o.value === selected)) {
-    select.value = selected;
+}
+
+function clearPlanSelection() {
+  el("filter-plan").value = "";
+  el("filter-plan-input").value = "";
+}
+
+function selectPlan(plan) {
+  el("filter-plan").value = plan.plan_key;
+  el("filter-plan-input").value = formatPlanLabel(plan);
+  closePlanListbox();
+}
+
+function openPlanListbox() {
+  el("filter-plan-listbox").classList.remove("hidden");
+  el("filter-plan-input").setAttribute("aria-expanded", "true");
+}
+
+function closePlanListbox() {
+  el("filter-plan-listbox").classList.add("hidden");
+  el("filter-plan-input").setAttribute("aria-expanded", "false");
+  el("filter-plan-input").removeAttribute("aria-activedescendant");
+  planListHighlight = -1;
+}
+
+function filterPlans(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return allPlans;
+  return allPlans.filter((p) => planSearchText(p).includes(q));
+}
+
+function highlightPlanOption(options) {
+  options.forEach((opt, i) => {
+    opt.classList.toggle("plan-option--active", i === planListHighlight);
+    if (i === planListHighlight) {
+      opt.scrollIntoView({ block: "nearest" });
+      el("filter-plan-input").setAttribute("aria-activedescendant", opt.id);
+    }
+  });
+}
+
+function renderPlanListbox(plans) {
+  const listbox = el("filter-plan-listbox");
+  listbox.innerHTML = "";
+  plans.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.className = "plan-option";
+    li.role = "option";
+    li.id = `plan-option-${i}`;
+    li.dataset.planKey = p.plan_key;
+    li.textContent = formatPlanLabel(p);
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      selectPlan(p);
+    });
+    listbox.appendChild(li);
+  });
+}
+
+function populatePlanSelect(plans) {
+  const selected = el("filter-plan").value;
+  allPlans = sortPlans(plans);
+  renderPlanListbox(allPlans);
+  if (selected) {
+    const plan = allPlans.find((p) => p.plan_key === selected);
+    if (plan) {
+      el("filter-plan-input").value = formatPlanLabel(plan);
+    } else {
+      clearPlanSelection();
+    }
   }
+}
+
+function initPlanCombobox() {
+  const input = el("filter-plan-input");
+  const listbox = el("filter-plan-listbox");
+
+  input.addEventListener("focus", () => {
+    renderPlanListbox(filterPlans(input.value));
+    openPlanListbox();
+  });
+
+  input.addEventListener("input", () => {
+    el("filter-plan").value = "";
+    renderPlanListbox(filterPlans(input.value));
+    planListHighlight = -1;
+    openPlanListbox();
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      closePlanListbox();
+      const selected = el("filter-plan").value;
+      if (selected) {
+        const plan = allPlans.find((p) => p.plan_key === selected);
+        if (plan) input.value = formatPlanLabel(plan);
+      }
+    }, 150);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    const options = [...listbox.querySelectorAll(".plan-option")];
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (listbox.classList.contains("hidden")) {
+        renderPlanListbox(filterPlans(input.value));
+        openPlanListbox();
+      }
+      planListHighlight = Math.min(planListHighlight + 1, options.length - 1);
+      highlightPlanOption(options);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      planListHighlight = Math.max(planListHighlight - 1, 0);
+      highlightPlanOption(options);
+    } else if (e.key === "Enter" && planListHighlight >= 0) {
+      e.preventDefault();
+      const opt = options[planListHighlight];
+      if (opt) {
+        const plan = allPlans.find((p) => p.plan_key === opt.dataset.planKey);
+        if (plan) selectPlan(plan);
+      }
+    } else if (e.key === "Escape") {
+      closePlanListbox();
+    }
+  });
 }
 
 async function loadPlans() {
@@ -115,6 +682,90 @@ function escapeHtml(value) {
   return escapeAttr(value);
 }
 
+function withFieldInfo(label, tipId) {
+  const tip = FIELD_TIPS[tipId];
+  const labelHtml = escapeHtml(label);
+  if (!tip) return labelHtml;
+  const attr = escapeAttr(tip);
+  return `${labelHtml}<button type="button" class="field-info" aria-label="${attr}" data-tip="${attr}"><span aria-hidden="true">i</span></button>`;
+}
+
+let fieldInfoTooltipAnchor = null;
+let fieldInfoTooltipHideTimer = null;
+
+function fieldInfoTooltipEl() {
+  let node = document.getElementById("field-info-tooltip");
+  if (!node) {
+    node = document.createElement("div");
+    node.id = "field-info-tooltip";
+    node.className = "field-info-tooltip hidden";
+    node.setAttribute("role", "tooltip");
+    document.body.appendChild(node);
+  }
+  return node;
+}
+
+function showFieldInfoTooltip(anchor) {
+  const tip = anchor.dataset.tip;
+  if (!tip) return;
+  clearTimeout(fieldInfoTooltipHideTimer);
+  fieldInfoTooltipAnchor = anchor;
+  const tipEl = fieldInfoTooltipEl();
+  tipEl.textContent = tip;
+  tipEl.classList.remove("hidden");
+  tipEl.style.left = "0";
+  tipEl.style.top = "0";
+  tipEl.style.visibility = "hidden";
+  const anchorRect = anchor.getBoundingClientRect();
+  const tipRect = tipEl.getBoundingClientRect();
+  const margin = 8;
+  let left = anchorRect.left + anchorRect.width / 2 - tipRect.width / 2;
+  let top = anchorRect.top - tipRect.height - margin;
+  left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
+  if (top < margin) {
+    top = anchorRect.bottom + margin;
+  }
+  tipEl.style.left = `${Math.round(left)}px`;
+  tipEl.style.top = `${Math.round(top)}px`;
+  tipEl.style.visibility = "visible";
+}
+
+function hideFieldInfoTooltip() {
+  clearTimeout(fieldInfoTooltipHideTimer);
+  fieldInfoTooltipAnchor = null;
+  const tipEl = document.getElementById("field-info-tooltip");
+  if (tipEl) tipEl.classList.add("hidden");
+}
+
+function scheduleHideFieldInfoTooltip() {
+  clearTimeout(fieldInfoTooltipHideTimer);
+  fieldInfoTooltipHideTimer = setTimeout(hideFieldInfoTooltip, 80);
+}
+
+function initFieldInfoTooltips() {
+  document.addEventListener("mouseover", (event) => {
+    const anchor = event.target.closest(".field-info");
+    if (!anchor?.dataset.tip) return;
+    showFieldInfoTooltip(anchor);
+  });
+  document.addEventListener("mouseout", (event) => {
+    const anchor = event.target.closest(".field-info");
+    if (!anchor) return;
+    const related = event.relatedTarget;
+    if (related && anchor.contains(related)) return;
+    if (fieldInfoTooltipAnchor === anchor) scheduleHideFieldInfoTooltip();
+  });
+  document.addEventListener("focusin", (event) => {
+    const anchor = event.target.closest(".field-info");
+    if (anchor?.dataset.tip) showFieldInfoTooltip(anchor);
+  });
+  document.addEventListener("focusout", (event) => {
+    if (event.target.closest(".field-info")) scheduleHideFieldInfoTooltip();
+  });
+  window.addEventListener("scroll", hideFieldInfoTooltip, true);
+  window.addEventListener("resize", hideFieldInfoTooltip);
+}
+
 function renderMarkdown(text) {
   const escaped = String(text)
     .replace(/&/g, "&amp;")
@@ -167,7 +818,107 @@ function openCitation(index) {
   if (summary) summary.focus();
 }
 
-function appendMessage(role, text, source, citations) {
+function canFetchDeterministicEstimate() {
+  const payload = buildEstimatePayload();
+  return Boolean(payload.drug && payload.plan_id);
+}
+
+async function fetchDeterministicEstimate(payload) {
+  const res = await fetch(`${API}/api/estimate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    return { ok: false, body, status: res.status };
+  }
+  return { ok: true, body };
+}
+
+
+function chatEstimateBody(resp) {
+  const view = estimateResponseFromChat(resp);
+  return view?.body ?? null;
+}
+
+function renderPanelFromChatResponse(resp, { citations, toolStatuses, dataAsOf } = {}) {
+  const body = chatEstimateBody(resp);
+  if (body?.data) {
+    renderDeterministicEstimate(body, { citations, toolStatuses, dataAsOf });
+    return true;
+  }
+  renderSourcesPanel({
+    estimate: resp.estimate,
+    citations,
+    dataAsOf,
+    toolStatuses,
+  });
+  return false;
+}
+
+function estimateResponseFromChat(resp) {
+  if (!resp?.channel_estimate) return null;
+  const toolStatus =
+    resp.tool_statuses?.estimate_drug_cost_all_channels ||
+    resp.tool_statuses?.estimate_drug_cost ||
+    "ok";
+  return {
+    ok: true,
+    body: {
+      status: toolStatus,
+      data: resp.channel_estimate,
+      as_of_date:
+        resp.data_as_of?.estimate ||
+        resp.data_as_of?.estimate_drug_cost_all_channels ||
+        resp.data_as_of?.estimate_drug_cost ||
+        "",
+    },
+  };
+}
+
+function formatMultiChannelSummary(data) {
+  if (!data) return "No estimate could be computed.";
+
+  const drug = data.drug_name || "This drug";
+  const plan =
+    data.plan_name && data.plan_key
+      ? `${data.plan_name} (${data.plan_key})`
+      : data.plan_key || data.plan_name || "this plan";
+  const daysSupply = data.days_supply || 30;
+  const phase = benefitPhaseLabel(data.benefit_phase) || "current benefit";
+  const ytd =
+    data.ytd_oop_spend != null ? formatCurrency(data.ytd_oop_spend) : "$0.00";
+
+  const channelCosts = PHARMACY_CHANNEL_ROWS.map(([key]) => data.channels?.[key]).filter(
+    (c) => c?.cost_low != null
+  );
+  if (!channelCosts.length) {
+    return data.caveats?.length
+      ? data.caveats.join("\n\n")
+      : `${drug} on ${plan}: no dollar estimate available for this fill.`;
+  }
+
+  const low = Math.min(...channelCosts.map((c) => c.cost_low));
+  const high = Math.max(
+    ...channelCosts.map((c) => (c.cost_high != null ? c.cost_high : c.cost_low))
+  );
+  const costText =
+    low === high ? formatCurrency(low) : `${formatCurrency(low)}–${formatCurrency(high)}`;
+
+  const parts = [
+    `${drug} for a ${daysSupply}-day supply on ${plan} is estimated at ${costText} depending on pharmacy channel (${phase} phase), assuming ${ytd} spent so far this year.`,
+  ];
+  if (data.tier != null) {
+    parts.push(`Formulary tier: ${data.tier}.`);
+  }
+  for (const caveat of data.caveats || []) {
+    parts.push(caveat);
+  }
+  return parts.join("\n\n");
+}
+
+function appendMessage(role, text, source, citations, usage) {
   const empty = el("empty-state");
   if (empty) empty.remove();
   const div = document.createElement("div");
@@ -177,10 +928,14 @@ function appendMessage(role, text, source, citations) {
   } else {
     div.textContent = text;
   }
-  if (role === "assistant" && source) {
+  if (role === "assistant" && (source || usage)) {
     const sourceEl = document.createElement("div");
     sourceEl.className = "message-source";
-    sourceEl.textContent = `via ${source}`;
+    const metaParts = [];
+    if (source) metaParts.push(`via ${source}`);
+    const usageText = formatUsageMeta(usage);
+    if (usageText) metaParts.push(usageText);
+    sourceEl.textContent = metaParts.join(" · ");
     div.appendChild(sourceEl);
   }
   el("chat-messages").appendChild(div);
@@ -208,6 +963,8 @@ function establishBaseline(resp) {
   return {
     drugKey: drugKeyFromResp(resp),
     drug_name: resp.drug_name || null,
+    estimate: resp.estimate || null,
+    channel_estimate: resp.channel_estimate || null,
     citations: resp.citations?.length ? resp.citations : null,
     data_as_of: resp.data_as_of || {},
     tool_statuses: resp.tool_statuses || {},
@@ -219,6 +976,8 @@ function mergeResults(baseline, resp) {
   if (resp.drug_name) merged.drug_name = resp.drug_name;
   const key = drugKeyFromResp(resp);
   if (key) merged.drugKey = key;
+  if (resp.estimate) merged.estimate = resp.estimate;
+  if (resp.channel_estimate) merged.channel_estimate = resp.channel_estimate;
   if (resp.citations?.length) merged.citations = resp.citations;
   if (resp.data_as_of) Object.assign(merged.data_as_of, resp.data_as_of);
   if (resp.tool_statuses) Object.assign(merged.tool_statuses, resp.tool_statuses);
@@ -227,7 +986,7 @@ function mergeResults(baseline, resp) {
 
 function renderCitationsCard(citations) {
   if (!citations?.length) {
-    return `<div class="card"><h3>Citations</h3><p class="card-placeholder">${PLACEHOLDERS.citations}</p></div>`;
+    return `<div class="card card--sources"><h3>Sources</h3><p class="card-placeholder">${PLACEHOLDERS.citations}</p></div>`;
   }
   const items = citations
     .map((c, i) => {
@@ -247,10 +1006,10 @@ function renderCitationsCard(citations) {
       </details>`;
     })
     .join("");
-  return `<div class="card"><h3>Citations</h3><div class="citation-list">${items}</div></div>`;
+  return `<div class="card card--sources"><h3>Sources</h3><div class="citation-list">${items}</div></div>`;
 }
 
-function renderSourcesPanel({ citations, dataAsOf, toolStatuses } = {}) {
+function renderSourcesPanel({ estimate, citations, dataAsOf, toolStatuses } = {}) {
   const container = el("results-content");
   const asOf = dataAsOf || {};
   const dates = Object.values(asOf).filter(Boolean);
@@ -262,7 +1021,8 @@ function renderSourcesPanel({ citations, dataAsOf, toolStatuses } = {}) {
     badge.classList.add("hidden");
   }
 
-  container.innerHTML = renderCitationsCard(citations);
+  const estimateHtml = estimate ? renderEstimateCardHtml(estimate, { compact: true }) : "";
+  container.innerHTML = estimateHtml + renderCitationsCard(citations);
 
   if (toolStatuses && Object.keys(toolStatuses).length) {
     const statuses = Object.entries(toolStatuses)
@@ -273,17 +1033,26 @@ function renderSourcesPanel({ citations, dataAsOf, toolStatuses } = {}) {
 }
 
 function renderBaseline(baseline) {
-  renderSourcesPanel({
+  const syntheticResp = {
+    channel_estimate: baseline.channel_estimate,
+    estimate: baseline.estimate,
+    tool_statuses: baseline.tool_statuses,
+    data_as_of: baseline.data_as_of,
+  };
+  if (!renderPanelFromChatResponse(syntheticResp, {
     citations: baseline.citations,
     dataAsOf: baseline.data_as_of,
     toolStatuses: baseline.tool_statuses,
-  });
+  })) {
+    // renderPanelFromChatResponse already called renderSourcesPanel when no channel_estimate
+  }
 }
 
 function renderResults(resp) {
   if (resp.status === "needs_clarification" || resp.status === "not_found") {
     if (!resultsBaseline) {
       renderSourcesPanel({
+        estimate: resp.estimate,
         citations: resp.citations,
         dataAsOf: resp.data_as_of,
         toolStatuses: resp.tool_statuses,
@@ -382,7 +1151,13 @@ async function sendMessage(message, { switchToChat = false } = {}) {
   showLoading("Estimating cost…");
 
   try {
-    const body = { message, session_id: sessionId, filters: getFilters() };
+    const body = {
+      message,
+      session_id: sessionId,
+      filters: getFilters(),
+      model: getSelectedModel(),
+    };
+
     const res = await fetch(`${API}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -416,13 +1191,30 @@ async function sendMessage(message, { switchToChat = false } = {}) {
     el("turn-counter").textContent = `${turnCount}/5 turns`;
 
     const resp = data.response;
+    const explanation = resp.explanation || resp.clarification_message || "No response.";
     appendMessage(
       "assistant",
-      resp.explanation || resp.clarification_message || "No response.",
-      resp.response_source,
-      resp.citations
+      explanation,
+      resp.channel_estimate ? resp.response_source || "CMS data" : resp.response_source,
+      resp.citations,
+      resp.llm_usage
     );
-    renderResults(resp);
+    if (resp.status === "ok") {
+      const key = drugKeyFromResp(resp);
+      if (!resultsBaseline) {
+        resultsBaseline = establishBaseline(resp);
+      } else if (key && resultsBaseline.drugKey && key !== resultsBaseline.drugKey) {
+        resultsBaseline = establishBaseline(resp);
+      } else {
+        resultsBaseline = mergeResults(resultsBaseline, resp);
+      }
+    }
+    renderPanelFromChatResponse(resp, {
+      citations: resp.citations,
+      toolStatuses: resp.tool_statuses,
+      dataAsOf: resp.data_as_of,
+    });
+    accumulateSessionUsage(resp.llm_usage);
     if (switchToChat) {
       switchMode("chat");
     }
@@ -444,7 +1236,46 @@ function submitGuidedEstimate() {
     showGuidedError("Please enter a drug name and select a plan.");
     return;
   }
-  sendMessage(composeGuidedMessage(), { switchToChat: true });
+  void runDeterministicEstimate({ switchToChat: true });
+}
+
+async function runDeterministicEstimate({ switchToChat = false } = {}) {
+  const message = composeGuidedMessage();
+  el("guided-submit").disabled = true;
+  el("send-btn").disabled = true;
+  showLoading("Computing costs…");
+  showGuidedError("");
+
+  try {
+    const res = await fetch(`${API}/api/estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildEstimatePayload()),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      showGuidedError(chatErrorMessage(res, body));
+      return;
+    }
+
+    appendMessage("user", message);
+    if (switchToChat) {
+      switchMode("chat");
+    }
+    appendMessage(
+      "assistant",
+      body.data ? formatMultiChannelSummary(body.data) : body.message || "No estimate could be computed.",
+      "CMS data"
+    );
+    renderDeterministicEstimate(body);
+  } catch (err) {
+    showGuidedError("Could not load estimate. Please try again.");
+    console.error(err);
+  } finally {
+    hideLoading();
+    el("guided-submit").disabled = false;
+    el("send-btn").disabled = false;
+  }
 }
 
 el("chat-form").addEventListener("submit", (e) => {
@@ -482,5 +1313,10 @@ el("refresh-plans").addEventListener("click", async () => {
 });
 
 loadDisclaimer();
+initDisclaimerCollapse();
+initFieldInfoTooltips();
+initPlanCombobox();
+populateModelSelect();
+updateSessionUsageDisplay();
 pollPlansUntilLoaded();
 switchMode("chat");

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
+
 SOURCE_CATALOG: dict[str, dict[str, str]] = {
     "cms_spuf_2026_q1": {
         "label": "CMS Part D Formulary & Pricing (SPUF)",
@@ -15,11 +17,6 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
     },
     "rxnorm_api": {
         "label": "RxNorm (NLM)",
-        "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html",
-        "scope": "Drug name normalization",
-    },
-    "rxnorm_cache": {
-        "label": "RxNorm (local cache)",
         "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html",
         "scope": "Drug name normalization",
     },
@@ -54,22 +51,32 @@ def scope_for_source_id(source_id: str) -> str | None:
 
 
 def drug_name_from_artifacts(tool_artifacts: dict[str, Any]) -> str | None:
-    estimate = tool_artifacts.get("estimate_drug_cost")
-    if not estimate or estimate.get("status") not in ("ok",):
-        return None
-    data = estimate.get("data") or {}
-    if not isinstance(data, dict):
-        return None
-    name = data.get("drug_name")
-    return str(name) if name else None
+    for name in ("estimate_drug_cost_all_channels", "estimate_drug_cost"):
+        estimate = tool_artifacts.get(name)
+        if not estimate or estimate.get("status") not in ("ok",):
+            continue
+        data = estimate.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        drug = data.get("drug_name")
+        if drug:
+            return str(drug)
+    return None
 
 
 def formulary_citation_claim(data: dict[str, Any], drug_name: str | None = None) -> str:
     drug = drug_name.capitalize() if drug_name else "Drug"
     plan_key = data.get("plan_key", "plan")
     tiers = data.get("tiers_matched") or []
-    cost_low = data.get("cost_low")
-    cost_high = data.get("cost_high")
+    tier = data.get("tier")
+    if tier is not None and tier not in tiers:
+        tiers = [tier, *tiers]
+    channels = data.get("channels")
+    if channels:
+        cost_low, cost_high = channel_cost_bounds(channels)
+    else:
+        cost_low = data.get("cost_low")
+        cost_high = data.get("cost_high")
     tier_label = f"tier {tiers[0]}" if len(tiers) == 1 else "formulary" if tiers else "formulary"
     if cost_low is not None and cost_high is not None:
         if cost_low == cost_high:

@@ -6,6 +6,15 @@ from medicare_navigator.tools.normalize_drug import normalize_drug
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_dosage_qualified_lookup_resolves_strength_specific_rxcui_lisinopril():
+    """CMS formulary rows use strength-specific RXCUI 314076, not ingredient 29046."""
+    result = await normalize_drug("lisinopril", "10mg")
+    assert result.status == ToolStatus.ok
+    assert result.data["selected"]["rxcui"] == "314076"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_dosage_qualified_lookup_resolves_strength_specific_rxcui():
     """Regression: the plain ingredient-level RxNorm exact match (rxcui.json) resolves
     "lovastatin" to its ingredient RXCUI (6472), which never matches a CMS formulary row —

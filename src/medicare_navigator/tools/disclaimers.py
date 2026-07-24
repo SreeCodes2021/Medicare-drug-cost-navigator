@@ -34,6 +34,13 @@ INSULIN_OUT_OF_SCOPE_MESSAGE = (
     "plan's insulin-specific pricing directly."
 )
 
+CATASTROPHIC_PHASE_NOTE = (
+    "Your reported year-to-date out-of-pocket spend meets or exceeds the CMS annual Part D "
+    "out-of-pocket maximum for this contract year. This fill is estimated using catastrophic "
+    "coverage cost-sharing (COVERAGE_LEVEL 3 in CMS data), which is typically $0 for covered "
+    "drugs on the regular formulary."
+)
+
 NO_COST_SHARE_DATA_MESSAGE = (
     "This plan's CMS-published cost-share file does not include a matching record for this "
     "drug's tier, benefit phase, and days-supply combination, so no dollar estimate could be "

@@ -21,6 +21,62 @@ class DrugCostEstimate(BaseModel):
     covered: bool = True
 
 
+class ChannelCost(BaseModel):
+    """Per-pharmacy-channel cost; null cost_low/cost_high means NA."""
+
+    cost_low: float | None = None
+    cost_high: float | None = None
+    coinsurance: bool = False
+    plan_copay: float | None = None
+    plan_coinsurance_pct: float | None = None
+    applied_copay: float | None = None
+    applied_coinsurance_pct: float | None = None
+
+
+class MultiChannelDrugCostEstimate(BaseModel):
+    plan_key: str
+    plan_name: str
+    drug_name: str | None = None
+    dosage: str | None = None
+    rxcui: str | None = None
+    covered: bool | None = None
+    days_supply: int
+    ytd_oop_spend: float
+    deductible: float | None = None
+    tier: int | None = None
+    tiers_matched: list[int] = Field(default_factory=list)
+    ded_applies_yn: str = "NA"
+    benefit_phase: str | None = None
+    effective_phase: str | None = None
+    channels: dict[str, ChannelCost] = Field(default_factory=dict)
+    matched_ndc_count: int = 0
+    same_tier: bool = True
+    caveats: list[str] = Field(default_factory=list)
+    quantity_limit_blocked: bool = False
+    max_allowed_days_supply: int | None = None
+    annual_oop_cap: float | None = None
+    remaining_oop_headroom: float | None = None
+    annual_budget_cost_low: float | None = None
+    annual_budget_cost_high: float | None = None
+
+
+class EstimateApiResponse(BaseModel):
+    status: str
+    message: str | None = None
+    data: MultiChannelDrugCostEstimate | None = None
+    source_id: str = ""
+    as_of_date: str = ""
+
+
+class LlmUsage(BaseModel):
+    model: str
+    provider: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+
+
 class QueryResponse(BaseModel):
     query_id: str
     session_id: str | None = None
@@ -28,6 +84,7 @@ class QueryResponse(BaseModel):
     drug_name: str | None = None
     rxcui: str | None = None
     estimate: DrugCostEstimate | None = None
+    channel_estimate: MultiChannelDrugCostEstimate | None = None
     explanation: str = ""
     citations: list[Citation] = Field(default_factory=list)
     disclaimer: str = ""
@@ -36,6 +93,7 @@ class QueryResponse(BaseModel):
     tool_statuses: dict[str, str] = Field(default_factory=dict)
     clarification_message: str | None = None
     response_source: str | None = None
+    llm_usage: LlmUsage | None = None
 
 
 class ChatResponse(BaseModel):

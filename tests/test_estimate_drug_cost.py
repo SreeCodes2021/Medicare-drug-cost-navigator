@@ -105,10 +105,25 @@ async def test_bug5_multiple_ndcs_same_tier_produce_a_range():
 
 
 @pytest.mark.asyncio
+async def test_catastrophic_phase_when_ytd_at_or_above_annual_oop_cap():
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_PDP,
+        drug_name="lisinopril",
+        dosage="10mg",
+        days_supply=30,
+        ytd_oop_spend=2200,
+    )
+    assert result.status == ToolStatus.ok
+    assert result.data.benefit_phase == "catastrophic"
+    assert result.data.cost_low == pytest.approx(0.0)
+    assert result.data.cost_high == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
 async def test_bug5_multiple_ndcs_cross_tier_flagged_more_severely():
     """Lisinopril matches NDCs at tier 1 and tier 2 -> same_tier False, stronger caveat."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="lisinopril", days_supply=30, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP, drug_name="lisinopril", dosage="10mg", days_supply=30, ytd_oop_spend=0
     )
     assert result.status == ToolStatus.ok
     assert result.data.matched_ndc_count == 2

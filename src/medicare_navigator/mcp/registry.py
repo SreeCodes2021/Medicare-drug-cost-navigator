@@ -9,7 +9,7 @@ from medicare_navigator.ingestion.manifest import get_as_of, get_source_id
 from medicare_navigator.mcp.schemas import TOOL_SCHEMAS
 from medicare_navigator.models.tool_result import ToolResult
 from medicare_navigator.storage.repository import PlanRepository
-from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost
+from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost, estimate_drug_cost_all_channels
 from medicare_navigator.tools.lookup_plan import lookup_plan
 
 SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
@@ -24,7 +24,7 @@ def _spuf_as_of() -> str:
     return get_as_of("spuf", AS_OF_FALLBACK)
 
 
-def _serialize_tool_result(result: ToolResult) -> dict[str, Any]:
+def serialize_tool_result(result: ToolResult) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "status": result.status.value,
         "source_id": result.source_id,
@@ -56,6 +56,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             ytd_oop_spend=float(args.get("ytd_oop_spend", 0)),
             pharmacy_channel=args.get("pharmacy_channel", "preferred_retail"),
         )
+    elif name == "estimate_drug_cost_all_channels":
+        result = await estimate_drug_cost_all_channels(
+            plan_key=args["plan_key"],
+            drug_name=args["drug_name"],
+            dosage=args.get("dosage"),
+            days_supply=int(args.get("days_supply", 30)),
+            ytd_oop_spend=float(args.get("ytd_oop_spend", 0)),
+        )
     elif name == "lookup_plan":
         result = lookup_plan(
             plan_key=args.get("plan_key"),
@@ -78,7 +86,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "data": None,
         }
 
-    return _serialize_tool_result(result)
+    return serialize_tool_result(result)
 
 
 def tool_names() -> list[str]:

@@ -16,16 +16,24 @@ from starlette.responses import Response
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
 from medicare_navigator.models.query import QuerySlots
-from medicare_navigator.models.response import ChatResponse
+from medicare_navigator.models.response import ChatResponse, EstimateApiResponse, MultiChannelDrugCostEstimate
 from medicare_navigator.orchestrator.router import orchestrator
 from medicare_navigator.storage.repository import PlanRepository
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import logging
+
     from medicare_navigator.ingestion.schema import ensure_schema
 
     ensure_schema()
+    log = logging.getLogger("uvicorn.error")
+    for provider, status in settings.llm_provider_status().items():
+        if status == "empty_in_env_file":
+            log.warning(settings.llm_configuration_hint(provider))
+        elif status == "missing" and provider == settings.llm_provider.lower():
+            log.warning(settings.llm_configuration_hint(provider))
     yield
 
 
@@ -78,6 +86,15 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
     filters: FilterPayload | None = None
+    model: str | None = None
+
+
+class EstimateRequest(BaseModel):
+    plan_id: str
+    drug: str
+    dosage: str | None = None
+    days_supply: int = 30
+    ytd_oop_spend: float = 0.0
 
 
 def _filters_to_slots(filters: FilterPayload | None, message: str = "") -> QuerySlots | None:
@@ -93,17 +110,20 @@ async def health():
 
     freshness = data_freshness_summary()
     llm_ok = llm_client.is_available()
+    provider_status = settings.llm_provider_status()
     body = {
         "status": "ok" if llm_ok else "degraded",
         "version": "0.1.0",
         "llm_configured": llm_ok,
         "llm_source": llm_client.model_label(),
+        "llm_providers": provider_status,
+        "env_file": str(settings.env_file),
         **freshness,
     }
     if not llm_ok:
         body["error"] = (
-            "LLM API key is not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY "
-            "matching LLM_PROVIDER."
+            "LLM API key is not configured. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY "
+            "for the models you want to use."
         )
         return JSONResponse(status_code=503, content=body)
     return body
@@ -128,6 +148,34 @@ async def get_disclaimer():
     return {"text": settings.disclaimer_text}
 
 
+@app.post("/api/estimate", response_model=EstimateApiResponse)
+async def estimate_costs(req: EstimateRequest):
+    from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels
+
+    if not req.plan_id.strip():
+        raise HTTPException(status_code=400, detail="plan_id is required")
+    if not req.drug.strip():
+        raise HTTPException(status_code=400, detail="drug is required")
+
+    result = await estimate_drug_cost_all_channels(
+        plan_key=req.plan_id.strip(),
+        drug_name=req.drug.strip(),
+        dosage=req.dosage.strip() if req.dosage else None,
+        days_supply=req.days_supply,
+        ytd_oop_spend=req.ytd_oop_spend,
+    )
+    data: MultiChannelDrugCostEstimate | None = None
+    if isinstance(result.data, MultiChannelDrugCostEstimate):
+        data = result.data
+    return EstimateApiResponse(
+        status=result.status.value,
+        message=result.message,
+        data=data,
+        source_id=result.source_id,
+        as_of_date=result.as_of_date,
+    )
+
+
 @app.post("/api/query")
 async def query(req: QueryRequest):
     message = req.message or _build_message_from_fields(req)
@@ -150,13 +198,25 @@ async def query(req: QueryRequest):
     return response
 
 
+@app.get("/api/models")
+async def list_models():
+    from medicare_navigator.llm.models import DEFAULT_LLM_MODEL, list_available_models
+
+    return {"default": DEFAULT_LLM_MODEL, "models": list_available_models()}
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     filters = _filters_to_slots(req.filters, req.message)
     try:
         response = await orchestrator.run(
-            message=req.message, filter_slots=filters, session_id=req.session_id
+            message=req.message,
+            filter_slots=filters,
+            session_id=req.session_id,
+            llm_model=req.model,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LLMNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMRequestError as exc:

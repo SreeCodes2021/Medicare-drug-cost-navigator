@@ -41,6 +41,37 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "estimate_drug_cost_all_channels",
+        "description": (
+            "Estimate out-of-pocket cost for all four CMS pharmacy channels "
+            "(preferred_retail, standard_retail, preferred_mail, standard_mail) in one "
+            "deterministic call. Returns per-channel cost ranges, deductible, tier, "
+            "DED_APPLIES_YN, benefit phase, and effective phase after tier exemption."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_key": {"type": "string", "description": "Exact plan key, e.g. S5678-012"},
+                "drug_name": {"type": "string", "description": "Drug name, e.g. lisinopril"},
+                "dosage": {
+                    "type": "string",
+                    "description": "Optional strength, e.g. 10mg",
+                },
+                "days_supply": {
+                    "type": "integer",
+                    "description": "Requested days supply per fill (default 30)",
+                    "default": 30,
+                },
+                "ytd_oop_spend": {
+                    "type": "number",
+                    "description": "Beneficiary's year-to-date out-of-pocket spend (default 0)",
+                    "default": 0,
+                },
+            },
+            "required": ["plan_key", "drug_name"],
+        },
+    },
+    {
         "name": "lookup_plan",
         "description": "Look up a Medicare plan by exact plan_key or fuzzy search text.",
         "parameters": {

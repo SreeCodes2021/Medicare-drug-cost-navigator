@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
 from medicare_navigator.config import settings
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
-from medicare_navigator.storage.repository import DrugRepository
 
 SOURCE_ID = "rxnorm_api"
 AS_OF_FALLBACK = "2026-01-15"
@@ -22,17 +22,6 @@ def _manifest_as_of() -> str:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         return data.get("rxnorm", {}).get("as_of", AS_OF_FALLBACK)
     return AS_OF_FALLBACK
-
-
-def _record_to_candidate(record, source: str = "local_cache") -> dict:
-    return {
-        "drug_name": record.drug_name,
-        "rxcui": record.rxcui,
-        "ndc": record.ndc,
-        "dosage": record.dosage,
-        "ingredient": record.ingredient,
-        "source": source,
-    }
 
 
 async def _rxnorm_exact_lookup(name: str) -> list[dict]:
@@ -76,13 +65,37 @@ async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]
                         continue
                     for prop in group.get("conceptProperties") or []:
                         concept_name = prop.get("name") or ""
+                        if " / " in concept_name:
+                            continue
                         if _dosage_in_name(concept_name, dosage):
-                            matches.append({"rxcui": prop.get("rxcui"), "tty": tty})
+                            matches.append(
+                                {
+                                    "rxcui": prop.get("rxcui"),
+                                    "tty": tty,
+                                    "concept_name": concept_name,
+                                }
+                            )
     except httpx.HTTPError:
         pass
-    # Prefer generic (SCD) over branded (SBD) when both match the requested strength.
-    matches.sort(key=lambda m: 0 if m["tty"] == "SCD" else 1)
-    return [{"rxcui": m["rxcui"], "name": name, "source": "rxnorm_drugs_api"} for m in matches]
+    name_lower = name.lower()
+
+    def _strength_rank(m: dict) -> tuple[int, int, int]:
+        concept = (m.get("concept_name") or "").lower()
+        starts_with_ingredient = 0 if concept.startswith(name_lower) else 1
+        scd_first = 0 if m["tty"] == "SCD" else 1
+        branded_suffix = 1 if "[" in concept else 0
+        return (starts_with_ingredient, scd_first, branded_suffix)
+
+    matches.sort(key=_strength_rank)
+    return [
+        {
+            "rxcui": m["rxcui"],
+            "name": m.get("concept_name") or name,
+            "concept_name": m.get("concept_name"),
+            "source": "rxnorm_drugs_api",
+        }
+        for m in matches
+    ]
 
 
 async def _rxnorm_approximate_lookup(name: str, max_results: int = 5) -> list[dict]:
@@ -112,55 +125,33 @@ async def _rxnorm_approximate_lookup(name: str, max_results: int = 5) -> list[di
     return candidates
 
 
-def _local_candidates(name: str, dosage: str | None = None) -> list[dict]:
-    repo = DrugRepository()
-    records = repo.lookup_by_name(name, dosage)
-    return [_record_to_candidate(r) for r in records[:5]]
-
-
 async def _collect_drug_candidates(name: str, dosage: str | None = None) -> list[dict]:
     seen: set[str] = set()
     candidates: list[dict] = []
 
     def add_candidate(candidate: dict) -> None:
-        key = candidate.get("rxcui") or candidate.get("drug_name", "")
+        key = candidate.get("rxcui") or candidate.get("name", "")
         if not key or key in seen:
             return
         seen.add(key)
         candidates.append(candidate)
 
-    for record in _local_candidates(name, dosage):
-        add_candidate(record)
-
     for match in await _rxnorm_approximate_lookup(name):
-        rxcui = match.get("rxcui")
-        if not rxcui:
-            continue
-        repo = DrugRepository()
-        record = repo.lookup_by_rxcui(rxcui)
-        if record:
-            add_candidate(_record_to_candidate(record, source="rxnorm_approximate"))
-        else:
-            add_candidate(
-                {
-                    "drug_name": match.get("name", name),
-                    "rxcui": rxcui,
-                    "dosage": dosage,
-                    "ingredient": match.get("name", name),
-                    "source": "rxnorm_approximate",
-                }
-            )
-
-    if len(candidates) < 3 and len(name) >= 4:
-        prefix = name[: max(4, len(name) - 1)]
-        for record in _local_candidates(prefix, dosage):
-            add_candidate(record)
+        add_candidate(
+            {
+                "drug_name": match.get("name", name),
+                "rxcui": match["rxcui"],
+                "dosage": dosage,
+                "ingredient": match.get("name", name),
+                "source": match.get("source", "rxnorm_approximate"),
+            }
+        )
 
     return candidates[:5]
 
 
 async def _rxnorm_lookup(name: str, dosage: str | None = None) -> list[dict]:
-    """Try RxNorm API; fall back to local DuckDB cache.
+    """Resolve drug names via the live RxNorm REST API only.
 
     When a dosage is given, prefer the strength-specific clinical-drug RXCUI (matches CMS
     formulary rows) over the bare ingredient-level exact match.
@@ -172,21 +163,38 @@ async def _rxnorm_lookup(name: str, dosage: str | None = None) -> list[dict]:
 
     candidates = await _rxnorm_exact_lookup(name)
     if not candidates:
-        for record in _local_candidates(name):
+        for match in await _rxnorm_approximate_lookup(name):
             candidates.append(
                 {
-                    "rxcui": record["rxcui"],
-                    "name": record["drug_name"],
-                    "ndc": record["ndc"],
-                    "dosage": record["dosage"],
-                    "source": "local_cache",
+                    "rxcui": match["rxcui"],
+                    "name": match.get("name", name),
+                    "source": "rxnorm_approximate",
                 }
             )
     return candidates
 
 
+def _dosage_from_concept(concept_name: str) -> str | None:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*MG", concept_name, re.I)
+    if match:
+        return f"{match.group(1)}mg"
+    return None
+
+
+def _split_strength_from_drug_name(drug_name: str, dosage: str | None) -> tuple[str, str | None]:
+    if dosage:
+        return drug_name.strip(), dosage
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*mg\b", drug_name, re.I)
+    if not match:
+        return drug_name.strip(), None
+    strength = f"{match.group(1)}mg"
+    base = re.sub(r"\s*\d+(?:\.\d+)?\s*mg\b", "", drug_name, count=1, flags=re.I).strip()
+    return base or drug_name.strip(), strength
+
+
 async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResult[dict]:
     as_of = _manifest_as_of()
+    drug_name, dosage = _split_strength_from_drug_name(drug_name, dosage)
     candidates = await _rxnorm_lookup(drug_name, dosage)
 
     if not candidates:
@@ -199,41 +207,24 @@ async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResul
             data={"candidates": near_misses, "query": drug_name},
         )
 
-    repo = DrugRepository()
     enriched = []
     for c in candidates:
-        record = repo.lookup_by_rxcui(c["rxcui"])
-        if not record:
-            local_matches = repo.lookup_by_name(drug_name, dosage)
-            if local_matches:
-                record = local_matches[0]
-        if record:
-            if dosage:
-                dosage_norm = dosage.lower().replace(" ", "")
-                if dosage_norm not in record.dosage.lower().replace(" ", ""):
-                    continue
-            enriched.append(
-                {
-                    "drug_name": record.drug_name,
-                    "rxcui": record.rxcui,
-                    "ndc": record.ndc,
-                    "dosage": record.dosage,
-                    "ingredient": record.ingredient,
-                }
-            )
-        else:
-            enriched.append(
-                {
-                    "drug_name": c.get("name", drug_name),
-                    "rxcui": c["rxcui"],
-                    "ndc": c.get("ndc"),
-                    "dosage": c.get("dosage") or dosage,
-                    "ingredient": c.get("name", drug_name),
-                }
-            )
+        concept_name = c.get("concept_name") or c.get("name") or drug_name
+        if dosage and c.get("source") != "rxnorm_drugs_api":
+            if not _dosage_in_name(concept_name, dosage):
+                continue
+        enriched.append(
+            {
+                "drug_name": drug_name,
+                "rxcui": c["rxcui"],
+                "ndc": c.get("ndc"),
+                "dosage": dosage or _dosage_from_concept(concept_name),
+                "ingredient": drug_name,
+            }
+        )
 
     if not enriched:
-        near_misses = await _collect_drug_candidates(drug_name)
+        near_misses = await _collect_drug_candidates(drug_name, dosage)
         return ToolResult.failure(
             ToolStatus.not_found,
             source_id=SOURCE_ID,
@@ -244,13 +235,21 @@ async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResul
 
     return ToolResult.ok(
         {"candidates": enriched, "selected": enriched[0]},
-        source_id=SOURCE_ID if enriched[0].get("source") != "local_cache" else "rxnorm_cache",
+        source_id=SOURCE_ID,
         as_of_date=as_of,
     )
 
 
-def compute_benefit_phase(ytd_oop: float, deductible: float) -> str:
-    """v1 scope: pre-deductible or initial-coverage only (no catastrophic phase)."""
+def compute_benefit_phase(
+    ytd_oop: float,
+    deductible: float,
+    *,
+    contract_year: int = 2026,
+) -> str:
+    from medicare_navigator.tools.part_d_benefit_params import annual_oop_cap
+
+    if ytd_oop >= annual_oop_cap(contract_year):
+        return "catastrophic"
     if ytd_oop < deductible:
         return "pre_deductible"
     return "initial_coverage"

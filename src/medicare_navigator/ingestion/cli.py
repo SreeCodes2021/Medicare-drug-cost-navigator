@@ -120,7 +120,7 @@ def main() -> None:
     spuf_parser.add_argument(
         "--preserve-other",
         action="store_true",
-        help="Keep the drugs and query_log tables when reloading SPUF",
+        help="Keep the query_log table when reloading SPUF",
     )
     spuf_parser.add_argument(
         "--merge-states",

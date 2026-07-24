@@ -1,0 +1,5 @@
+# CMS Part D standard annual out-of-pocket maximum (IRA redesign).
+# Used for annual budget projections and to cap tier COST_MAX values from SPUF.
+annual_oop_cap:
+  2025: 2000
+  2026: 2100

@@ -11,8 +11,14 @@ class OrchestratorRouter:
         message: str,
         filter_slots: QuerySlots | None = None,
         session_id: str | None = None,
+        llm_model: str | None = None,
     ) -> QueryResponse:
-        return await navigator.run(message, filter_slots=filter_slots, session_id=session_id)
+        return await navigator.run(
+            message,
+            filter_slots=filter_slots,
+            session_id=session_id,
+            llm_model=llm_model,
+        )
 
 
 orchestrator = OrchestratorRouter()

@@ -13,3 +13,10 @@ fi
 
 mkdir -p "$DIST"
 cp "$SRC/index.html" "$SRC/app.js" "$SRC/styles.css" "$DIST/"
+
+echo "Built frontend → $DIST"
+echo "  index.html  app.js  styles.css"
+echo ""
+echo "Serve locally (pick a free port if 8000 is taken):"
+echo "  uvicorn medicare_navigator.api.app:app --reload --host 0.0.0.0 --port 8001"
+echo "  open http://localhost:8001"
