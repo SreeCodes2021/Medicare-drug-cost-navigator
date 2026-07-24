@@ -26,12 +26,16 @@ REQUIRED_ELEMENT_IDS = [
     "filter-drug",
     "filter-dosage",
     "filter-plan",
+    "filter-plan-input",
+    "filter-plan-listbox",
     "refresh-plans",
     "plan-load-hint",
     "filter-year",
     "filter-ytd",
     "filter-days-supply",
     "turn-counter",
+    "model-select",
+    "session-usage",
     "chat-messages",
     "empty-state",
     "loading",
@@ -57,6 +61,7 @@ REQUIRED_API_PATHS = [
     "/api/health",
     "/api/disclaimer",
     "/api/plans",
+    "/api/models",
     "/api/meta/as-of",
 ]
 
@@ -70,8 +75,10 @@ CHAT_RESPONSE_UI_FIELDS = [
     "data_as_of",
     "tool_statuses",
     "response_source",
+    "llm_usage",
     "drug_name",
     "rxcui",
+    "channel_estimate",
 ]
 
 SMOKE_MESSAGES = [
@@ -302,13 +309,24 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
         )
         if isinstance(plans, list) and plans:
             sample = plans[0]
-            for key in ("plan_key", "plan_name"):
+            for key in ("plan_key", "plan_name", "state"):
                 report.add(
                     f"api:plans:field:{key}",
                     key in sample,
                     detail=f"missing on first plan: {sample}",
                     group="api",
                 )
+
+    status, estimate_body = getter.post_json(
+        "/api/estimate",
+        {"plan_id": "S9999-001", "drug": "metformin", "days_supply": 30, "ytd_oop_spend": 0},
+    )
+    report.add(
+        "api:estimate:post",
+        status == 200 and estimate_body.get("status") == "ok",
+        detail=f"status={status}, body_status={estimate_body.get('status')}",
+        group="api",
+    )
     return report
 
 

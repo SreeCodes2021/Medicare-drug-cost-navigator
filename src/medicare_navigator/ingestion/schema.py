@@ -9,7 +9,6 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
     if drop_existing:
         for table in (
             "beneficiary_cost",
-            "drugs",
             "plans",
             "basic_drugs_formulary",
             "query_log",
@@ -17,14 +16,6 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS drugs (
-            drug_name VARCHAR, rxcui VARCHAR, ndc VARCHAR,
-            dosage VARCHAR, ingredient VARCHAR
-        )
-        """
-    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS plans (
@@ -50,7 +41,7 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
             plan_key VARCHAR, tier INTEGER, coverage_level INTEGER,
             days_supply_code INTEGER, pharmacy_channel VARCHAR,
             cost_type VARCHAR, copay DOUBLE, coinsurance_pct DOUBLE,
-            ded_applies_yn BOOLEAN, as_of_date VARCHAR
+            cost_max DOUBLE, ded_applies_yn BOOLEAN, as_of_date VARCHAR
         )
         """
     )
@@ -84,6 +75,7 @@ SPUF_INDEX_NAMES = (
 SCHEMA_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
     ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
+    ("beneficiary_cost", "cost_max", "DOUBLE"),
 )
 
 
@@ -112,6 +104,8 @@ def _column_exists(conn, table: str, column: str) -> bool:
 
 
 def migrate_schema(conn) -> None:
+    if _table_exists(conn, "drugs"):
+        conn.execute("DROP TABLE drugs")
     for table, column, col_type in SCHEMA_MIGRATIONS:
         if _table_exists(conn, table) and not _column_exists(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")

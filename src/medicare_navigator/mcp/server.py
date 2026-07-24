@@ -40,6 +40,26 @@ def create_mcp_server():
         )
 
     @mcp.tool()
+    async def estimate_drug_cost_all_channels_tool(
+        plan_key: str,
+        drug_name: str,
+        dosage: str | None = None,
+        days_supply: int = 30,
+        ytd_oop_spend: float = 0.0,
+    ) -> dict:
+        """Estimate drug fill cost for all four CMS pharmacy channels."""
+        return await call_tool(
+            "estimate_drug_cost_all_channels",
+            {
+                "plan_key": plan_key,
+                "drug_name": drug_name,
+                "dosage": dosage,
+                "days_supply": days_supply,
+                "ytd_oop_spend": ytd_oop_spend,
+            },
+        )
+
+    @mcp.tool()
     async def lookup_plan_tool(plan_key: str | None = None, search_text: str | None = None) -> dict:
         """Look up a Medicare plan."""
         return await call_tool(

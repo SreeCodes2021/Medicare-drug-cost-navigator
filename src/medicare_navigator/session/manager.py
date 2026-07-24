@@ -24,7 +24,7 @@ class SessionManager:
             "slots": QuerySlots(),
             "parsed_query": None,
             "tool_artifacts": {},
-            "last_tool_artifacts": {},
+            "last_tool_call": None,
             "chat_history": [],
             "expires_at": datetime.utcnow() + timedelta(minutes=settings.session_ttl_minutes),
         }
@@ -51,6 +51,9 @@ class SessionManager:
         max_messages = MAX_HISTORY_TURNS * 2
         if len(session["chat_history"]) > max_messages:
             session["chat_history"] = session["chat_history"][-max_messages:]
+
+    def set_last_tool_call(self, session: dict, tool_name: str, arguments: dict) -> None:
+        session["last_tool_call"] = {"name": tool_name, "arguments": arguments}
 
 
 session_manager = SessionManager()

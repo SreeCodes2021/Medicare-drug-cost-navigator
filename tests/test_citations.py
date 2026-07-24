@@ -30,6 +30,78 @@ def _estimate_artifact(**data_overrides):
     }
 
 
+def _all_channels_artifact(**data_overrides):
+    data = {
+        "plan_key": "H1234-045",
+        "plan_name": "Demo PDP",
+        "drug_name": "lovastatin",
+        "rxcui": "6472",
+        "covered": True,
+        "days_supply": 30,
+        "ytd_oop_spend": 0,
+        "tier": 1,
+        "tiers_matched": [1],
+        "benefit_phase": "pre_deductible",
+        "effective_phase": "initial_coverage",
+        "channels": {
+            "preferred_retail": {"cost_low": 5.0, "cost_high": 5.0, "coinsurance": False},
+            "standard_retail": {"cost_low": 13.0, "cost_high": 13.0, "coinsurance": False},
+            "preferred_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+            "standard_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+        },
+        "caveats": [],
+    }
+    data.update(data_overrides)
+    return {
+        "status": "ok",
+        "source_id": "cms_spuf_2026_q1",
+        "as_of_date": "2026-01-15",
+        "message": None,
+        "data": data,
+    }
+
+
+def test_build_citations_all_channels_cost_range():
+    artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
+    citations = build_citations_from_artifacts(artifacts)
+    assert len(citations) == 1
+    assert "5.00" in citations[0].claim
+    assert "13.00" in citations[0].claim
+
+
+def test_apply_guardrails_allows_all_channel_dollar_amounts():
+    artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is estimated at $5.00–$13.00 depending on pharmacy channel.",
+        artifacts,
+    )
+    assert errors == []
+
+
+def test_apply_guardrails_flags_untraceable_channel_amount():
+    artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        "Lovastatin costs $99.00 on this plan.", artifacts
+    )
+    assert any("99.00" in e for e in errors)
+
+
+def test_estimate_from_artifact_all_channels():
+    from medicare_navigator.guardrails.citations import (
+        channel_estimate_from_artifact,
+        estimate_from_artifact,
+    )
+
+    artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
+    estimate = estimate_from_artifact(artifacts)
+    assert estimate is not None
+    assert estimate.cost_low == 5.0
+    assert estimate.cost_high == 13.0
+    channel = channel_estimate_from_artifact(artifacts)
+    assert channel is not None
+    assert channel.channels["preferred_retail"].cost_low == 5.0
+
+
 def test_build_citations_includes_source_urls():
     artifacts = {"estimate_drug_cost": _estimate_artifact()}
     citations = build_citations_from_artifacts(artifacts)

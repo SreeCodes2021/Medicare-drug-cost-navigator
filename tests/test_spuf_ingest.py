@@ -40,14 +40,14 @@ def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
         version="SPUF.2026.20260115",
     )
 
-    # 3 plans total: S9999-001 (FL), H8888-001 (FL), S9999-003 (FL, suppressed)
-    assert result["stats"]["plans"] == 3
+    # 4 plans total: S9999-001 (FL), H8888-001 (FL), H5427-060 (FL), S9999-003 (FL, suppressed)
+    assert result["stats"]["plans"] == 4
     assert result["stats"]["formulary_rows"] >= 3
     assert result["source_id"] == "cms_spuf_2026_q1"
 
     repo = PlanRepository(db=spuf_db)
     fl_plans = repo.list_plans(state="FL")
-    assert len(fl_plans) == 3
+    assert len(fl_plans) == 4
     assert any(p["plan_key"] == "S9999-001" for p in fl_plans)
     assert any(p["plan_key"] == "H8888-001" for p in fl_plans)
     assert any(p["plan_key"] == "S9999-003" for p in fl_plans)
@@ -79,7 +79,7 @@ def test_formulary_version_dedup_keeps_max_version(spuf_db):
         conn.close()
     tiers = [r[0] for r in rows]
     assert 9 not in tiers
-    assert tiers == [1]
+    assert all(t == 1 for t in tiers)
 
 
 def test_quantity_limit_and_pa_st_columns_ingested(spuf_db):
@@ -88,7 +88,7 @@ def test_quantity_limit_and_pa_st_columns_ingested(spuf_db):
     try:
         ql_row = conn.execute(
             "SELECT quantity_limit_yn, quantity_limit_amount, quantity_limit_days "
-            "FROM basic_drugs_formulary WHERE formulary_id = 'FORM0001' AND rxcui = '593411'"
+            "FROM basic_drugs_formulary WHERE formulary_id = 'FORM0001' AND rxcui = '638596'"
         ).fetchone()
         pa_row = conn.execute(
             "SELECT prior_authorization_yn, step_therapy_yn "
@@ -139,7 +139,7 @@ def test_ingest_spuf_from_zip_archive(spuf_db, tmp_path):
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 3
+    assert result["stats"]["plans"] == 4
 
 
 def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
@@ -161,7 +161,7 @@ def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 3
+    assert result["stats"]["plans"] == 4
 
 
 def test_ingest_spuf_merge_states_fl_only(spuf_db):
@@ -173,12 +173,12 @@ def test_ingest_spuf_merge_states_fl_only(spuf_db):
         version="SPUF.2026.20260115",
         merge_states=True,
     )
-    assert result_fl["stats"]["plans"] == 3
-    assert result_fl["stats"]["total_plans"] == 3
+    assert result_fl["stats"]["plans"] == 4
+    assert result_fl["stats"]["total_plans"] == 4
     assert result_fl["manifest"]["spuf"]["states"] == ["FL"]
 
     repo = PlanRepository(db=spuf_db)
-    assert len(repo.list_plans(state="FL")) == 3
+    assert len(repo.list_plans(state="FL")) == 4
 
 
 def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
@@ -198,12 +198,12 @@ def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
             "('S9999-001', 'S9999', '001', 'CA PDP', 'PDP', 'CA', 0, 2026, 'F3', FALSE)"
         )
         rows = [
-            [pk, 1, 1, 1, "preferred_retail", "unknown", None, None, False, "2026-01-01"]
+            [pk, 1, 1, 1, "preferred_retail", "unknown", None, None, None, False, "2026-01-01"]
             for pk in ("H1290-013", "H1290-014")
             for _i in range(3000)
         ]
         conn.executemany(
-            "INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         create_indexes(conn)
@@ -231,10 +231,10 @@ def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
         version="SPUF.2026.20260115",
         merge_states=True,
     )
-    assert second["stats"]["plans_purged"] == 3
-    assert second["stats"]["total_plans"] == 3
+    assert second["stats"]["plans_purged"] == 4
+    assert second["stats"]["total_plans"] == 4
     repo = PlanRepository(db=spuf_db)
-    assert len(repo.list_plans(state="FL")) == 3
+    assert len(repo.list_plans(state="FL")) == 4
 
 
 def test_pricing_insert_row_preserves_literal_zero_days_supply():

@@ -21,13 +21,22 @@ def _resolve_project_root() -> Path:
     return src_layout
 
 
+def _env_file_path() -> Path | None:
+    path = _resolve_project_root() / ".env"
+    return path if path.is_file() else None
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_env_file_path(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = "gpt-5.4-nano"
 
     data_dir: Path = Path("./data")
     duckdb_path: Path = Path("./data/navigator.duckdb")
@@ -66,6 +75,49 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def env_file(self) -> Path:
+        return self.project_root / ".env"
+
+    def llm_provider_status(self) -> dict[str, str]:
+        """configured | empty_in_env_file | missing"""
+        env_names = {
+            "openai": ("openai_api_key", "OPENAI_API_KEY"),
+            "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+        }
+        empty_vars: set[str] = set()
+        if self.env_file.is_file():
+            for line in self.env_file.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                name, value = stripped.split("=", 1)
+                if not value.strip():
+                    empty_vars.add(name)
+
+        statuses: dict[str, str] = {}
+        for provider, (field_name, env_name) in env_names.items():
+            if getattr(self, field_name):
+                statuses[provider] = "configured"
+            elif env_name in empty_vars:
+                statuses[provider] = "empty_in_env_file"
+            else:
+                statuses[provider] = "missing"
+        return statuses
+
+    def llm_configuration_hint(self, provider: str) -> str:
+        env_name = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
+        status = self.llm_provider_status().get(provider, "missing")
+        if status == "empty_in_env_file":
+            return (
+                f"{env_name} is listed in {self.env_file} but has no value. "
+                "Paste your API key after the equals sign, save the file, and restart the server."
+            )
+        return (
+            f"Set {env_name} in {self.env_file} (or export it in your shell), "
+            "then restart the server."
+        )
 
 
 settings = Settings()

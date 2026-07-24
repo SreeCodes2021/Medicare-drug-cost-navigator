@@ -95,15 +95,6 @@ async def run_eval() -> int:
         filters=filters,
         version="SPUF.2026.20260115",
     )
-    from tests.spuf_fixture import TEST_DRUGS
-    from medicare_navigator.storage.connection import DuckDBConnection
-
-    conn = DuckDBConnection().connect()
-    try:
-        for row in TEST_DRUGS:
-            conn.execute("INSERT INTO drugs VALUES (?, ?, ?, ?, ?)", list(row))
-    finally:
-        conn.close()
     cases = []
     with _queries_path().open(encoding="utf-8") as f:
         for line in f:

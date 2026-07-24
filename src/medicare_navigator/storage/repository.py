@@ -18,15 +18,6 @@ def ndc_variants(ndc: str) -> list[str]:
 
 
 @dataclass
-class DrugRecord:
-    drug_name: str
-    rxcui: str
-    ndc: str
-    dosage: str
-    ingredient: str
-
-
-@dataclass
 class BasicDrugsFormularyRecord:
     formulary_id: str
     ndc: str
@@ -38,41 +29,6 @@ class BasicDrugsFormularyRecord:
     prior_authorization_yn: bool
     step_therapy_yn: bool
     as_of_date: str
-
-
-class DrugRepository:
-    def __init__(self, db: DuckDBConnection | None = None) -> None:
-        self.db = db or DuckDBConnection()
-
-    def lookup_by_name(self, name: str, dosage: str | None = None) -> list[DrugRecord]:
-        rows = self.db.fetchall(
-            """
-            SELECT drug_name, rxcui, ndc, dosage, ingredient
-            FROM drugs
-            WHERE lower(drug_name) LIKE lower(?)
-               OR lower(ingredient) LIKE lower(?)
-            ORDER BY drug_name
-            """,
-            [f"%{name}%", f"%{name}%"],
-        )
-        records = [
-            DrugRecord(drug_name=r[0], rxcui=r[1], ndc=r[2], dosage=r[3], ingredient=r[4])
-            for r in rows
-        ]
-        if dosage:
-            dosage_lower = dosage.lower().replace(" ", "")
-            filtered = [r for r in records if dosage_lower in r.dosage.lower().replace(" ", "")]
-            return filtered or records
-        return records
-
-    def lookup_by_rxcui(self, rxcui: str) -> DrugRecord | None:
-        row = self.db.fetchone(
-            "SELECT drug_name, rxcui, ndc, dosage, ingredient FROM drugs WHERE rxcui = ?",
-            [rxcui],
-        )
-        if not row:
-            return None
-        return DrugRecord(drug_name=row[0], rxcui=row[1], ndc=row[2], dosage=row[3], ingredient=row[4])
 
 
 class PlanRepository:
@@ -190,8 +146,8 @@ class BeneficiaryCostRepository:
         coverage_level: int,
         days_supply_code: int | None,
         pharmacy_channel: str = "preferred_retail",
-    ) -> tuple[str, float | None, float | None] | None:
-        """Returns (cost_type, copay, coinsurance_pct) for the exact match, or None.
+    ) -> tuple[str, float | None, float | None, float | None] | None:
+        """Returns (cost_type, copay, coinsurance_pct, cost_max) for the exact match, or None.
 
         ``days_supply_code`` may be None when the requested raw days-supply doesn't map to
         any known CMS code (Section 4's explicit "other" branch) — in that case no cost-share
@@ -201,7 +157,7 @@ class BeneficiaryCostRepository:
             return None
         row = self.db.fetchone(
             """
-            SELECT cost_type, copay, coinsurance_pct
+            SELECT cost_type, copay, coinsurance_pct, cost_max
             FROM beneficiary_cost
             WHERE plan_key = ? AND tier = ? AND pharmacy_channel = ?
               AND coverage_level = ? AND days_supply_code = ?
@@ -210,7 +166,7 @@ class BeneficiaryCostRepository:
         )
         if not row:
             return None
-        return row[0], row[1], row[2]
+        return row[0], row[1], row[2], row[3]
 
     def get_ded_applies(self, plan_key: str, tier: int) -> bool | None:
         """DED_APPLIES_YN for this tier (Bug 2 per-tier deductible exemption). Picks the

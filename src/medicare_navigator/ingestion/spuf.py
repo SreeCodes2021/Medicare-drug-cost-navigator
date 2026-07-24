@@ -20,11 +20,11 @@ from medicare_navigator.ingestion.schema import create_indexes, create_tables, d
 from medicare_navigator.storage.connection import DuckDBConnection
 
 # CMS SPUF beneficiary cost file column groups by pharmacy channel
-PHARMACY_CHANNEL_COLUMNS: dict[str, tuple[str, str]] = {
-    "preferred_retail": ("COST_TYPE_PREF", "COST_AMT_PREF"),
-    "standard_retail": ("COST_TYPE_NONPREF", "COST_AMT_NONPREF"),
-    "preferred_mail": ("COST_TYPE_MAIL_PREF", "COST_AMT_MAIL_PREF"),
-    "standard_mail": ("COST_TYPE_MAIL_NONPREF", "COST_AMT_MAIL_NONPREF"),
+PHARMACY_CHANNEL_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "preferred_retail": ("COST_TYPE_PREF", "COST_AMT_PREF", "COST_MAX_AMT_PREF"),
+    "standard_retail": ("COST_TYPE_NONPREF", "COST_AMT_NONPREF", "COST_MAX_AMT_NONPREF"),
+    "preferred_mail": ("COST_TYPE_MAIL_PREF", "COST_AMT_MAIL_PREF", "COST_MAX_AMT_MAIL_PREF"),
+    "standard_mail": ("COST_TYPE_MAIL_NONPREF", "COST_AMT_MAIL_NONPREF", "COST_MAX_AMT_MAIL_NONPREF"),
 }
 
 PLAN_FILE_HINTS = ("plan information",)
@@ -40,7 +40,7 @@ _FORMULARY_INSERT_SQL = """
 INSERT INTO basic_drugs_formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _BENEFICIARY_COST_INSERT_SQL = """
-INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _PRICING_INSERT_SQL = "INSERT INTO pricing VALUES (?, ?, ?, ?)"
 
@@ -274,12 +274,13 @@ def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
     ded_applies_yn = _parse_bool_yn(row.get("DED_APPLIES_YN"))
 
     shares: list[dict[str, Any]] = []
-    for channel, (type_col, amt_col) in PHARMACY_CHANNEL_COLUMNS.items():
+    for channel, (type_col, amt_col, max_col) in PHARMACY_CHANNEL_COLUMNS.items():
         cost_type, copay, coinsurance = _cost_share_from_type(
             row.get(type_col), row.get(amt_col)
         )
         if cost_type == "unknown":
             continue
+        cost_max = _parse_float(row.get(max_col))
         shares.append(
             {
                 "tier": tier,
@@ -289,6 +290,7 @@ def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
                 "cost_type": cost_type,
                 "copay": copay,
                 "coinsurance_pct": coinsurance,
+                "cost_max": cost_max,
                 "ded_applies_yn": ded_applies_yn,
             }
         )
@@ -629,6 +631,7 @@ def ingest_spuf(
                             share["cost_type"],
                             share["copay"],
                             share["coinsurance_pct"],
+                            share["cost_max"],
                             share["ded_applies_yn"],
                             as_of,
                         ]
@@ -702,6 +705,8 @@ def ingest_spuf(
         if isinstance(existing, dict) and existing.get("states"):
             manifest_states = sorted(set(existing["states"]) | set(filters.states))
 
+    from medicare_navigator.tools.part_d_benefit_params import annual_oop_cap
+
     manifest = merge_manifest(
         {
             "spuf": {
@@ -710,6 +715,10 @@ def ingest_spuf(
                 "source_id": source_id,
                 "contract_year": filters.contract_year,
                 "states": manifest_states,
+            },
+            "benefit_params": {
+                "contract_year": filters.contract_year,
+                "annual_oop_cap": annual_oop_cap(filters.contract_year),
             },
         }
     )

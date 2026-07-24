@@ -34,4 +34,6 @@ async def test_mock_llm_openai_message_format_produces_real_cost_estimate(openai
     )
     assert "could not build a supported summary" not in response.explanation
     assert response.estimate is not None
-    assert response.estimate.cost_low == pytest.approx(5.00)
+    assert "estimate_drug_cost_all_channels" in response.tools_invoked
+    assert response.estimate.cost_low == pytest.approx(3.00)
+    assert response.estimate.cost_high == pytest.approx(15.00)
