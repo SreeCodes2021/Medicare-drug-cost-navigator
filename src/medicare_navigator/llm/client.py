@@ -95,7 +95,7 @@ class LLMClient:
         spec: ModelSpec,
     ) -> ChatWithToolsResult:
         if spec.provider == "openai":
-            return await self._openai_chat_with_tools(system_prompt, messages, tools, spec.id)
+            return await self._openai_chat_with_tools(system_prompt, messages, tools, spec)
         return await self._anthropic_chat_with_tools(system_prompt, messages, tools, spec.id)
 
     async def _openai_chat_with_tools(
@@ -103,7 +103,7 @@ class LLMClient:
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-        model: str,
+        spec: ModelSpec,
     ) -> ChatWithToolsResult:
         import json
 
@@ -111,12 +111,15 @@ class LLMClient:
 
         client = AsyncOpenAI(api_key=settings.openai_api_key)
         oai_messages = [{"role": "system", "content": system_prompt}, *messages]
-        response = await client.chat.completions.create(
-            model=model,
-            messages=oai_messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        create_kwargs: dict[str, Any] = {
+            "model": spec.id,
+            "messages": oai_messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        if spec.openai_reasoning_effort is not None:
+            create_kwargs["reasoning_effort"] = spec.openai_reasoning_effort
+        response = await client.chat.completions.create(**create_kwargs)
         choice = response.choices[0].message
         tool_calls: list[ToolCallSpec] = []
         if choice.tool_calls:

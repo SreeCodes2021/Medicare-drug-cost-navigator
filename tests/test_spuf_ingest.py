@@ -6,7 +6,13 @@ import pytest
 
 from medicare_navigator.config import settings
 from medicare_navigator.ingestion.schema import create_indexes, create_tables
-from medicare_navigator.ingestion.spuf import IngestFilters, _purge_states, _pricing_insert_row, ingest_spuf
+from medicare_navigator.ingestion.spuf import (
+    IngestFilters,
+    _extract_cost_shares,
+    _purge_states,
+    _pricing_insert_row,
+    ingest_spuf,
+)
 from medicare_navigator.storage.connection import DuckDBConnection
 from medicare_navigator.storage.repository import PlanRepository
 
@@ -123,6 +129,36 @@ def test_beneficiary_cost_keeps_all_days_supply_codes_and_coverage_levels(spuf_d
     assert [c[0] for c in codes] == [1, 4]
     assert [c[0] for c in coverage_levels] == [0, 1]
     assert ded_row == (False,)
+
+
+def test_copay_cost_max_placeholder_zero_is_dropped_not_treated_as_ceiling():
+    """CMS fills COST_MAX_AMT_* with literal '0' for flat-copay rows (COST_TYPE=1); it only
+    bounds a real dollar range for coinsurance rows (COST_TYPE=2). Treating that placeholder
+    zero as an actual $0 payment ceiling would zero out real copays (regression)."""
+    row = {
+        "TIER": "1",
+        "COVERAGE_LEVEL": "0",
+        "DAYS_SUPPLY": "1",
+        "DED_APPLIES_YN": "N",
+        "COST_TYPE_PREF": "1",
+        "COST_AMT_PREF": "5",
+        "COST_MAX_AMT_PREF": "0",
+        "COST_TYPE_NONPREF": "2",
+        "COST_AMT_NONPREF": "0.25",
+        "COST_MAX_AMT_NONPREF": "45",
+        "COST_TYPE_MAIL_PREF": "0",
+        "COST_AMT_MAIL_PREF": "0",
+        "COST_MAX_AMT_MAIL_PREF": "0",
+        "COST_TYPE_MAIL_NONPREF": "0",
+        "COST_AMT_MAIL_NONPREF": "0",
+        "COST_MAX_AMT_NONPREF ": "0",
+    }
+    shares = {s["pharmacy_channel"]: s for s in _extract_cost_shares(row)}
+    assert shares["preferred_retail"]["cost_type"] == "copay"
+    assert shares["preferred_retail"]["copay"] == 5.0
+    assert shares["preferred_retail"]["cost_max"] is None
+    assert shares["standard_retail"]["cost_type"] == "coinsurance"
+    assert shares["standard_retail"]["cost_max"] == 45.0
 
 
 def test_ingest_spuf_from_zip_archive(spuf_db, tmp_path):

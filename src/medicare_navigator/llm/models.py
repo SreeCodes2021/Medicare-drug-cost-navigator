@@ -14,6 +14,8 @@ class ModelSpec:
     provider: str
     input_per_mtok: float
     output_per_mtok: float
+    # Reasoning models reject function tools on chat/completions unless effort is "none".
+    openai_reasoning_effort: str | None = None
 
 
 MODEL_CATALOG: dict[str, ModelSpec] = {
@@ -30,6 +32,7 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
         provider="openai",
         input_per_mtok=0.50,
         output_per_mtok=2.00,
+        openai_reasoning_effort="none",
     ),
     "claude-haiku-4-5-20251001": ModelSpec(
         id="claude-haiku-4-5-20251001",

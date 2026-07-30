@@ -16,7 +16,7 @@ Phase 6 discards everything outside a narrower goal: **estimate the out-of-pocke
 
 Between the Phase 5 doc commit and the pivot, three interim commits landed (`4a60e4a`, `096b63d`, `968147c`). The policy-corpus work from `096b63d` was **fully reverted** in the pivot commit `7f99ea6`. Plan polling and explicit mock mode survived.
 
-**Phase 6 scope:** new four-table SPUF schema persisting previously-discarded CMS fields (`PLAN_SUPPRESSED_YN`, `QUANTITY_LIMIT_*`, `PRIOR_AUTHORIZATION_YN`, `STEP_THERAPY_YN`, `DED_APPLIES_YN`); a single consolidated `estimate_drug_cost` tool implementing the spec's eight-step pipeline and all six bugs; corrected `COVERAGE_LEVEL` code mapping discovered via real CMS data; verbatim-caveat guardrail enforcement; rewritten frontend (chat + guided estimate tabs, Sources-only side panel); explicit `LLM_MOCK` mode; DuckDB schema migrations for persistent Render disks; production resilience for empty/missing schemas; citations on lookup failures; plan-list polling UX; prompt chips aligned to real FL plans.
+**Phase 6 scope:** new four-table SPUF schema persisting previously-discarded CMS fields (`PLAN_SUPPRESSED_YN`, `QUANTITY_LIMIT_*`, `PRIOR_AUTHORIZATION_YN`, `STEP_THERAPY_YN`, `DED_APPLIES_YN`); a single consolidated `estimate_drug_cost` tool implementing the spec's eight-step pipeline and all six bugs; corrected `COVERAGE_LEVEL` code mapping discovered via real CMS data; verbatim-caveat guardrail enforcement; rewritten frontend (chat + guided estimate tabs, Sources-only side panel); explicit `LLM_MOCK` mode; DuckDB schema migrations for persistent Render disks; production resilience for empty/missing schemas; citations on lookup failures; plan-list polling UX; prompt chips aligned to real AR plans.
 
 **Deleted in Phase 6:** `agents/` (clarification, policy, synthesis), `intake/`, `orchestrator/pipeline.py`, `agent/fallback.py`, `ingestion/policy_corpus.py`, `tools/{policy_retrieval,cost_trend,alternatives,ira_drugs,formulary_benefit,supply_estimate}.py`, `config/{policy_corpus,benefit_params}.yaml`, the Chroma vector store dependency (`chromadb`), and the `instructor` dependency.
 
@@ -52,7 +52,7 @@ This section is the user-facing scope contract. The implementation spec and syst
 | Boundary | What the tool does |
 |---|---|
 | **Medicare Part D** | Estimates drug cost for standalone PDPs and MAPD plans with a Part D benefit, using CMS SPUF quarterly data |
-| **Ingested states** | Real CMS data verified for **FL** (572 plans in the 2026 zip) |
+| **Ingested states** | Real CMS data verified for **AR + TX** (462 plans in the 2026 zip) |
 | **Non-insulin drugs** | Generic or brand drugs on a plan's **regular** (`basic_drugs_formulary`) tier |
 | **Orally administered** | Tablets, capsules, and other standard oral formulations |
 | **Non-LIS beneficiaries** | Assumes no Low-Income Subsidy; published copay rows used as-is |
@@ -62,7 +62,7 @@ This section is the user-facing scope contract. The implementation spec and syst
 | **Copay cost-sharing** | Returns a dollar estimate when the matched tier's cost-share type is copay |
 | **Prior auth / step therapy** | Surfaces PA or ST as a verbatim caveat; cost still computed (soft caveat) |
 | **Multiple NDCs per drug** | Reports a low–high range across matched manufacturer NDCs (Bug 5) |
-| **Plan lookup** | Resolve by contract–plan ID (`S5921-383`) or list plans in ingested state(s) |
+| **Plan lookup** | Resolve by contract–plan ID (`S5921-400`) or list plans in ingested state(s) |
 
 ### Can't (out of scope)
 
@@ -94,7 +94,7 @@ This section is the user-facing scope contract. The implementation spec and syst
 | Suppressed plans (Bug 6) | **Persist `plan_suppressed`, do not filter at ingest** | Ingest-time exclusion prevented the mandated hard-stop from ever firing |
 | Coinsurance (Bug 4) | **Excluded from cost range**, never estimated | CMS layout does not confirm coinsurance dollar base |
 | PA / step therapy | **Soft caveat, cost still computed** | Contrasts with Bug 6's explicit hard stop |
-| `COVERAGE_LEVEL` codes | **0 = deductible, 1 = initial coverage, 3 = catastrophic** (2 unused) | Verified against real 2026 FL data — initial 1/2 assumption was wrong |
+| `COVERAGE_LEVEL` codes | **0 = deductible, 1 = initial coverage, 3 = catastrophic** (2 unused) | Verified against real 2026 CMS data — initial 1/2 assumption was wrong |
 | Disclaimer enforcement | **Guardrail force-appends**, not prompt-only | Bug 4/6 text must never be dropped by LLM paraphrase |
 | Days-supply mapping | **Single named lookup** (`tools/days_supply.py`) | Spec forbids inlining at each join site |
 | Multi-NDC pricing (Bug 5) | **Independent per-NDC computation, low–high range** | Different manufacturers can differ in tier and price |
@@ -265,7 +265,7 @@ Phase 6 is a second rewrite on the Phase 5 static UI. Cost and caveats live in t
 
 - `pollPlansUntilLoaded()`: 20s interval, max 30 attempts while DB empty
 - `plan-load-hint` status text; **Refresh** button reloads `/api/plans`
-- Prompt chips updated to real FL plan `S5921-383` (`0e69aa2`)
+- Prompt chips updated to real AR plan `S5921-400` (`0e69aa2`)
 
 ### Error handling (`eeedba0`)
 
@@ -299,17 +299,17 @@ The UI does **not** render a dedicated cost-range card from `response.estimate`.
 
 ---
 
-## 11. Real-data findings (FL-only ingest)
+## 11. Real-data findings (AR + TX ingest)
 
-The cached CMS SPUF zip (`data/raw/SPUF_2026_20260408.zip`) re-ingested with `--states FL`: **572 plans**, 188,841 formulary rows, 5,726,853 pricing rows, 60,314 beneficiary-cost rows.
+The cached CMS SPUF zip (`data/raw/SPUF_2026_20260408.zip`) re-ingested with `--states AR,TX`: **462 plans**, 195,465 formulary rows, 4,807,617 pricing rows, 53,450 beneficiary-cost rows.
 
 **COVERAGE_LEVEL correction:** real values are **0** (deductible), **1** (initial coverage), **3** (catastrophic). Code **2** never appears. The pre-pivot 1/2 assumption would have matched wrong cost-share rows (e.g. returning $0 catastrophic copay instead of Bug 4 coinsurance disclaimer). Fixed in `estimate_drug_cost.py`; fixtures updated.
 
-Other real-data checks: quantity-limit blocking (Bug 5b) and coinsurance exclusion (Bug 4) confirmed. No suppressed plans or multi-NDC-per-formulary drugs in the FL slice — covered by fixture unit tests.
+Other real-data checks: quantity-limit blocking (Bug 5b) and coinsurance exclusion (Bug 4) confirmed. No suppressed plans or multi-NDC-per-formulary drugs in the AR/TX slice — covered by fixture unit tests. A separate re-verification pass also caught a `COST_MAX_AMT_*` parsing bug (CMS fills it with a placeholder `"0"` on flat-copay rows, which was being treated as a real $0 payment ceiling); fixed in `ingestion/spuf.py`.
 
-### Example live query (plan `S5921-383`, lovastatin 40mg, $0 YTD)
+### Example live query (plan `S5921-400`, lovastatin 40mg, $0 YTD)
 
-- Plan: **AARP Medicare Rx Preferred from UHC (PDP)**, Florida 2026
+- Plan: **AARP Medicare Rx Preferred from UHC (PDP)**, Arkansas 2026
 - Raw phase: `pre_deductible` ($130 deductible, $0 YTD)
 - Tier 1 has `DED_APPLIES_YN=N` → Bug 2 override applies $5.00 initial-coverage copay
 - Tool returns `benefit_phase: pre_deductible` with $5.00 reflecting the override; Bug 2 caveat discloses tier exemption
@@ -396,8 +396,8 @@ scripts/build-frontend.sh
 medicare-ingest spuf --source tests/fixtures/spuf
 LLM_MOCK=1 uvicorn medicare_navigator.api.app:app --reload --port 8000
 
-# Local — real CMS data, FL only (low memory: add --merge-states)
-medicare-ingest spuf --source data/raw/SPUF_2026_20260408.zip --states FL
+# Local — real CMS data, AR only (low memory: add --merge-states)
+medicare-ingest spuf --source data/raw/SPUF_2026_20260408.zip --states AR
 
 # UI contract checks
 medicare-ui-test run --offline
@@ -428,7 +428,7 @@ docker run -p 8000:8000 -v medicare-data:/data \
 | `5ed9e7e` | DuckDB `migrate_schema()` for legacy persistent databases |
 | `eeedba0` | Missing-schema graceful handling; chat error messages in frontend; `ensure_schema` in docker-start |
 | `f29959e` | Citations and data-as-of for lookup failures in Sources panel |
-| `0e69aa2` | Real-plan prompt chips (`S5921-383`); no-cache middleware + asset versioning |
+| `0e69aa2` | Real-plan prompt chips (`S5921-400`); no-cache middleware + asset versioning |
 
 ---
 
@@ -441,7 +441,7 @@ Not in Phase 6 (committed scope):
 - **Indication-based coverage restrictions**
 - **Catastrophic-phase computation** — annual TrOOP threshold not in SPUF
 - **Confirmed coinsurance base** — replace Bug 4 disclaimer with computation when authoritative
-- **National multi-state ingest** — expand beyond FL real-data verification; automate multi-state `--merge-states`
+- **National multi-state ingest** — expand beyond AR + TX real-data verification; automate multi-state `--merge-states`
 - **CI eval gate** — `.github/workflows` running `pytest` + `medicare-eval` on PRs
 - **Frontend bundler** — minification, cache-busting build step (current copy-is-build)
 - **Doc cleanup** — remove stale Chroma references from `deployment.md`, `data-sources.md`, deployment-agent skill

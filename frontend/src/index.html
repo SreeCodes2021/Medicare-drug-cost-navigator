@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Medicare Drug Cost Navigator</title>
-  <link rel="stylesheet" href="/styles.css?v=16" />
+  <link rel="stylesheet" href="/styles.css?v=22" />
 </head>
 <body>
   <details id="disclaimer-banner" class="disclaimer-banner" open>
@@ -43,9 +43,9 @@
           <div class="empty-state" id="empty-state">
             <p>Type your question below — include drug, dosage, and plan ID. Or use <strong>Guided estimate</strong> if you prefer a form.</p>
             <div class="prompt-chips">
-              <button type="button" class="chip">How much will lovastatin 40mg cost on Medicare plan S5921-383? I have not spent anything out of pocket yet this year.</button>
-              <button type="button" class="chip">How much will lovastatin 40mg cost on plan S5921-383 for a 90-day supply?</button>
-              <button type="button" class="chip">What's the cost for lovastatin 40mg on plan S5921-383 if I've already spent $800 this year?</button>
+              <button type="button" class="chip">How much will lovastatin 40mg cost on Medicare plan S5921-400? I have not spent anything out of pocket yet this year.</button>
+              <button type="button" class="chip">How much will lovastatin 40mg cost on plan S5921-400 for a 90-day supply?</button>
+              <button type="button" class="chip">What's the cost for lovastatin 40mg on plan S5921-400 if I've already spent $800 this year?</button>
             </div>
           </div>
         </div>
@@ -54,7 +54,7 @@
           <span id="loading-text">Estimating cost…</span>
         </div>
         <form id="chat-form" class="chat-form">
-          <textarea id="chat-input" rows="2" placeholder="Ask anything — e.g. lovastatin 40mg on S5921-383, 90-day supply, spent $800 YTD" required></textarea>
+          <textarea id="chat-input" rows="2" placeholder="Ask anything — e.g. lovastatin 40mg on S5921-400, 90-day supply, spent $800 YTD" required></textarea>
           <button type="submit" id="send-btn">Send</button>
         </form>
       </div>

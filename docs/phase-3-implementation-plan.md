@@ -10,7 +10,7 @@ This document records what was built in Phase 3 on top of [phase-2-implementatio
 
 Phase 3 replaces the demo-only formulary data path with real CMS SPUF ingestion, adds production deployment patterns for scheduled data refresh, surfaces data freshness in health checks, and enriches citations with human-readable source labels and documentation URLs.
 
-**Phase 3 scope:** CMS SPUF download and filtered ingest (FL + TX); manifest-driven source IDs and `as_of` dates; stale contract-year detection; `/api/health` freshness fields; citation URL enrichment; deployment guides and scheduler examples; expanded offline test coverage for ingest and monitoring.
+**Phase 3 scope:** CMS SPUF download and filtered ingest (AR + TX); manifest-driven source IDs and `as_of` dates; stale contract-year detection; `/api/health` freshness fields; citation URL enrichment; deployment guides and scheduler examples; expanded offline test coverage for ingest and monitoring.
 
 **Explicitly unchanged in Phase 3:** cost-trend and alternatives loaders remain demo seed data; national plan coverage; live tier-change detection across plan years; CI eval gate.
 
@@ -21,7 +21,7 @@ Phase 3 replaces the demo-only formulary data path with real CMS SPUF ingestion,
 | Decision | Choice | Rationale |
 |---|---|---|
 | Real formulary data | **CMS SPUF quarterly zip** via `data.cms.gov` catalog API | Phase 2 deferred full PUF beyond demo subset |
-| Geographic filter | **FL + TX** per `config/ingest_filters.yaml` | Keeps ingest tractable while covering two large PDP regions |
+| Geographic filter | **AR + TX** per `config/ingest_filters.yaml` | Keeps ingest tractable while covering two large PDP regions |
 | Plan types | **S\*** (stand-alone PDP) and **H\*** (local MA-PD) prefixes | Matches CMS plan-type conventions in SPUF |
 | Local dev default | **`medicare-ingest` (demo seed)** | Offline tests and quick iteration without CMS download |
 | Production ingest | **`medicare-ingest spuf --download`** via external scheduler | API is read-only; ingest never runs at app startup |
@@ -87,11 +87,11 @@ flowchart LR
 `config/ingest_filters.yaml`:
 
 - `contract_year: 2026`
-- `states: [FL, TX]`
-- `pdp_region_codes` — PDP plans use region codes, not state (FL → `11`, TX → `22`)
+- `states: [AR, TX]`
+- `pdp_region_codes` — PDP plans use region codes, not state (AR → `19`, TX → `22`)
 - `plan_type_prefixes: [S, H]`
 
-Override states at runtime: `medicare-ingest spuf --download --states FL`.
+Override states at runtime: `medicare-ingest spuf --download --states AR`.
 
 ---
 
@@ -229,7 +229,7 @@ Existing suites updated: `test_explain_cost_change.py` (manifest-aware assertion
 
 ```
 config/
-└── ingest_filters.yaml          # FL + TX SPUF filters
+└── ingest_filters.yaml          # AR + TX SPUF filters
 
 deploy/
 ├── k8s/cronjob-spuf-ingest.yaml
@@ -270,7 +270,7 @@ tests/
 # Local dev — demo seed (default, offline-safe)
 medicare-ingest
 
-# Production first load — real CMS data (FL + TX)
+# Production first load — real CMS data (AR + TX)
 medicare-ingest spuf --download
 
 # Daily scheduled ingest (or use scripts/run-daily-ingest.sh)

@@ -18,7 +18,7 @@ This application addresses that gap by combining:
 
 The system processes only public government data, stores no Protected Health Information (PHI), and does not provide enrollment or plan-switching advice.
 
-**Current status.** The system is a working, tested implementation running against real CMS data for one state (Florida), covering one well-defined scenario (a single oral, non-insulin drug on a plan's regular formulary, for a non-low-income-subsidy beneficiary, in the pre-deductible or initial-coverage benefit phase). This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach full insulin, catastrophic-phase, coinsurance, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
+**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering one well-defined scenario (a single oral, non-insulin drug on a plan's regular formulary, for a non-low-income-subsidy beneficiary, in the pre-deductible or initial-coverage benefit phase). This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach full insulin, catastrophic-phase, coinsurance, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
 
 ---
 
@@ -31,9 +31,9 @@ The system processes only public government data, stores no Protected Health Inf
 | Medicare enrollment | ~67 million beneficiaries |
 | Part D / MA-PD drug coverage | ~50+ million with outpatient prescription benefit |
 | Available Part D plans (2026, single state) | 500+ stand-alone PDPs; thousands nationally |
-| CMS SPUF data volume (Florida 2026 ingest) | 572 plans; 188,841 formulary rows; 5,726,853 pricing rows; 60,314 beneficiary-cost rows |
+| CMS SPUF data volume (Arkansas 2026 ingest) | 85 plans; 97,000 formulary rows; 855,675 pricing rows; 9,164 beneficiary-cost rows |
 
-*Row counts are exact output from `medicare-ingest spuf` against CMS's real, unmodified 2026 Q1 SPUF national file, filtered to Florida per `config/ingest_filters.yaml` — not estimates. Reproducible via `medicare-ingest spuf --download --states FL --merge-states`.*
+*Row counts are exact output from `medicare-ingest spuf` against CMS's real, unmodified 2026 Q1 SPUF national file, filtered to Arkansas per `config/ingest_filters.yaml` — not estimates. Reproducible via `medicare-ingest spuf --download --states AR --merge-states`. Texas ingests alongside it (see §5.1 for combined totals).*
 
 ### 2.2 Why beneficiaries cannot use CMS data directly
 
@@ -72,7 +72,7 @@ Without accessible tools, beneficiaries face surprise costs at the pharmacy, can
 | User provides | System returns |
 |---|---|
 | Drug + dosage (e.g., "lovastatin 40mg") | Normalized RxNorm identifier (RxCUI) |
-| Plan ID (e.g., "S5921-383") | Plan name, deductible, formulary tier |
+| Plan ID (e.g., "S5921-400") | Plan name, deductible, formulary tier |
 | Days supply (30 / 60 / 90) | Cost range for that fill |
 | YTD OOP spend (optional) | Benefit phase with per-tier override applied |
 | Natural-language question | Plain-English explanation with mandatory caveats |
@@ -80,11 +80,13 @@ Without accessible tools, beneficiaries face surprise costs at the pharmacy, can
 
 ### 3.3 Verified example
 
-**Input:** Lovastatin 40mg · Plan S5921-383 (AARP Medicare Rx Preferred from UHC, Florida 2026) · 30-day supply · $0 YTD
+**Input:** Lovastatin 40mg · Plan S5921-400 (AARP Medicare Rx Preferred from UHC, Arkansas 2026) · 30-day supply · $0 YTD
 
 **Output:** $5.00 copay. Tier 1 drug exempt from deductible (`DED_APPLIES_YN=N`) despite beneficiary being in pre-deductible phase overall ($130 plan deductible, $0 spent). System attaches a per-tier deductible exemption caveat and cites CMS SPUF as the source.
 
-**Verification methodology:** re-run directly against a fresh ingest of CMS's real, unmodified Florida 2026 SPUF data (not the offline test fixture) immediately before this revision. The pipeline resolved plan `S5921-383` to "AARP Medicare Rx Preferred from UHC (PDP)" with `deductible=$130.00`, resolved "lovastatin 40mg" to RxCUI `197905` via the live RxNorm API, matched it to a single Tier-1 formulary NDC, and returned `cost_low=cost_high=$5.00` with the Bug 2 caveat attached — reproducing this example's figures exactly, field for field.
+**Verification methodology:** re-run directly against a fresh, isolated ingest of CMS's real, unmodified 2026 SPUF data for Arkansas (not the offline test fixture) immediately before this revision. The pipeline resolved plan `S5921-400` to "AARP Medicare Rx Preferred from UHC (PDP)" with `deductible=$130.00`, resolved "lovastatin 40mg" to RxCUI `197905` via the live RxNorm API, matched it to a single Tier-1 formulary NDC, and returned `cost_low=cost_high=$5.00` with the Bug 2 caveat attached — reproducing this example's figures exactly, field for field. Additional checks against the same plan: $15.00 for a 90-day supply, $5.00 at $800 YTD spend (still initial coverage).
+
+This re-verification pass also caught and fixed a real bug: CMS's beneficiary-cost file fills `COST_MAX_AMT_*` with a literal `"0"` placeholder on flat-copay rows (it's only a meaningful dollar ceiling for coinsurance rows), and the pipeline was treating that placeholder as an actual $0 payment cap — silently zeroing out ~1,300 of the 9,164 real Arkansas copay rows. Fixed in `ingestion/spuf.py` (`cost_max` is now only parsed for coinsurance-type rows) and covered by a new regression test.
 
 ---
 
@@ -107,7 +109,7 @@ Without accessible tools, beneficiaries face surprise costs at the pharmacy, can
 | Capability | Detail |
 |---|---|
 | Plan types | Stand-alone PDP (S*) and local MA-PD (H*) plans |
-| Geographic coverage | Florida (572 plans in FL 2026 ingest) |
+| Geographic coverage | Arkansas + Texas (462 plans in the combined AR+TX 2026 ingest) |
 | Drug types | Oral generic/brand on regular formulary |
 | Beneficiary type | Non-LIS (no Low-Income Subsidy) |
 | Benefit phases | Pre-deductible and initial coverage (user supplies YTD OOP) |
@@ -228,7 +230,7 @@ sequenceDiagram
 | **Disclaimer banner** | Always-visible notice: informational only; not medical, financial, or enrollment advice |
 | **Ask in Chat tab** | Free-form natural language with session follow-ups (max 5 turns) |
 | **Guided Estimate tab** | Structured form: drug, dosage, plan, contract year, days supply, YTD OOP |
-| **Prompt chips** | Example queries using the real plan `S5921-383` (AARP Medicare Rx Preferred from UHC, FL 2026), so they resolve once a real CMS FL ingest has run — see [§3.3](#33-verified-example) |
+| **Prompt chips** | Example queries using the real plan `S5921-400` (AARP Medicare Rx Preferred from UHC, AR 2026), so they resolve once a real CMS AR ingest has run — see [§3.3](#33-verified-example) |
 | **Plan polling** | Auto-refreshes plan list every 20s during CMS data ingest |
 | **Sources panel** | Citations, data-as-of badge, tool status footer |
 | **Error handling** | Parses 502/503 API errors into user-visible messages |
@@ -418,7 +420,7 @@ Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and dr
 
 | Item | Detail |
 |---|---|
-| **Current state** | Florida ingested; 572 plans |
+| **Current state** | Arkansas + Texas ingested; 462 plans |
 | **Target** | All 50 states + DC via automated `--merge-states` pipeline |
 | **Implementation** | Expand `config/ingest_filters.yaml` with all state codes and PDP region mappings; orchestrate sequential state merges to stay within Render Starter memory limits |
 | **Ops** | Nightly cron ingests changed states only (delta detection via manifest version comparison) |
@@ -466,7 +468,7 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 | **New tool** | `explain_cost_change(drug_name, plan_key, year_from, year_to)` → structured change factors |
 | **Logic** | Compare formulary tier, cost-share, and pricing rows across two contract years; detect tier movement, copay changes, and IRA MFP effective dates |
 | **Agent behavior** | Synthesis combines `explain_cost_change` output with `cost_trend_lookup` for narrative |
-| **Example output** | "Lovastatin moved from Tier 2 ($15 copay) to Tier 1 ($5 copay) on plan S5921-383 between 2025 and 2026." |
+| **Example output** | "Lovastatin moved from Tier 2 ($15 copay) to Tier 1 ($5 copay) on plan S5921-400 between 2025 and 2026." |
 
 #### 8.4 Policy and program Q&A (restored)
 
@@ -693,7 +695,7 @@ Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 20
 
 | Phase | Theme | Key deliverables |
 |---|---|---|
-| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, FL data, chat + guided UI |
+| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI |
 | **7** | Complete the cost estimator | Insulin, catastrophic phase, coinsurance, excluded formulary, indications, 50-state ingest |
 | **8** | Benefit transparency | Cost trends, alternatives, cost-change explanation, policy Q&A, LIS |
 | **9** | User experience | Build pipeline, results cards, clarification agent, accessibility, print/share |

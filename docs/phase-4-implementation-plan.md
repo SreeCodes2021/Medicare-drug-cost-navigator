@@ -27,7 +27,7 @@ Phase 4 removes the demo-seed data path, makes SPUF the sole production ingest s
 | Cron config | **`config/deploy.yaml`** (`ingest.cron`, UTC) | Schedule lives in repo; `generate-crontab.py` emits supercronic line |
 | Nightly ingest | **`--preserve-other`** in `run-daily-ingest.sh` | SPUF tables refresh; empty supplemental tables are not wiped |
 | Missing supplemental data | **`not_found` / `no_match` tool statuses** | Agents must not invent trends, alternatives, or policy passages |
-| Pytest bootstrap | **`tests/spuf_fixture.py` + `spuf_db` fixture** | Every test loads minimal FL+TX SPUF + RxNorm cache rows |
+| Pytest bootstrap | **`tests/spuf_fixture.py` + `spuf_db` fixture** | Every test loads minimal FL (fixture-only) SPUF + RxNorm cache rows |
 | Eval harness | **Loads SPUF fixture before cases** | `queries.jsonl` uses fixture plan keys (`S9999-001`, `H8888-001`, etc.) |
 | License | **MIT** | Open-source distribution |
 
@@ -212,7 +212,7 @@ docs/
 medicare-ingest spuf --source tests/fixtures/spuf
 uvicorn medicare_navigator.api.app:app --reload --port 8000
 
-# Local — real CMS data (FL + TX)
+# Local — real CMS data (AR + TX)
 medicare-ingest spuf --download
 
 # Tests (fixture auto-loaded per test via conftest)
@@ -233,7 +233,7 @@ docker run -p 8000:8000 -v medicare-data:/data \
 
 Not in Phase 4:
 
-- **National plan coverage** — expand `config/ingest_filters.yaml` beyond FL + TX
+- **National plan coverage** — expand `config/ingest_filters.yaml` beyond AR + TX
 - **Real supplemental loaders** — CMS Part D spending (cost trends), FDA Orange Book (alternatives), policy corpus → Chroma
 - **Live tier-change detection** across plan years with `tier_change_evidence` artifacts
 - **CI eval gate** — `.github/workflows` running `pytest` + `medicare-eval` on PRs

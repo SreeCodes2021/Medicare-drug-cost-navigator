@@ -37,7 +37,7 @@ The Medicare Drug Cost Navigator estimates **out-of-pocket cost for a single dru
 |---|---|
 | One drug, one plan, one fill (30/60/90-day) | Insulin, excluded-drug formulary, catastrophic phase |
 | Copay cost-sharing with dollar estimate | Coinsurance dollar amounts (caveat only) |
-| FL real CMS data (configurable) | Un-ingested states |
+| AR, TX real CMS data (configurable) | Un-ingested states |
 | Prior auth / step therapy as soft caveats | LIS / Medicaid / enrollment advice |
 | Multi-NDC low–high cost range | Policy Q&A, alternatives, cost trends (removed Phase 6) |
 
@@ -317,7 +317,7 @@ Steps 5 and 7 are alternatives selected by step 6's phase result (per matched ti
 | Bug 5b | Quantity limits | Hard stop if requested fill exceeds limit |
 | Bug 6 | Suppressed plans (`PLAN_SUPPRESSED_YN=Y`) | Hard stop; plans ingested but not silently filtered |
 
-### 5.2 Coverage level codes (verified against 2026 FL data)
+### 5.2 Coverage level codes (verified against real 2026 CMS data)
 
 | Code | Meaning | Used in v1 |
 |---|---|---|
@@ -416,7 +416,7 @@ cp .env.example .env
 medicare-ingest spuf --source tests/fixtures/spuf
 ```
 
-**Option B — real CMS data (FL per `config/ingest_filters.yaml`):**
+**Option B — real CMS data (AR + TX per `config/ingest_filters.yaml`):**
 
 ```bash
 medicare-ingest spuf --download
@@ -425,7 +425,7 @@ medicare-ingest spuf --download
 **Low-memory / merge mode:**
 
 ```bash
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 ```
 
 ### 7.4 Build frontend
@@ -470,7 +470,7 @@ from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost
 
 async def main():
     r = await estimate_drug_cost(
-        plan_key="S5921-383",
+        plan_key="S5921-400",
         drug_name="lovastatin",
         dosage="40mg",
         days_supply=30,
@@ -504,7 +504,7 @@ medicare-ingest fetch
 medicare-ingest spuf --download --force-download
 
 # Filter states
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 ```
 
 ### 8.2 Ingest filters (`config/ingest_filters.yaml`)
@@ -512,8 +512,8 @@ medicare-ingest spuf --download --states FL --merge-states
 | Setting | Current value | Meaning |
 |---|---|---|
 | `contract_year` | `2026` | Filter SPUF rows to this benefit year |
-| `states` | `FL` | MA-PD plans by state |
-| `pdp_region_codes` | FL=`11` | Standalone PDP region filter |
+| `states` | `AR`, `TX` | MA-PD plans by state |
+| `pdp_region_codes` | AR=`19`, TX=`22` | Standalone PDP region filter |
 | `plan_type_prefixes` | `S`, `H` | S=PDP, H=local MA-PD |
 
 ### 8.3 SPUF files loaded
@@ -535,7 +535,7 @@ Written on each ingest. Drives `/api/health` freshness and UI "data as of" badge
     "version": "SPUF.2026.20260115",
     "as_of": "2026-01-15",
     "source_id": "cms_spuf_2026_q1",
-    "states": ["FL"]
+    "states": ["AR", "TX"]
   }
 }
 ```
@@ -640,7 +640,7 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `GET` | `/api/health` | Service health, LLM config, data freshness |
 | `GET` | `/api/disclaimer` | Canonical disclaimer text |
 | `GET` | `/api/meta/as-of` | Raw `manifest.json` |
-| `GET` | `/api/plans` | List plans (`?state=FL&year=2026&plan_type=...`) |
+| `GET` | `/api/plans` | List plans (`?state=AR&year=2026&plan_type=...`) |
 | `POST` | `/api/query` | Structured + message query → `QueryResponse` |
 | `POST` | `/api/chat` | Conversational turn → `ChatResponse` |
 | `GET` | `/` | SPA (`frontend/dist/index.html`) |
@@ -652,11 +652,11 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 ```json
 {
   "session_id": "optional-uuid",
-  "message": "How much will lovastatin 40mg cost on plan S5921-383?",
+  "message": "How much will lovastatin 40mg cost on plan S5921-400?",
   "filters": {
     "drug": "lovastatin",
     "dosage": "40mg",
-    "plan_id": "S5921-383",
+    "plan_id": "S5921-400",
     "days_supply": 30,
     "ytd_oop_spend": 0,
     "contract_year": 2026
@@ -812,7 +812,7 @@ flowchart LR
 
 | Tab | Behavior |
 |---|---|
-| **Ask in chat** | Free-form message → `POST /api/chat`; prompt chips with real FL plan examples |
+| **Ask in chat** | Free-form message → `POST /api/chat`; prompt chips with real AR plan examples |
 | **Guided estimate** | Form filters → same `/api/chat` endpoint with `filters` payload |
 
 ### 14.3 Sources panel
@@ -900,10 +900,10 @@ Manual API testing against a running server:
 medicare-chat-invoke health
 
 # Send chat
-medicare-chat-invoke send "lovastatin 40mg on S5921-383"
+medicare-chat-invoke send "lovastatin 40mg on S5921-400"
 
 # With filters JSON
-medicare-chat-invoke send "estimate" --filters-json '{"drug":"lovastatin","plan_id":"S5921-383"}'
+medicare-chat-invoke send "estimate" --filters-json '{"drug":"lovastatin","plan_id":"S5921-400"}'
 ```
 
 ### 16.3 `medicare-ui-test`
@@ -1030,7 +1030,7 @@ medicare-ingest spuf --download --preserve-other
 | `data_fresh: false` | No ingest or stale manifest | Run `medicare-ingest spuf --download` |
 | `503` on `/api/health` | No LLM key and no `LLM_MOCK` | Set `ANTHROPIC_API_KEY` or `LLM_MOCK=1` (dev only) |
 | Empty plan dropdown | Ingest still running or not started | Wait for poll or click Refresh; check Shell logs |
-| `Plan not found` | State not ingested or wrong plan key | Use `GET /api/plans?state=FL`; format `S5921-383` |
+| `Plan not found` | State not ingested or wrong plan key | Use `GET /api/plans?state=AR`; format `S5921-400` |
 | `not_covered` for known drug | RxCUI mismatch | Ensure dosage included; check `normalize_drug` strength lookup |
 | Ingest `Killed` on Render | OOM on Starter plan | `--merge-states` one at a time; upgrade plan |
 | Stale frontend in browser | Browser cache | Hard refresh; no-cache headers are set on HTML/JS/CSS |

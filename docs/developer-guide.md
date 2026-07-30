@@ -33,7 +33,7 @@
 
 ## 1. System overview
 
-The navigator is a **chat-first web application** that answers questions like *"What will lovastatin 40mg cost on plan S5921-383 with a 30-day supply?"*
+The navigator is a **chat-first web application** that answers questions like *"What will lovastatin 40mg cost on plan S5921-400 with a 30-day supply?"*
 
 Core design principles:
 
@@ -330,7 +330,7 @@ Medicare-drug-cost-navigator/
 ├── config/
 │   ├── deploy.yaml           # Cron schedule (UTC), Render plan hints
 │   ├── disclaimer.txt        # Fixed disclaimer banner text
-│   └── ingest_filters.yaml   # States (FL), contract year, plan prefixes
+│   └── ingest_filters.yaml   # States (AR, TX), contract year, plan prefixes
 ├── deploy/
 │   ├── aws/                  # EventBridge + ECS ingest notes
 │   └── k8s/                  # CronJob manifest for SPUF ingest
@@ -502,7 +502,7 @@ After ingest, `data/manifest.json` records:
     "version": "SPUF.2026.20260408",
     "as_of": "2026-04-08",
     "source_id": "cms_spuf_2026_q2",
-    "states": ["FL"]
+    "states": ["AR", "TX"]
   },
   "seeded_at": "2026-04-08T12:00:00Z"
 }
@@ -517,25 +517,25 @@ After ingest, `data/manifest.json` records:
 | Field | Value (default) | Notes |
 |---|---|---|
 | `contract_year` | 2026 | Filter CMS files |
-| `states` | FL | MA-PD uses `STATE`; PDP uses `PDP_REGION_CODE` |
-| `pdp_region_codes` | FL→11 | Required for stand-alone PDP plans |
+| `states` | AR, TX | MA-PD uses `STATE`; PDP uses `PDP_REGION_CODE` |
+| `pdp_region_codes` | AR→19, TX→22 | Required for stand-alone PDP plans |
 | `plan_type_prefixes` | S, H | S=PDP, H=local MA-PD |
 
-### 5.8 Typical data volumes (2026 FL-only ingest)
+### 5.8 Typical data volumes (2026 AR+TX ingest, default)
 
-| Table | Approximate rows |
-|---|---|
-| `plans` | 572 |
-| `basic_drugs_formulary` | 188,841 |
-| `pricing` | 5,726,853 |
-| `beneficiary_cost` | 60,314 |
+| Table | Approximate rows | AR-only (low-memory) |
+|---|---|---|
+| `plans` | 462 | 85 |
+| `basic_drugs_formulary` | 195,465 | 97,000 |
+| `pricing` | 4,807,617 | 855,675 |
+| `beneficiary_cost` | 53,450 | 9,164 |
 
 ```mermaid
 xychart-beta
-    title "SPUF row counts — FL-only 2026 (log scale, thousands)"
+    title "SPUF row counts — AR+TX 2026 (log scale, thousands)"
     x-axis [plans, formulary, pricing, ben_cost]
-    y-axis "Thousands of rows" 0 --> 6000
-    bar [0.572, 188.8, 5726.9, 60.3]
+    y-axis "Thousands of rows" 0 --> 4900
+    bar [0.462, 195.5, 4807.6, 53.5]
 ```
 
 Use `--merge-states` on low-memory hosts when ingesting additional states.
@@ -584,13 +584,13 @@ flowchart TD
 
 A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a dollar figure still comes back depends on benefit phase: pre-deductible fills price from `pricing.UNIT_COST` directly (keyed on the raw day count, not the CODE) and can still return an ingredient-cost-only estimate; initial-coverage fills have no such fallback, so the tool returns `cost_low`/`cost_high` as `null` with a caveat explaining that no cost-sharing data could be found for that fill size — never a silent `ok` with blank numbers and no explanation.
 
-### 6.3 Coverage level codes (verified on 2026 FL data)
+### 6.3 Coverage level codes (verified on real 2026 CMS data)
 
 | `COVERAGE_LEVEL` | Phase | Used in v1? |
 |---|---|---|
 | **0** | Deductible | Yes — when YTD &lt; deductible and tier has `DED_APPLIES_YN=Y` |
 | **1** | Initial coverage | Yes — default after deductible met, or tier exempt (Bug 2) |
-| **2** | — | **Never observed** in 2026 FL beneficiary_cost rows |
+| **2** | — | **Never observed** in 2026 AR/TX beneficiary_cost rows |
 | **3** | Catastrophic | Present in data; **not computed** in v1 (out of scope) |
 
 > Pre-pivot assumptions (1=deductible, 2=initial) were incorrect and would have returned wrong copays (e.g. $0 catastrophic instead of Bug 4 coinsurance disclaimer).
@@ -729,11 +729,11 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 ```json
 {
   "session_id": "optional-uuid",
-  "message": "What does lovastatin 40mg cost on plan S5921-383?",
+  "message": "What does lovastatin 40mg cost on plan S5921-400?",
   "filters": {
     "drug": "lovastatin",
     "dosage": "40mg",
-    "plan_id": "S5921-383",
+    "plan_id": "S5921-400",
     "contract_year": 2026,
     "days_supply": 30,
     "ytd_oop_spend": 0
@@ -884,13 +884,13 @@ medicare-ingest spuf --source tests/fixtures/spuf
 ```bash
 medicare-ingest spuf --download
 # Or limit memory:
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 ```
 
 **Option C — Use cached zip:**
 
 ```bash
-medicare-ingest spuf --source data/raw/SPUF_2026_20260408.zip --states FL
+medicare-ingest spuf --source data/raw/SPUF_2026_20260408.zip --states AR
 ```
 
 ### 13.4 Build frontend and run server
@@ -919,7 +919,7 @@ docker run -p 8000:8000 -v medicare-data:/data \
   medicare-navigator
 
 # Shell into container for first ingest:
-docker exec -it <container> medicare-ingest spuf --download --states FL --merge-states
+docker exec -it <container> medicare-ingest spuf --download --states AR --merge-states
 ```
 
 ### 13.7 Development workflow diagram
@@ -999,7 +999,7 @@ Fixture-only plans (not real CMS):
 | `H8888-001` | MA-PD test plan |
 | `S9999-001` | PDP test plan |
 
-Prompt chips in `frontend/src/index.html` use `S5921-383` (AARP Medicare Rx Preferred from UHC, FL 2026), a real plan also used as a worked example in [business-solution.md](./business-solution.md#33-verified-example). It requires a real CMS FL ingest to resolve — the test plan keys above (`S9999-001`, `H8888-001`) only resolve against the offline SPUF fixture used in tests/eval and are never seeded in deployed environments, so they must not be used in user-facing UI copy.
+Prompt chips in `frontend/src/index.html` use `S5921-400` (AARP Medicare Rx Preferred from UHC, AR 2026), a real plan also used as a worked example in [business-solution.md](./business-solution.md#33-verified-example). It requires a real CMS AR ingest to resolve — the test plan keys above (`S9999-001`, `H8888-001`) only resolve against the offline SPUF fixture used in tests/eval and are never seeded in deployed environments, so they must not be used in user-facing UI copy.
 
 ### 14.5 UI contract tests
 
@@ -1041,7 +1041,7 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 
 1. Connect GitHub → **New Blueprint** → `render.yaml`
 2. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<app>.onrender.com`
-3. After deploy, Shell: `medicare-ingest spuf --download --states FL --merge-states`
+3. After deploy, Shell: `medicare-ingest spuf --download --states AR --merge-states`
 4. Verify: `GET /api/health` → `data_fresh: true`, `llm_configured: true`
 
 ### 16.2 Nightly ingest
@@ -1065,6 +1065,7 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 | `llm_configured: false` | Set API key in dashboard |
 | HTTP 502 on chat | LLM timeout/rate limit — check logs |
 | Empty `/api/plans` | Ingest not run or still in progress |
+| Unknown loaded states | Render Shell: see [deployment.md § Inspecting loaded data](./deployment.md#inspecting-and-managing-loaded-data-render-shell) |
 
 ---
 
@@ -1075,16 +1076,16 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 ```bash
 medicare-ingest spuf --source tests/fixtures/spuf
 medicare-ingest spuf --download
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 medicare-ingest spuf --download --preserve-other
-medicare-ingest spuf --source path/to.zip --states FL
+medicare-ingest spuf --source path/to.zip --states AR
 ```
 
 | Flag | Description |
 |---|---|
 | `--download` | Fetch latest zip from data.cms.gov |
 | `--source PATH` | Local zip or extracted fixture directory |
-| `--states FL` | Override `ingest_filters.yaml` states |
+| `--states AR` | Override `ingest_filters.yaml` states |
 | `--merge-states` | Replace only listed states (keep others in DB) |
 | `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`) |
 | `--force-download` | Ignore cached zip in `data/raw/` |
@@ -1131,7 +1132,7 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 ### In scope (v1)
 
 - Medicare Part D / MA-PD with Part D benefit
-- Ingested states (FL verified with real data)
+- Ingested states (AR + TX verified with real data)
 - Non-insulin oral drugs on regular formulary
 - Non-LIS beneficiaries
 - Pre-deductible or initial-coverage (user supplies YTD OOP)

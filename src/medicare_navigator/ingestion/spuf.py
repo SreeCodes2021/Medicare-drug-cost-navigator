@@ -280,7 +280,10 @@ def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
         )
         if cost_type == "unknown":
             continue
-        cost_max = _parse_float(row.get(max_col))
+        # COST_MIN/MAX_AMT_* only bound a coinsurance percentage range in CMS's SPUF
+        # layout; for flat copay rows (COST_TYPE=1) CMS fills them with literal "0" as
+        # a placeholder, not a real $0 payment ceiling — only honor them for coinsurance.
+        cost_max = _parse_float(row.get(max_col)) if cost_type == "coinsurance" else None
         shares.append(
             {
                 "tier": tier,

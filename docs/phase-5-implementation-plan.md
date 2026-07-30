@@ -25,7 +25,7 @@ Phase 5 makes the Render deployment path production-ready: the chat UI is built 
 | Frontend source of truth | **`frontend/src/`** (HTML/CSS/JS) | Version-controlled UI; no committed `frontend/dist` |
 | Docker frontend build | **Alpine copy stage → `frontend/dist`** | Render image always ships UI matching `src/` |
 | Local dist | **`scripts/build-frontend.sh`** copies `src/` → `dist/` | Parity with Docker; pytest autouse builds dist if missing |
-| Low-memory first ingest | **`--merge-states` per state** | Starter plan OOM on full FL+TX reload; merge one state at a time |
+| Low-memory first ingest | **`--merge-states` per state** | Starter plan OOM on full AR+TX reload; merge one state at a time |
 | State replacement | **`_purge_states` deletes plans + child rows for target states** | Re-run same state replaces stale rows without wiping other states |
 | DuckDB bulk delete | **Drop SPUF indexes before purge, recreate after ingest** | DuckDB ART index bug: `DELETE` fails on indexed tables at scale |
 | Bulk inserts | **10-part `executemany` batches** (`_WRITE_PARTS`) | Reduces peak memory vs row-by-row `execute` |
@@ -59,14 +59,14 @@ Phase 4 copied a pre-built `frontend/dist` into the image. Phase 5 builds `dist`
 
 ### 3.2 Low-memory ingest pattern (Render Starter)
 
-Full `medicare-ingest spuf --download` for FL + TX can exceed Starter memory. Phase 5 documents and implements incremental loading:
+Full `medicare-ingest spuf --download` for AR + TX can exceed Starter memory. Phase 5 documents and implements incremental loading:
 
 ```bash
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 medicare-ingest spuf --download --states TX --merge-states
 ```
 
-Each run downloads and scans the national CMS zip but writes only the selected state's plans. Manifest `spuf.states` accumulates (`["FL"]` → `["FL", "TX"]`).
+Each run downloads and scans the national CMS zip but writes only the selected state's plans. Manifest `spuf.states` accumulates (`["AR"]` → `["AR", "TX"]`).
 
 ### 3.3 New / updated deployment assets
 
@@ -125,7 +125,7 @@ New CLI flag on `medicare-ingest spuf`:
 
 ```bash
 medicare-ingest spuf --source path --merge-states
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 ```
 
 Behavior:
@@ -172,7 +172,7 @@ Stats dict now includes `plans_purged` and `total_plans` (DB-wide plan count aft
 
 ```
 SPUF ingestion complete: 2 plans loaded (3 total in DB, 45000 formulary rows).
-Manifest as_of: 2026-01-15 (source_id=spuf_2026_q1, states=['FL', 'TX'])
+Manifest as_of: 2026-01-15 (source_id=spuf_2026_q1, states=['AR', 'TX'])
 ```
 
 ---
@@ -265,7 +265,7 @@ medicare-ingest spuf --source tests/fixtures/spuf
 uvicorn medicare_navigator.api.app:app --reload --port 8000
 
 # Local — real CMS data, one state at a time (low memory)
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
 medicare-ingest spuf --download --states TX --merge-states
 
 # Local — full replace (all states in ingest_filters.yaml)
@@ -301,7 +301,7 @@ docker run -p 8000:8000 -v medicare-data:/data \
 
 Not in Phase 5 (committed scope):
 
-- **National plan coverage** — expand `config/ingest_filters.yaml` and automate multi-state merge beyond FL + TX
+- **National plan coverage** — expand `config/ingest_filters.yaml` and automate multi-state merge beyond AR + TX
 - **Real supplemental loaders** — CMS Part D spending (cost trends), FDA Orange Book (alternatives), policy corpus → Chroma
 - **Live tier-change detection** across plan years with `tier_change_evidence` artifacts
 - **CI eval gate** — `.github/workflows` running `pytest` + `medicare-eval` on PRs
