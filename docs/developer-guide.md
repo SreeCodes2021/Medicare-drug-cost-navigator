@@ -2,7 +2,7 @@
 
 **Medicare Drug Cost & Benefit-Transparency Navigator** — technical reference for running, developing, testing, and deploying the Phase 6 system.
 
-> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible or initial-coverage phase. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
+> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, or catastrophic phase, priced per pharmacy channel. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
 
 ---
 
@@ -134,9 +134,11 @@ No PostgreSQL, Redis, or vector store in Phase 6. Chroma and policy RAG were rem
 
 | Component | Package | Role |
 |---|---|---|
-| **Anthropic** | `anthropic>=0.39` | Default provider (`LLM_PROVIDER=anthropic`, model `claude-sonnet-4-6`) |
-| **OpenAI** | `openai>=1.54` | Alternate provider (`LLM_PROVIDER=openai`) |
+| **Anthropic** | `anthropic>=0.39` | Used when the resolved model's provider is `anthropic` (e.g. `claude-haiku-4-5-20251001`) |
+| **OpenAI** | `openai>=1.54` | Used when the resolved model's provider is `openai` — this is also the **default model**: `DEFAULT_LLM_MODEL = "gpt-5.4-nano"` (`llm/models.py`) |
 | **Mock mode** | In-repo `llm/mock.py` | Offline deterministic agent when `LLM_MOCK=1` |
+
+Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` (that setting only affects which provider's missing-key warning is logged at startup — see `api/app.py` lifespan). `llm/models.py`'s `MODEL_CATALOG` (`gpt-5.4-nano`, `gpt-5.6-luna`, `claude-haiku-4-5-20251001`) maps each model ID to its provider and per-token pricing; `GET /api/models` lists all of them with a `configured` flag per provider's API key, and the frontend's model selector (`#model-select`) lets a user override the default per chat turn (`ChatRequest.model`).
 
 The `mcp` package (`mcp>=1.2`) is installed for schema/tool patterns; tool dispatch is implemented in `mcp/registry.py` (not a separate MCP server process).
 
@@ -330,7 +332,7 @@ Medicare-drug-cost-navigator/
 ├── config/
 │   ├── deploy.yaml           # Cron schedule (UTC), Render plan hints
 │   ├── disclaimer.txt        # Fixed disclaimer banner text
-│   └── ingest_filters.yaml   # States (AR, TX), contract year, plan prefixes
+│   └── ingest_filters.yaml   # PDP region catalog + default states; active set via INGEST_STATES
 ├── deploy/
 │   ├── aws/                  # EventBridge + ECS ingest notes
 │   └── k8s/                  # CronJob manifest for SPUF ingest
@@ -512,14 +514,24 @@ After ingest, `data/manifest.json` records:
 
 ### 5.7 Ingest filters
 
-`config/ingest_filters.yaml`:
+`config/ingest_filters.yaml` holds the **full CMS PDP region catalog** (`pdp_region_codes` for all states/territories). Which states are actually ingested is selected at runtime:
+
+| Priority | Source | Example |
+|---|---|---|
+| 1 | `--states` CLI flag | `--states CA --merge-states` |
+| 2 | `INGEST_STATES` env var | `AR,TX,CA` (Render dashboard; no redeploy) |
+| 3 | yaml `states` default | `AR`, `TX` (local dev when env unset) |
+
+Only states present in **both** the requested list and `pdp_region_codes` are ingested. Unknown codes are logged and skipped.
 
 | Field | Value (default) | Notes |
 |---|---|---|
 | `contract_year` | 2026 | Filter CMS files |
-| `states` | AR, TX | MA-PD uses `STATE`; PDP uses `PDP_REGION_CODE` |
-| `pdp_region_codes` | AR→19, TX→22 | Required for stand-alone PDP plans |
+| `states` | AR, TX | Default active set when `INGEST_STATES` is unset |
+| `pdp_region_codes` | all 50 states + DC + territories | Full catalog; MA-PD uses `STATE`, PDP uses region code |
 | `plan_type_prefixes` | S, H | S=PDP, H=local MA-PD |
+
+**Nightly cron** (`run-daily-ingest.sh`) uses `INGEST_STATES` (or yaml defaults) with `--preserve-other` — it **replaces all SPUF tables** with only the active states. To add a state without wiping others, run manually with `--merge-states` (e.g. `medicare-ingest spuf --download --states CA --merge-states`).
 
 ### 5.8 Typical data volumes (2026 AR+TX ingest, default)
 
@@ -591,7 +603,7 @@ A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a do
 | **0** | Deductible | Yes — when YTD &lt; deductible and tier has `DED_APPLIES_YN=Y` |
 | **1** | Initial coverage | Yes — default after deductible met, or tier exempt (Bug 2) |
 | **2** | — | **Never observed** in 2026 AR/TX beneficiary_cost rows |
-| **3** | Catastrophic | Present in data; **not computed** in v1 (out of scope) |
+| **3** | Catastrophic | Yes — YTD OOP spend at or above the statutory annual Part D out-of-pocket maximum (`config/benefit_params.yaml`, `tools/part_d_benefit_params.annual_oop_cap`) routes here with a caveat |
 
 > Pre-pivot assumptions (1=deductible, 2=initial) were incorrect and would have returned wrong copays (e.g. $0 catastrophic instead of Bug 4 coinsurance disclaimer).
 
@@ -630,6 +642,8 @@ class DrugCostEstimate(BaseModel):
     covered: bool
 ```
 
+`benefit_phase` may also be `"catastrophic"`. `estimate_drug_cost_all_channels` returns the richer `MultiChannelDrugCostEstimate` (`models/response.py`) instead — same fields plus `channels: dict[str, ChannelCost]` (one entry per CMS pharmacy channel), `tier`, `ded_applies_yn`, `effective_phase`, and annual-budget projection fields (`annual_oop_cap`, `remaining_oop_headroom`, `annual_budget_cost_low/high`).
+
 ---
 
 ## 7. LLM agent layer
@@ -653,15 +667,17 @@ class DrugCostEstimate(BaseModel):
 
 | Mode | When | Behavior |
 |---|---|---|
-| **Live** | API key set for `LLM_PROVIDER` | Async calls with timeout + exponential retry |
+| **Live** | API key set for the resolved model's provider | Async calls with timeout + exponential retry |
 | **Mock** | `LLM_MOCK=1` | `mock_chat_with_tools` — pattern-matches messages to tool calls |
-| **Unconfigured** | No key and no mock | `LLMNotConfiguredError` → HTTP 503 |
+| **Unconfigured** | No key for the resolved model's provider, and no mock | `LLMNotConfiguredError` → HTTP 503 |
 
 | Setting | Default | Env |
 |---|---|---|
 | Timeout | 60s | `LLM_TIMEOUT_SECONDS` |
 | Retries | 2 | `LLM_MAX_RETRIES` |
-| Model | `claude-sonnet-4-6` | `LLM_MODEL` |
+| Model | `gpt-5.4-nano` (`DEFAULT_LLM_MODEL` in `llm/models.py`) | `LLM_MODEL`, or per-request `ChatRequest.model` |
+
+Every response also carries token usage and an estimated USD cost (`LlmUsage`, via `llm/models.py::estimate_cost_usd` using each model's `input_per_mtok`/`output_per_mtok`); the frontend shows a running session total.
 
 ### 7.4 Health check behavior
 
@@ -671,11 +687,12 @@ class DrugCostEstimate(BaseModel):
 
 ## 8. MCP tools
 
-Three tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
+Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 
 | Tool | Type | Description |
 |---|---|---|
-| `estimate_drug_cost` | Async | Full 8-step pipeline; includes internal `normalize_drug` |
+| `estimate_drug_cost` | Async | Full 8-step pipeline for one pharmacy channel; includes internal `normalize_drug` |
+| `estimate_drug_cost_all_channels` | Async | Same pipeline run independently across all four CMS pharmacy channels; returns `MultiChannelDrugCostEstimate`. Default tool the Navigator calls for general (non-channel-specific) cost questions |
 | `lookup_plan` | Sync | Resolve by `plan_key` or fuzzy `search_text` |
 | `list_plans` | Sync | Filter by `state`, `plan_type`, `contract_year` |
 
@@ -720,8 +737,10 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 | `GET` | `/api/disclaimer` | None | Canonical disclaimer text |
 | `GET` | `/api/meta/as-of` | None | Raw `manifest.json` |
 | `GET` | `/api/plans` | None | Plan list; query params: `plan_type`, `state`, `year` |
+| `GET` | `/api/models` | None | Available LLM models (`llm/models.py` catalog) with per-provider `configured` status |
 | `POST` | `/api/query` | None | Structured query (legacy-compatible) |
-| `POST` | `/api/chat` | None | Conversational turn with optional filters |
+| `POST` | `/api/chat` | None | Conversational turn with optional filters and `model` override |
+| `POST` | `/api/estimate` | None | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels` only, no LLM call) |
 | `GET` | `/` | None | SPA shell (`frontend/dist/index.html`) |
 
 ### `POST /api/chat` request
@@ -757,9 +776,11 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
     "citations": [{ "source_id": "...", "label": "...", "url": "..." }],
     "disclaimer": "...",
     "data_as_of": { "estimate": "2026-01-15" },
-    "tools_invoked": ["estimate_drug_cost"],
-    "tool_statuses": { "estimate_drug_cost": "ok" },
-    "response_source": "anthropic/claude-sonnet-4-6"
+    "tools_invoked": ["estimate_drug_cost_all_channels"],
+    "tool_statuses": { "estimate_drug_cost_all_channels": "ok" },
+    "response_source": "openai/gpt-5.4-nano",
+    "channel_estimate": { "channels": { "preferred_retail": { "cost_low": 5.0, "cost_high": 5.0 }, "...": "..." } },
+    "llm_usage": { "model": "gpt-5.4-nano", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 }
   }
 }
 ```
@@ -823,10 +844,10 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LLM_PROVIDER` | No | `anthropic` | `anthropic` or `openai` |
+| `LLM_PROVIDER` | No | `anthropic` | Only affects which provider's missing-key warning is logged at startup — does **not** select the active model/provider (see §2.4) |
 | `ANTHROPIC_API_KEY` | Prod yes* | — | Claude API key |
-| `OPENAI_API_KEY` | Prod yes* | — | OpenAI key (if provider=openai) |
-| `LLM_MODEL` | No | `claude-sonnet-4-6` | Model identifier |
+| `OPENAI_API_KEY` | Prod yes* | — | OpenAI key — required for the default model (`gpt-5.4-nano`) |
+| `LLM_MODEL` | No | `gpt-5.4-nano` | Model identifier from `llm/models.py`'s `MODEL_CATALOG`; overridable per chat turn via `ChatRequest.model` |
 | `LLM_MOCK` | No | `0` | Set `1` for offline mock LLM |
 | `DATA_DIR` | No | `./data` | Data root |
 | `DUCKDB_PATH` | No | `./data/navigator.duckdb` | DuckDB file |
@@ -838,6 +859,7 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | `MAX_TOOL_ROUNDS` | No | `8` | Agent tool loop cap |
 | `LLM_TIMEOUT_SECONDS` | No | `60` | Per-request timeout |
 | `LLM_MAX_RETRIES` | No | `2` | Retry count on LLM failure |
+| `INGEST_STATES` | No | yaml `states` | Comma-separated active ingest states; intersected with `pdp_region_codes` catalog |
 
 \*Production requires a real API key **or** intentional mock mode for demos only.
 
@@ -845,7 +867,7 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 
 | File | Purpose |
 |---|---|
-| `config/ingest_filters.yaml` | Which states/years to load from SPUF |
+| `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
 | `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC) |
 | `config/disclaimer.txt` | UI disclaimer banner |
 
@@ -1048,7 +1070,9 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 
 - Schedule: `config/deploy.yaml` → `ingest.cron: "0 3 * * *"` UTC
 - Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other`
+- Active states: `INGEST_STATES` env (e.g. `AR,TX,CA`) intersected with `pdp_region_codes` in yaml; falls back to yaml `states` when unset
 - Runs inside container via supercronic (not Render Cron Jobs — disks cannot mount there)
+- **Note:** nightly run reloads only the active states — list every state you want to keep in `INGEST_STATES`. Use `--merge-states` in Shell to add one state without wiping others.
 
 ### 16.3 Other platforms
 
@@ -1077,6 +1101,7 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 medicare-ingest spuf --source tests/fixtures/spuf
 medicare-ingest spuf --download
 medicare-ingest spuf --download --states AR --merge-states
+medicare-ingest spuf --download --states CA --merge-states
 medicare-ingest spuf --download --preserve-other
 medicare-ingest spuf --source path/to.zip --states AR
 ```
@@ -1085,9 +1110,9 @@ medicare-ingest spuf --source path/to.zip --states AR
 |---|---|
 | `--download` | Fetch latest zip from data.cms.gov |
 | `--source PATH` | Local zip or extracted fixture directory |
-| `--states AR` | Override `ingest_filters.yaml` states |
+| `--states AR` | Override `INGEST_STATES` env and yaml defaults |
 | `--merge-states` | Replace only listed states (keep others in DB) |
-| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`) |
+| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`); nightly cron reloads all SPUF tables for active states only |
 | `--force-download` | Ignore cached zip in `data/raw/` |
 | `--monthly` | Use monthly PUF instead of quarterly SPUF |
 
@@ -1107,7 +1132,7 @@ Manual CLI for sending chat messages (see `qa/cli.py`).
 |---|---|---|
 | `503` on `/api/chat` | No LLM key and `LLM_MOCK` unset | Set `ANTHROPIC_API_KEY` or `LLM_MOCK=1` |
 | Empty plan dropdown | No ingest yet | Run `medicare-ingest spuf ...` |
-| `not_found` for real plan | State not ingested | Ingest that state; check `config/ingest_filters.yaml` |
+| `not_found` for real plan | State not ingested | Ingest that state; check `INGEST_STATES` or run `--states XX --merge-states` |
 | Frontend 404 at `/` | Missing `frontend/dist` | Run `scripts/build-frontend.sh` |
 | Stale UI after edit | Browser cache | Hard refresh; dist rebuild; no-cache middleware active |
 | Ingest `Killed` on Render | OOM on Starter plan | `--merge-states`, fewer states, or upgrade plan |
@@ -1135,9 +1160,10 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 - Ingested states (AR + TX verified with real data)
 - Non-insulin oral drugs on regular formulary
 - Non-LIS beneficiaries
-- Pre-deductible or initial-coverage (user supplies YTD OOP)
+- Pre-deductible, initial-coverage, or catastrophic phase (user supplies YTD OOP; catastrophic uses the statutory annual OOP cap from `config/benefit_params.yaml`)
 - 30 / 60 / 90-day fills
 - Copay cost-sharing (with Bug 2 tier override)
+- Per-pharmacy-channel pricing (preferred/standard retail, preferred/standard mail) via `estimate_drug_cost_all_channels`
 - PA/ST as soft caveats (cost still computed)
 
 ### Out of scope (hard stops or deferred)
@@ -1148,7 +1174,6 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 | Suppressed plans | Hard stop (Bug 6) |
 | Quantity limit exceeded | Hard stop (Bug 5b) |
 | Coinsurance dollar amount | Not computed — caveat only (Bug 4) |
-| Catastrophic phase | Not computed |
 | LIS / Medicaid | Not supported |
 | Excluded-drug formulary | Not supported |
 | Policy Q&A, alternatives, trends | Removed in Phase 6 |

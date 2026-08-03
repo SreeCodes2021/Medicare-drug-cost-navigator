@@ -127,7 +127,7 @@ def test_beneficiary_cost_keeps_all_days_supply_codes_and_coverage_levels(spuf_d
     finally:
         conn.close()
     assert [c[0] for c in codes] == [1, 4]
-    assert [c[0] for c in coverage_levels] == [0, 1]
+    assert [c[0] for c in coverage_levels] == [0, 1, 3]
     assert ded_row == (False,)
 
 
@@ -301,3 +301,50 @@ def test_pricing_insert_row_defaults_missing_days_supply_to_30():
     insert_row = _pricing_insert_row(row, plans)
     assert insert_row is not None
     assert insert_row[2] == 30
+
+
+def _catalog_yaml(tmp_path: Path) -> Path:
+    path = tmp_path / "ingest_filters.yaml"
+    path.write_text(
+        """
+contract_year: 2026
+states:
+  - AR
+  - TX
+pdp_region_codes:
+  AR: "19"
+  TX: "22"
+  FL: "11"
+plan_type_prefixes:
+  - S
+  - H
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_ingest_filters_resolve_uses_yaml_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("INGEST_STATES", raising=False)
+    monkeypatch.setattr(settings, "ingest_states", "")
+    filters = IngestFilters.resolve(path=_catalog_yaml(tmp_path))
+    assert filters.states == ["AR", "TX"]
+    assert filters.pdp_region_codes["FL"] == "11"
+
+
+def test_ingest_filters_resolve_env_intersection(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "ingest_states", "AR,FL,ZZ")
+    filters = IngestFilters.resolve(path=_catalog_yaml(tmp_path))
+    assert filters.states == ["AR", "FL"]
+
+
+def test_ingest_filters_resolve_cli_overrides_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "ingest_states", "AR,FL")
+    filters = IngestFilters.resolve(path=_catalog_yaml(tmp_path), states_override="TX")
+    assert filters.states == ["TX"]
+
+
+def test_ingest_filters_resolve_empty_selection_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "ingest_states", "ZZ")
+    with pytest.raises(ValueError, match="No ingest states selected"):
+        IngestFilters.resolve(path=_catalog_yaml(tmp_path))

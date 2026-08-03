@@ -193,6 +193,17 @@ function estimateCardVariant(estimate) {
   return "";
 }
 
+const STATUS_ICONS = {
+  ok: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.5l3.2 3.2L15 6.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  warning: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 3.5l7.5 13h-15l7.5-13z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 8.2v3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="14.3" r="0.9" fill="currentColor"/></svg>`,
+  blocked: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.8"/><path d="M6 6l8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+};
+
+function estimateStatusIconHtml(variant) {
+  const key = variant === "estimate-card--blocked" ? "blocked" : variant === "estimate-card--warning" ? "warning" : "ok";
+  return `<span class="estimate-status-icon" aria-hidden="true">${STATUS_ICONS[key]}</span>`;
+}
+
 function renderEstimateCardHtml(estimate, { compact = false } = {}) {
   if (!estimate) return "";
 
@@ -235,8 +246,11 @@ function renderEstimateCardHtml(estimate, { compact = false } = {}) {
   return `
     <div class="estimate-card ${variant}${compactClass}" role="region" aria-label="Cost estimate">
       <div class="estimate-card-header">
-        <span class="estimate-drug">${drug}</span>
-        ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+        ${estimateStatusIconHtml(variant)}
+        <div class="estimate-card-header-text">
+          <span class="estimate-drug">${drug}</span>
+          ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+        </div>
       </div>
       ${costHtml}
       ${badgeHtml ? `<div class="estimate-meta">${badgeHtml}</div>` : ""}
@@ -310,14 +324,22 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
     : "";
 
   const compactClass = compact ? " estimate-card--compact" : "";
-  const variant = data.quantity_limit_blocked || data.covered === false ? "estimate-card--blocked" : "estimate-card--warning";
+  const variant =
+    data.quantity_limit_blocked || data.covered === false
+      ? "estimate-card--blocked"
+      : caveats.length
+        ? "estimate-card--warning"
+        : "";
 
   return `
     <div class="estimate-card ${variant}${compactClass}" role="region" aria-label="Multi-channel cost estimate">
       <div class="estimate-card-header">
-        <span class="estimate-drug">${drug}</span>
-        ${dosageLine}
-        ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+        ${estimateStatusIconHtml(variant)}
+        <div class="estimate-card-header-text">
+          <span class="estimate-drug">${drug}</span>
+          ${dosageLine}
+          ${plan ? `<span class="estimate-plan">${plan}</span>` : ""}
+        </div>
       </div>
       ${blockedHtml}
       <section class="estimate-section" aria-labelledby="estimate-plan-fill-heading">
@@ -918,26 +940,49 @@ function formatMultiChannelSummary(data) {
   return parts.join("\n\n");
 }
 
+const COPY_ICON_SVG = `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="7" y="7" width="9.5" height="9.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v6A1.5 1.5 0 0 0 5.5 12H7" stroke="currentColor" stroke-width="1.4"/></svg>`;
+const CHECK_ICON_SVG = `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.5l3.2 3.2L15 6.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
 function appendMessage(role, text, source, citations, usage) {
   const empty = el("empty-state");
   if (empty) empty.remove();
   const div = document.createElement("div");
   div.className = `message ${role}`;
+  div.dataset.copyText = text;
   if (role === "assistant") {
     div.innerHTML = `<div class="message-body"><p>${renderExplanationWithCitations(text, citations)}</p></div>`;
   } else {
-    div.textContent = text;
+    const textEl = document.createElement("div");
+    textEl.className = "message-text";
+    textEl.textContent = text;
+    div.appendChild(textEl);
   }
-  if (role === "assistant" && (source || usage)) {
-    const sourceEl = document.createElement("div");
-    sourceEl.className = "message-source";
-    const metaParts = [];
-    if (source) metaParts.push(`via ${source}`);
+
+  const metaParts = [];
+  if (role === "assistant" && source) metaParts.push(`via ${source}`);
+  if (role === "assistant") {
     const usageText = formatUsageMeta(usage);
     if (usageText) metaParts.push(usageText);
-    sourceEl.textContent = metaParts.join(" · ");
-    div.appendChild(sourceEl);
   }
+
+  const footer = document.createElement("div");
+  footer.className = metaParts.length ? "message-footer message-footer--with-source" : "message-footer message-footer--icon-only";
+  if (metaParts.length) {
+    const sourceEl = document.createElement("span");
+    sourceEl.className = "message-source-text";
+    sourceEl.textContent = metaParts.join(" · ");
+    footer.appendChild(sourceEl);
+  }
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "message-copy-btn";
+  copyBtn.dataset.action = "copy-message";
+  copyBtn.setAttribute("aria-label", "Copy message");
+  copyBtn.title = "Copy message";
+  copyBtn.innerHTML = COPY_ICON_SVG;
+  footer.appendChild(copyBtn);
+  div.appendChild(footer);
+
   el("chat-messages").appendChild(div);
   el("chat-messages").scrollTop = el("chat-messages").scrollHeight;
 }
@@ -949,6 +994,27 @@ function showLoading(text) {
 
 function hideLoading() {
   el("loading").classList.add("hidden");
+}
+
+function renderResultsSkeleton() {
+  const container = el("results-content");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="skeleton-card" aria-hidden="true">
+      <div class="skeleton-line skeleton-line--title"></div>
+      <div class="skeleton-line skeleton-line--short"></div>
+      <div class="skeleton-line skeleton-line--cost"></div>
+      <div class="skeleton-line skeleton-line--wide"></div>
+      <div class="skeleton-line skeleton-line--wide"></div>
+      <div class="skeleton-line skeleton-line--short"></div>
+    </div>`;
+}
+
+function resetResultsPlaceholderIfEmpty() {
+  if (resultsBaseline) return;
+  const container = el("results-content");
+  if (!container) return;
+  container.innerHTML = `<p class="placeholder">Your cost estimate and sources will appear here after you get an estimate.</p>`;
 }
 
 function drugKeyFromResp(resp) {
@@ -1149,6 +1215,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
   el("send-btn").disabled = true;
   el("guided-submit").disabled = true;
   showLoading("Estimating cost…");
+  if (!resultsBaseline) renderResultsSkeleton();
 
   try {
     const body = {
@@ -1223,6 +1290,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
     console.error(err);
   } finally {
     hideLoading();
+    resetResultsPlaceholderIfEmpty();
     el("send-btn").disabled = false;
     el("guided-submit").disabled = false;
   }
@@ -1245,6 +1313,7 @@ async function runDeterministicEstimate({ switchToChat = false } = {}) {
   el("send-btn").disabled = true;
   showLoading("Computing costs…");
   showGuidedError("");
+  if (!resultsBaseline) renderResultsSkeleton();
 
   try {
     const res = await fetch(`${API}/api/estimate`, {
@@ -1255,6 +1324,7 @@ async function runDeterministicEstimate({ switchToChat = false } = {}) {
     const body = await res.json();
     if (!res.ok) {
       showGuidedError(chatErrorMessage(res, body));
+      resetResultsPlaceholderIfEmpty();
       return;
     }
 
@@ -1270,6 +1340,7 @@ async function runDeterministicEstimate({ switchToChat = false } = {}) {
     renderDeterministicEstimate(body);
   } catch (err) {
     showGuidedError("Could not load estimate. Please try again.");
+    resetResultsPlaceholderIfEmpty();
     console.error(err);
   } finally {
     hideLoading();
@@ -1296,6 +1367,25 @@ document.addEventListener("click", (event) => {
   if (!ref) return;
   event.preventDefault();
   openCitation(ref.dataset.citation);
+});
+
+document.addEventListener("click", async (event) => {
+  const btn = event.target.closest("[data-action='copy-message']");
+  if (!btn) return;
+  const text = btn.closest(".message")?.dataset.copyText;
+  if (!text) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.innerHTML = CHECK_ICON_SVG;
+    btn.classList.add("message-copy-btn--done");
+    setTimeout(() => {
+      btn.innerHTML = COPY_ICON_SVG;
+      btn.classList.remove("message-copy-btn--done");
+    }, 1500);
+  } catch {
+    btn.title = "Could not copy";
+  }
 });
 
 el("refresh-plans").addEventListener("click", async () => {

@@ -35,11 +35,12 @@ The Medicare Drug Cost Navigator estimates **out-of-pocket cost for a single dru
 
 | In scope | Out of scope |
 |---|---|
-| One drug, one plan, one fill (30/60/90-day) | Insulin, excluded-drug formulary, catastrophic phase |
-| Copay cost-sharing with dollar estimate | Coinsurance dollar amounts (caveat only) |
-| AR, TX real CMS data (configurable) | Un-ingested states |
-| Prior auth / step therapy as soft caveats | LIS / Medicaid / enrollment advice |
-| Multi-NDC low–high cost range | Policy Q&A, alternatives, cost trends (removed Phase 6) |
+| One drug, one plan, one fill (30/60/90-day) | Insulin, excluded-drug formulary |
+| Copay cost-sharing with dollar estimate, including catastrophic phase | Coinsurance dollar amounts (caveat only) |
+| Per-pharmacy-channel pricing (`estimate_drug_cost_all_channels`) | Un-ingested states |
+| AR, TX real CMS data (configurable) | LIS / Medicaid / enrollment advice |
+| Prior auth / step therapy as soft caveats | Policy Q&A, alternatives, cost trends (removed Phase 6) |
+| Multi-NDC low–high cost range | |
 
 The LLM is a **conversational layer** over three deterministic MCP tools. Dollar figures always originate from `estimate_drug_cost`, not from model invention.
 
@@ -295,7 +296,7 @@ flowchart TD
     S4 --> S6["6. Phase: YTD vs deductible + DED_APPLIES_YN per tier"]
     S6 --> S6a{phase per matched tier}
     S6a -->|pre-deductible| S5["5. Price NDC — unit_cost × ceil(days/1)"]
-    S6a -->|initial coverage| S7["7. beneficiary_cost lookup — copay only"]
+    S6a -->|initial coverage or catastrophic| S7["7. beneficiary_cost lookup — copay only"]
     S5 --> S8["8. Assemble DrugCostEstimate low–high"]
     S7 --> S7a{coinsurance tier?}
     S7a -->|yes| BUG4["Exclude from range — Bug 4 caveat"]
@@ -303,7 +304,7 @@ flowchart TD
     S8 --> OUT["Return cost + caveats"]
 ```
 
-Steps 5 and 7 are alternatives selected by step 6's phase result (per matched tier), not a sequential pair — a pre-deductible tier is priced from `pricing.UNIT_COST` (step 5) and never touches `beneficiary_cost`; an initial-coverage tier is priced from the copay in `beneficiary_cost` (step 7) and never touches `pricing`.
+Steps 5 and 7 are alternatives selected by step 6's phase result (per matched tier), not a sequential pair — a pre-deductible tier is priced from `pricing.UNIT_COST` (step 5) and never touches `beneficiary_cost`; an initial-coverage or catastrophic tier is priced from `beneficiary_cost` (step 7, `COVERAGE_LEVEL` 1 or 3 respectively) and never touches `pricing`. Catastrophic phase applies once reported YTD OOP spend meets or exceeds the statutory annual Part D out-of-pocket maximum for the contract year (`config/benefit_params.yaml`, `tools/part_d_benefit_params.py`), typically pricing the fill at $0 with a caveat attached.
 
 ### 5.1 CMS "bugs" handled explicitly
 
@@ -324,7 +325,7 @@ Steps 5 and 7 are alternatives selected by step 6's phase result (per matched ti
 | 0 | Deductible phase | Yes |
 | 1 | Initial coverage | Yes |
 | 2 | Coverage gap | Unused post-IRA redesign |
-| 3 | Catastrophic | Not computed (out of scope) |
+| 3 | Catastrophic | Yes — YTD OOP spend at or above the statutory annual Part D out-of-pocket maximum (`config/benefit_params.yaml`) routes here with a caveat |
 
 ### 5.3 `DrugCostEstimate` response shape
 
@@ -347,6 +348,8 @@ class DrugCostEstimate(BaseModel):
     max_allowed_days_supply: int | None
     covered: bool
 ```
+
+`benefit_phase` may also be `"catastrophic"`. `estimate_drug_cost_all_channels` returns the richer `MultiChannelDrugCostEstimate` instead — same core fields plus `channels: dict[str, ChannelCost]` (one per CMS pharmacy channel), `tier`, `ded_applies_yn`, `effective_phase`, and annual-budget projection fields.
 
 ---
 
@@ -505,16 +508,20 @@ medicare-ingest spuf --download --force-download
 
 # Filter states
 medicare-ingest spuf --download --states AR --merge-states
+medicare-ingest spuf --download --states CA --merge-states
 ```
 
-### 8.2 Ingest filters (`config/ingest_filters.yaml`)
+### 8.2 Ingest filters (`config/ingest_filters.yaml` + `INGEST_STATES`)
 
-| Setting | Current value | Meaning |
+| Setting | Location | Meaning |
 |---|---|---|
-| `contract_year` | `2026` | Filter SPUF rows to this benefit year |
-| `states` | `AR`, `TX` | MA-PD plans by state |
-| `pdp_region_codes` | AR=`19`, TX=`22` | Standalone PDP region filter |
-| `plan_type_prefixes` | `S`, `H` | S=PDP, H=local MA-PD |
+| `contract_year` | yaml | Filter SPUF rows to this benefit year |
+| `pdp_region_codes` | yaml | **Full catalog** — all states/territories with CMS PDP region codes |
+| `states` | yaml | Default active set when `INGEST_STATES` is unset (local dev) |
+| `INGEST_STATES` | env (Render) | Comma-separated active states; intersected with catalog (no redeploy) |
+| `plan_type_prefixes` | yaml | `S`=PDP, `H`=local MA-PD |
+
+Resolution order: `--states` CLI → `INGEST_STATES` env → yaml `states`. Nightly cron uses env/yaml defaults with `--preserve-other` (full SPUF table replace for active states only). Use `--merge-states` in Shell to add a state without removing others.
 
 ### 8.3 SPUF files loaded
 
@@ -641,8 +648,10 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `GET` | `/api/disclaimer` | Canonical disclaimer text |
 | `GET` | `/api/meta/as-of` | Raw `manifest.json` |
 | `GET` | `/api/plans` | List plans (`?state=AR&year=2026&plan_type=...`) |
+| `GET` | `/api/models` | Available LLM models with per-provider `configured` status |
 | `POST` | `/api/query` | Structured + message query → `QueryResponse` |
-| `POST` | `/api/chat` | Conversational turn → `ChatResponse` |
+| `POST` | `/api/chat` | Conversational turn → `ChatResponse` (accepts optional `model` override) |
+| `POST` | `/api/estimate` | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels`, no LLM call) |
 | `GET` | `/` | SPA (`frontend/dist/index.html`) |
 
 ### 10.2 `POST /api/chat`
@@ -680,9 +689,10 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
     "citations": [{ "label": "…", "url": "…", "claim": "…" }],
     "disclaimer": "…",
     "data_as_of": { "estimate": "2026-01-15" },
-    "tools_invoked": ["estimate_drug_cost"],
-    "tool_statuses": { "estimate_drug_cost": "ok" },
-    "response_source": "anthropic/claude-sonnet-4-6"
+    "tools_invoked": ["estimate_drug_cost_all_channels"],
+    "tool_statuses": { "estimate_drug_cost_all_channels": "ok" },
+    "response_source": "openai/gpt-5.4-nano",
+    "llm_usage": { "model": "gpt-5.4-nano", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 }
   }
 }
 ```
@@ -709,7 +719,8 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 
 | Tool | LLM-visible | Implementation |
 |---|---|---|
-| `estimate_drug_cost` | Yes | `tools/estimate_drug_cost.py` |
+| `estimate_drug_cost` | Yes | `tools/estimate_drug_cost.py` (single pharmacy channel) |
+| `estimate_drug_cost_all_channels` | Yes | `tools/estimate_drug_cost.py` — all four CMS channels in one call; default tool for general cost questions |
 | `lookup_plan` | Yes | `tools/lookup_plan.py` |
 | `list_plans` | Yes | `storage/repository.py` → `PlanRepository.list_plans` |
 | `normalize_drug` | **No** | Called internally by `estimate_drug_cost` |
@@ -744,10 +755,15 @@ Requires `pip install mcp`.
 
 ### 12.1 Provider selection
 
-| `LLM_PROVIDER` | SDK | Default model |
-|---|---|---|
-| `anthropic` | `anthropic.AsyncAnthropic` | `claude-sonnet-4-6` |
-| `openai` | `openai.AsyncOpenAI` | from `LLM_MODEL` |
+Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` — that setting only controls which provider's missing-key warning is logged at startup (`api/app.py` lifespan). The active model comes from `llm/models.py`'s `MODEL_CATALOG`:
+
+| Model ID | Provider | SDK | Notes |
+|---|---|---|---|
+| `gpt-5.4-nano` | `openai` | `openai.AsyncOpenAI` | **Default** (`DEFAULT_LLM_MODEL`) |
+| `gpt-5.6-luna` | `openai` | `openai.AsyncOpenAI` | Reasoning model; forced `reasoning_effort="none"` so function tools work on chat/completions |
+| `claude-haiku-4-5-20251001` | `anthropic` | `anthropic.AsyncAnthropic` | |
+
+`GET /api/models` lists the catalog with a `configured` flag per provider's API key. `ChatRequest.model` lets a caller (or the frontend's `#model-select`) override the default per turn. Every response includes token usage and an estimated USD cost (`LlmUsage`, via `estimate_cost_usd()` using each model's `input_per_mtok`/`output_per_mtok`).
 
 ### 12.2 Reliability settings
 
@@ -996,10 +1012,10 @@ medicare-ingest spuf --download --preserve-other
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` |
-| `LLM_MODEL` | `claude-sonnet-4-6` | Model name |
+| `LLM_PROVIDER` | `anthropic` | Only affects the startup missing-key warning — does not select the active model/provider (see §12.1) |
+| `LLM_MODEL` | `gpt-5.4-nano` | Model ID from `llm/models.py`'s `MODEL_CATALOG`; overridable per chat turn via `ChatRequest.model` |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
-| `OPENAI_API_KEY` | — | OpenAI API key |
+| `OPENAI_API_KEY` | — | OpenAI API key — required for the default model (`gpt-5.4-nano`) |
 | `LLM_MOCK` | `0` | `1` = offline mock LLM |
 | `LLM_TIMEOUT_SECONDS` | `60` | Request timeout |
 | `LLM_MAX_RETRIES` | `2` | Retry count |
@@ -1012,12 +1028,13 @@ medicare-ingest spuf --download --preserve-other
 | `SESSION_TTL_MINUTES` | `30` | Session expiry |
 | `MAX_CHAT_TURNS` | `5` | Per-session turn limit |
 | `MAX_TOOL_ROUNDS` | `8` | Max LLM↔tool iterations |
+| `INGEST_STATES` | yaml `states` | Comma-separated active ingest states; intersected with `pdp_region_codes` |
 
 ### 18.2 Committed config files
 
 | File | Purpose |
 |---|---|
-| `config/ingest_filters.yaml` | Which states/years to ingest |
+| `config/ingest_filters.yaml` | PDP region catalog + default states; runtime via `INGEST_STATES` |
 | `config/deploy.yaml` | Cron schedule, Render plan hints |
 | `config/disclaimer.txt` | Legal disclaimer served by API |
 

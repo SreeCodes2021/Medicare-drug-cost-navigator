@@ -33,14 +33,17 @@ Edit `.env`: set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with `LLM_PROVIDER=ope
 ### Load CMS data (local)
 
 ```bash
-# Offline tests use tests/fixtures/spuf/ — for local API with real FL data:
-medicare-ingest spuf --download --states FL --merge-states
+# Offline tests use tests/fixtures/spuf/ — for local API with real AR data:
+medicare-ingest spuf --download --states AR --merge-states
+
+# Add another state without wiping states already loaded (e.g. California):
+medicare-ingest spuf --download --states CA --merge-states
 
 # Or ingest the offline fixture (fast, no network):
 medicare-ingest spuf --source tests/fixtures/spuf
 ```
 
-`--states FL --merge-states` matches `config/ingest_filters.yaml` (Florida only, verified against real CMS data) and avoids loading the full multi-GB national file. See [docs/developer-guide.md](docs/developer-guide.md#5-data-layer) for real ingested row counts.
+`--states AR --merge-states` matches `config/ingest_filters.yaml` (Arkansas + Texas, verified against real CMS data) and avoids loading the full multi-GB national file in one pass. See [docs/developer-guide.md](docs/developer-guide.md#5-data-layer) for real ingested row counts.
 
 ### Build frontend (local dev)
 
@@ -76,7 +79,7 @@ medicare-eval
 | Variable | Description | Default |
 |---|---|---|
 | `LLM_PROVIDER` | `anthropic` or `openai` | `anthropic` |
-| `LLM_MODEL` | Model name | `claude-sonnet-4-6` |
+| `LLM_MODEL` | Model ID from `llm/models.py`'s catalog; overridable per chat turn | `gpt-5.4-nano` |
 | `ANTHROPIC_API_KEY` | Claude API key | — |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `LLM_MOCK` | `1` for offline deterministic mock agent (no API key needed) | `0` |
@@ -138,7 +141,9 @@ Start at **[docs/README.md](docs/README.md)** for the full documentation index. 
 4. After first deploy, **Shell** on the web service:
 
 ```bash
-medicare-ingest spuf --download --states FL --merge-states
+medicare-ingest spuf --download --states AR --merge-states
+# Add more states later (keeps existing data):
+medicare-ingest spuf --download --states CA --merge-states
 ```
 
 5. Verify `GET /api/health` → `data_fresh: true`.
@@ -147,7 +152,7 @@ Nightly ingest: supercronic reads schedule from [`config/deploy.yaml`](config/de
 
 ## Data scope
 
-Formulary, pricing, and cost-share data come from **CMS SPUF**, currently ingested for **Florida only** (`config/ingest_filters.yaml`). The ingestion pipeline already reads the full national CMS file and filters by state, so expanding coverage is primarily a matter of adding states to the config and scaling storage/ingest scheduling accordingly — see [docs/business-solution.md § National multi-state ingest](docs/business-solution.md#76-national-multi-state-ingest) for the specific remaining work (disk sizing, sequential state merges).
+Formulary, pricing, and cost-share data come from **CMS SPUF**, currently ingested for **Arkansas + Texas** (462 plans; `config/ingest_filters.yaml`). The ingestion pipeline already reads the full national CMS file and filters by state, so expanding coverage is primarily a matter of adding states to the config and scaling storage/ingest scheduling accordingly — see [docs/business-solution.md § National multi-state ingest](docs/business-solution.md#76-national-multi-state-ingest) for the specific remaining work (disk sizing, sequential state merges).
 
 ## Disclaimer
 

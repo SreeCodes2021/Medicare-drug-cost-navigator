@@ -18,7 +18,7 @@ This application addresses that gap by combining:
 
 The system processes only public government data, stores no Protected Health Information (PHI), and does not provide enrollment or plan-switching advice.
 
-**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering one well-defined scenario (a single oral, non-insulin drug on a plan's regular formulary, for a non-low-income-subsidy beneficiary, in the pre-deductible or initial-coverage benefit phase). This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach full insulin, catastrophic-phase, coinsurance, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
+**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering one well-defined scenario (a single oral, non-insulin drug on a plan's regular formulary, for a non-low-income-subsidy beneficiary, in the pre-deductible, initial-coverage, or catastrophic benefit phase), priced independently across all four CMS pharmacy channels (preferred/standard retail, preferred/standard mail-order). This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach full insulin, coinsurance, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
 
 ---
 
@@ -112,9 +112,10 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Geographic coverage | Arkansas + Texas (462 plans in the combined AR+TX 2026 ingest) |
 | Drug types | Oral generic/brand on regular formulary |
 | Beneficiary type | Non-LIS (no Low-Income Subsidy) |
-| Benefit phases | Pre-deductible and initial coverage (user supplies YTD OOP) |
+| Benefit phases | Pre-deductible, initial coverage, and catastrophic (user supplies YTD OOP; catastrophic applies once YTD meets or exceeds the CMS annual Part D out-of-pocket maximum for the plan's contract year, from `config/benefit_params.yaml`) |
 | Fill sizes | 30, 60, 90-day supply |
-| Cost-share | Full negotiated price pre-deductible, or copay once the deductible is met/exempted (dollar estimate returned either way) |
+| Cost-share | Full negotiated price pre-deductible, copay once the deductible is met/exempted, or catastrophic-phase cost-share (typically $0) once the annual OOP cap is reached — dollar estimate returned in all three cases |
+| Pharmacy channel | Preferred/standard retail and preferred/standard mail-order priced independently; `estimate_drug_cost_all_channels` returns all four CMS channels in one call |
 | Restrictions | Prior auth and step therapy surfaced as soft caveats; quantity limits as hard stops |
 
 ### 5.2 Out of scope (honest limitations)
@@ -122,7 +123,6 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Exclusion | System behavior |
 |---|---|
 | Insulin | Hard stop — separate $35/month statutory cap, different CMS file |
-| Catastrophic phase | Not computed — TrOOP threshold not in SPUF |
 | Coinsurance | Dollar amount never computed — explicit insurer contact notice |
 | LIS / Extra Help | Not supported |
 | Medicaid | Not supported |
@@ -159,6 +159,7 @@ flowchart TB
 
     subgraph ToolLayer["Deterministic Tools — MCP Registry"]
         T1["estimate_drug_cost"]
+        T1b["estimate_drug_cost_all_channels"]
         T2["lookup_plan"]
         T3["list_plans"]
     end
@@ -181,8 +182,9 @@ flowchart TB
     end
 
     UI1 & UI2 --> Chat --> Router --> Nav --> LLM
-    Nav --> T1 & T2 & T3 --> DuckDB
+    Nav --> T1 & T1b & T2 & T3 --> DuckDB
     T1 --> RxNorm
+    T1b --> RxNorm
     Nav --> GR
     CMS --> CLI --> DuckDB --> Manifest
     UI3 --> Meta
@@ -284,7 +286,7 @@ flowchart TD
     P -->|initial coverage| S7 --> S8
 ```
 
-Steps 5 and 7 are mutually exclusive per matched tier, not sequential — during the deductible phase the beneficiary owes the plan's full negotiated price (step 5); once the deductible is met, or for a tier the plan exempts from the deductible, the plan's copay applies instead (step 7). Step 6 runs first specifically to decide which one applies; the two lookups are never combined or summed for a single fill.
+Steps 5 and 7 are mutually exclusive per matched tier, not sequential — during the deductible phase the beneficiary owes the plan's full negotiated price (step 5); once the deductible is met, or for a tier the plan exempts from the deductible, the plan's copay applies instead (step 7). Step 6 runs first specifically to decide which one applies; the two lookups are never combined or summed for a single fill. Step 6 also detects the catastrophic phase — reported YTD OOP spend at or above the CMS annual Part D out-of-pocket maximum for the contract year (`config/benefit_params.yaml`) — and routes to `COVERAGE_LEVEL=3` cost-share instead, typically $0; the same annual maximum caps any tier's published `COST_MAX` ceiling.
 
 | CMS correctness rule | Problem | System behavior |
 |---|---|---|
@@ -295,6 +297,12 @@ Steps 5 and 7 are mutually exclusive per matched tier, not sequential — during
 | Multiple NDCs per drug | Different manufacturers, tiers, prices | Independent computation per NDC; low–high range |
 | Quantity limits | Requested fill may exceed plan limit | Hard stop with maximum allowed fill size |
 | Suppressed plan data | CMS flags unreliable records | Hard stop before any pricing lookup |
+| Catastrophic-phase threshold | TrOOP threshold not published in SPUF | Statutory annual OOP cap from `config/benefit_params.yaml`; YTD ≥ cap routes to `COVERAGE_LEVEL=3` cost-share with a caveat |
+| Pharmacy-channel variation | Cost-share differs by preferred/standard, retail/mail | `estimate_drug_cost_all_channels` prices all four CMS channels independently in one call |
+
+#### `estimate_drug_cost_all_channels` — per-channel pricing
+
+Runs the same eight-step pipeline once per CMS pharmacy channel (preferred retail, standard retail, preferred mail, standard mail) and returns a `MultiChannelDrugCostEstimate` with an independent cost range per channel, plus the resolved tier, `DED_APPLIES_YN`, and effective benefit phase. This is the tool the Navigator agent calls by default for general cost questions; the single-channel `estimate_drug_cost` is used only when the user names a specific pharmacy channel.
 
 #### `lookup_plan` and `list_plans`
 
@@ -374,16 +382,14 @@ Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and dr
 | **Output** | `DrugCostEstimate` with `benefit_phase: "insulin_cap"` and statutory cap caveat |
 | **Tests** | Unit tests for cap amount, multi-fill scenarios (30/60/90 day), and fallback when insulin file is stale |
 
-#### 7.2 Catastrophic-phase computation
+#### 7.2 Catastrophic-phase computation — SHIPPED (ahead of this roadmap)
 
 | Item | Detail |
 |---|---|
-| **Problem** | After a beneficiary reaches the annual TrOOP (True Out-of-Pocket) threshold, cost-sharing drops to near-zero for the rest of the year. SPUF does not include the TrOOP threshold — it must come from CMS annual benefit parameters. |
-| **Data source** | CMS annual Part D redesign program instructions → `config/benefit_params.yaml` (deductible, initial coverage limit, catastrophic threshold, OOP cap per contract year) |
-| **New logic in Step 6** | Compare YTD OOP to catastrophic threshold; set `benefit_phase: "catastrophic"` and use `COVERAGE_LEVEL=3` cost-share rows |
-| **User input** | YTD OOP becomes required (not optional) when catastrophic phase is in scope |
-| **Caveat** | TrOOP calculation may differ from plan-reported spend; attach caveat to confirm with plan |
-| **Tests** | Fixtures for beneficiary at $0, mid-year, and post-catastrophic YTD levels |
+| **Status** | Implemented; no longer future work. Landed after the Phase 6 release outside a numbered phase — see `config/benefit_params.yaml` and `tools/part_d_benefit_params.py`. |
+| **What shipped** | `estimate_drug_cost` compares reported YTD OOP spend to the statutory annual Part D out-of-pocket maximum (`annual_oop_cap()`, sourced from `config/benefit_params.yaml` per contract year); once met or exceeded, the fill is priced from `COVERAGE_LEVEL=3` cost-share rows with the catastrophic-phase caveat attached verbatim. The same annual maximum also caps any tier's published `COST_MAX` ceiling (`cap_fill_copay`). |
+| **Remaining gap** | The statutory annual OOP cap is used as a proxy for the beneficiary's true TrOOP (True Out-of-Pocket) accumulator; CMS's own TrOOP tracking — which differs from raw YTD spend for LIS beneficiaries and manufacturer-discount treatment — is still not modeled. The caveat directs the user to confirm with their plan. |
+| **Tests** | Fixtures cover beneficiary at $0, mid-year, and post-catastrophic YTD levels. |
 
 #### 7.3 Coinsurance dollar computation
 
@@ -652,10 +658,10 @@ gantt
     Phase 4 - SPUF-only data path, Render deploy    :done, p4, 2026-03-14, 2026-04-19
     Phase 5 - Read-only DuckDB, plan polling        :done, p5, 2026-05-04, 2026-05-24
     Phase 6 - Cost pipeline, MCP tools, guardrails  :done, p6, 2026-06-02, 2026-07-09
+    Catastrophic phase + multi-channel pricing (unplanned) :done, p6b, 2026-07-09, 2026-08-01
 
     section Phase 7 - Complete the cost estimator
     Insulin estimator                    :p7a, 2026-08-01, 2026-10-01
-    Catastrophic phase                   :p7b, 2026-08-01, 2026-11-01
     Coinsurance computation              :p7c, 2026-09-01, 2026-12-01
     Excluded-drugs formulary             :p7d, 2026-10-01, 2026-12-01
     Indication restrictions              :p7e, 2026-11-01, 2027-01-01
@@ -691,12 +697,12 @@ gantt
     External MCP server                  :p12c, 2028-03-01, 2028-06-01
 ```
 
-Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 2026-07-09 (see repository commit history). Phase 7 onward are planned, not-yet-started engineering phases; dates are sequencing estimates, not commitments.
+Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 2026-07-09 (see repository commit history). Catastrophic-phase computation and multi-pharmacy-channel pricing shipped immediately afterward, ahead of the Phase 7 roadmap below — see §5–7 above and §7.2's status note. Phase 7 onward (excluding catastrophic phase, now shipped) are planned, not-yet-started engineering phases; dates are sequencing estimates, not commitments.
 
 | Phase | Theme | Key deliverables |
 |---|---|---|
-| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI |
-| **7** | Complete the cost estimator | Insulin, catastrophic phase, coinsurance, excluded formulary, indications, 50-state ingest |
+| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI, catastrophic phase + multi-channel pricing added post-release |
+| **7** | Complete the cost estimator | Insulin, coinsurance, excluded formulary, indications, 50-state ingest |
 | **8** | Benefit transparency | Cost trends, alternatives, cost-change explanation, policy Q&A, LIS |
 | **9** | User experience | Build pipeline, results cards, clarification agent, accessibility, print/share |
 | **10** | Data platform | CI gate, freshness monitoring, NADAC, IRA MFP, storage scaling |

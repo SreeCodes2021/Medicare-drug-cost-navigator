@@ -10,18 +10,8 @@ from medicare_navigator.ingestion.cms_download import download_spuf, resolve_spu
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 
 
-def _apply_state_filter(filters: IngestFilters, states: str | None) -> IngestFilters:
-    if not states:
-        return filters
-    filters.states = [s.upper() for s in states.split(",")]
-    filters.pdp_region_codes = {
-        k: v for k, v in filters.pdp_region_codes.items() if k in filters.states
-    }
-    return filters
-
-
 def _cmd_spuf(args: argparse.Namespace) -> None:
-    filters = _apply_state_filter(IngestFilters.from_yaml(), args.states)
+    filters = IngestFilters.resolve(states_override=args.states)
 
     if args.download or not args.source:
         if args.source:
@@ -111,7 +101,7 @@ def main() -> None:
     )
     spuf_parser.add_argument(
         "--states",
-        help="Comma-separated state codes (default from config/ingest_filters.yaml)",
+        help="Comma-separated state codes (overrides INGEST_STATES env and yaml defaults)",
     )
     spuf_parser.add_argument(
         "--version",

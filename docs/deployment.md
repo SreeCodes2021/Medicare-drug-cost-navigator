@@ -34,9 +34,10 @@ medicare-ingest spuf --download --states AR --merge-states
 
 Each run replaces only that state's plans in DuckDB; the CMS zip is still downloaded/read each time. If a run exits with `Killed`, upgrade the Render plan or ingest fewer states.
 
-### Change cron schedule or instance size
+### Change cron schedule, active states, or instance size
 
 - **Schedule:** edit `ingest.cron` in [`config/deploy.yaml`](../config/deploy.yaml) (UTC), push to GitHub.
+- **Active states (no redeploy):** set `INGEST_STATES` on the Render service (e.g. `AR,TX,CA`). The nightly cron ingests only states that appear in both `INGEST_STATES` and the `pdp_region_codes` catalog in [`config/ingest_filters.yaml`](../config/ingest_filters.yaml). Restart the service after changing env vars.
 - **Resources:** edit `plan` and `disk.sizeGB` in [`render.yaml`](../render.yaml).
 
 ## Architecture
@@ -159,13 +160,13 @@ Plans are not inserted manually. Add or refresh plans by re-running SPUF ingest 
 medicare-ingest spuf --download --states AR --merge-states
 ```
 
-**Add another state** (not yet in `config/ingest_filters.yaml` — add its `pdp_region_codes` entry first, then):
+**Add another state** (already in `pdp_region_codes` catalog — set `INGEST_STATES` on Render or run manually):
 
 ```bash
 medicare-ingest spuf --download --states CA --merge-states
 ```
 
-**Reload all states in `config/ingest_filters.yaml`** (nightly cron equivalent):
+**Reload active states** (nightly cron equivalent — uses `INGEST_STATES` env or yaml `states` default):
 
 ```bash
 medicare-ingest spuf --download --preserve-other
@@ -249,7 +250,8 @@ If the disk stays tight, increase `disk.sizeGB` in [`render.yaml`](../render.yam
 
 ## Data scope
 
-- SPUF ingest states are configured in `config/ingest_filters.yaml` (see repo for current list).
+- **Catalog:** all state PDP region codes in `config/ingest_filters.yaml` (`pdp_region_codes`).
+- **Active ingest:** `INGEST_STATES` on Render (e.g. `AR,TX,CA`) intersected with that catalog; yaml `states` is the default when env is unset.
 - Cost trends, alternatives, and policy retrieval return `no_match` until real loaders are added.
 
 ## Local development

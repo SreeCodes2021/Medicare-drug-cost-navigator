@@ -1,14 +1,75 @@
-# Filters for real CMS SPUF ingestion (AR + TX)
+# CMS SPUF ingest configuration.
+# - pdp_region_codes: full catalog (all states/territories CMS publishes)
+# - states: default active set when INGEST_STATES env is unset (local dev)
+# - Production: set INGEST_STATES on Render (e.g. AR,TX,CA); cron ingests the
+#   intersection of INGEST_STATES and pdp_region_codes — no redeploy to add a state.
+
 contract_year: 2026
 
+# Default active states (local dev / fallback when INGEST_STATES is unset)
 states:
   - AR
   - TX
 
-# PDP plans use PDP_REGION_CODE (not STATE). See CMS SPUF MA_REGION/PDP_REGION tables.
+# Full CMS PDP region catalog — one code per state/territory (SPUF geographic locator).
+# PDP stand-alone plans (S*) match on PDP_REGION_CODE; MA-PD (H*) match on STATE.
 pdp_region_codes:
-  AR: "19"  # Arkansas (geographic locator PDP region)
-  TX: "22"  # Texas
+  AK: "34"
+  AL: "12"
+  AR: "19"
+  AS: "35"
+  AZ: "28"
+  CA: "32"
+  CO: "27"
+  CT: "2"
+  DC: "5"
+  DE: "5"
+  FL: "11"
+  GA: "10"
+  GU: "36"
+  HI: "33"
+  IA: "25"
+  ID: "31"
+  IL: "17"
+  IN: "15"
+  KS: "24"
+  KY: "15"
+  LA: "21"
+  MA: "2"
+  MD: "5"
+  ME: "1"
+  MI: "13"
+  MN: "25"
+  MO: "18"
+  MP: "37"
+  MS: "20"
+  MT: "25"
+  NC: "8"
+  ND: "25"
+  NE: "25"
+  NH: "1"
+  NJ: "4"
+  NM: "26"
+  NV: "29"
+  NY: "3"
+  OH: "14"
+  OK: "23"
+  OR: "30"
+  PA: "6"
+  PR: "38"
+  RI: "2"
+  SC: "9"
+  SD: "25"
+  TN: "12"
+  TX: "22"
+  UT: "31"
+  VA: "7"
+  VI: "39"
+  VT: "2"
+  WA: "30"
+  WI: "16"
+  WV: "6"
+  WY: "25"
 
 # Include stand-alone PDP (S*) and local MA-PD (H*) plans
 plan_type_prefixes:

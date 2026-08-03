@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=60.0, validation_alias="LLM_TIMEOUT_SECONDS")
     llm_max_retries: int = Field(default=2, validation_alias="LLM_MAX_RETRIES")
 
+    # Comma-separated state codes; intersected with pdp_region_codes in ingest_filters.yaml.
+    # Overrides yaml `states` default. Unset = use yaml defaults (local dev).
+    ingest_states: str = Field(default="", validation_alias="INGEST_STATES")
+
     project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property

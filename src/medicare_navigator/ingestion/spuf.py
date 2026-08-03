@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from medicare_navigator.ingestion.manifest import load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
 from medicare_navigator.storage.connection import DuckDBConnection
+
+log = logging.getLogger(__name__)
 
 # CMS SPUF beneficiary cost file column groups by pharmacy channel
 PHARMACY_CHANNEL_COLUMNS: dict[str, tuple[str, str, str]] = {
@@ -103,6 +106,12 @@ def _insert_in_parts(
     return inserted
 
 
+def _parse_state_codes(raw: str | None) -> list[str] | None:
+    if raw is None or not str(raw).strip():
+        return None
+    return [part.strip().upper() for part in raw.split(",") if part.strip()]
+
+
 @dataclass
 class IngestFilters:
     contract_year: int
@@ -121,6 +130,47 @@ class IngestFilters:
             pdp_region_codes={k.upper(): str(v) for k, v in data.get("pdp_region_codes", {}).items()},
             plan_type_prefixes=list(data.get("plan_type_prefixes", ["S", "H"])),
         )
+
+    @classmethod
+    def resolve(
+        cls,
+        path: Path | None = None,
+        *,
+        states_override: str | None = None,
+    ) -> IngestFilters:
+        """Load catalog from yaml; active states = CLI > INGEST_STATES env > yaml defaults.
+
+        Only states present in both the requested list and ``pdp_region_codes`` are ingested.
+        """
+        filters = cls.from_yaml(path)
+        catalog = set(filters.pdp_region_codes.keys())
+        if not catalog:
+            raise ValueError("ingest_filters.yaml must define pdp_region_codes (state catalog)")
+
+        requested = _parse_state_codes(states_override)
+        if requested is None:
+            requested = _parse_state_codes(settings.ingest_states or None)
+        if requested is None:
+            requested = [s for s in filters.states if s in catalog]
+        else:
+            active: list[str] = []
+            for state in requested:
+                if state in catalog:
+                    active.append(state)
+                else:
+                    log.warning(
+                        "Skipping ingest state %s (not in pdp_region_codes catalog)", state
+                    )
+            requested = active
+
+        if not requested:
+            raise ValueError(
+                "No ingest states selected. Set INGEST_STATES (e.g. AR,TX) or states in "
+                "config/ingest_filters.yaml; each must exist in pdp_region_codes."
+            )
+
+        filters.states = requested
+        return filters
 
     @property
     def pdp_regions(self) -> set[str]:
@@ -467,7 +517,7 @@ def ingest_spuf(
     merge_states: bool = False,
 ) -> dict[str, Any]:
     """Load CMS SPUF into DuckDB. Source may be a .zip or directory of pipe-delimited files."""
-    filters = filters or IngestFilters.from_yaml()
+    filters = filters or IngestFilters.resolve()
     files = _discover_spuf_files(source)
     if not files.get("plan") or not files.get("formulary"):
         raise FileNotFoundError(

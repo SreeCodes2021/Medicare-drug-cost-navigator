@@ -5,12 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Medicare Drug Cost Navigator</title>
-  <link rel="stylesheet" href="/styles.css?v=22" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="Estimate what a single drug fill will cost on a Medicare plan." />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Drug Cost Navigator" />
+  <link rel="stylesheet" href="/styles.css?v=25" />
 </head>
 <body>
   <details id="disclaimer-banner" class="disclaimer-banner" open>
     <summary class="disclaimer-summary">
-      <span class="disclaimer-icon" aria-hidden="true">ℹ️</span>
+      <span class="disclaimer-icon" aria-hidden="true">
+        <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="10" cy="10" r="8.5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10 9v4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <circle cx="10" cy="6.4" r="0.9" fill="currentColor"/>
+        </svg>
+      </span>
       <span class="disclaimer-label">Important notice</span>
     </summary>
     <p id="disclaimer-text" class="disclaimer-text" aria-live="polite">Loading disclaimer…</p>
@@ -118,6 +134,6 @@
     </section>
   </main>
 
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>
