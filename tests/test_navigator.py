@@ -1,10 +1,15 @@
 import pytest
 
-from medicare_navigator.agent.navigator import navigator
-from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
+from medicare_navigator.agent.navigator import (
+    _format_last_tool_calls,
+    _merge_last_tool_calls,
+    navigator,
+)
+from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT, build_navigator_system_prompt
 from medicare_navigator.config import settings
 from medicare_navigator.llm.client import llm_client
 from medicare_navigator.llm.errors import LLMNotConfiguredError
+from medicare_navigator.session.manager import session_manager
 from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_MAPD_MOOP, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
 
 
@@ -72,6 +77,15 @@ def test_navigator_prompt_describes_scope():
     assert "insulin" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "estimate_drug_cost_all_channels" in NAVIGATOR_SYSTEM_PROMPT
     assert "moop" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "never ask" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "what today's date is" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "remaining_year_budget_cost_low" in NAVIGATOR_SYSTEM_PROMPT
+
+
+def test_navigator_system_prompt_includes_runtime_datetime():
+    prompt = build_navigator_system_prompt()
+    assert "Current date and time" in prompt
+    assert "Never ask the user to confirm today's date" in prompt
 
 
 @pytest.mark.asyncio
@@ -90,6 +104,125 @@ async def test_navigator_moop_question_scope_refusal():
     assert "pharmacy channel" not in lower
     assert "moop" in lower or "maximum out-of-pocket" in lower
     assert response.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_navigator_multi_drug_basket_produces_two_channel_estimates():
+    message = f"What's the cost for metformin 500mg and lisinopril 10mg on plan {PLAN_FL_PDP}?"
+    response = await navigator.run(message)
+    assert response.status == "ok"
+    assert len(response.channel_estimates) == 2
+    drug_names = {e.drug_name for e in response.channel_estimates}
+    assert drug_names == {"metformin", "lisinopril"}
+    assert response.tools_invoked.count("estimate_drug_cost_all_channels") == 1
+    lower = response.explanation.lower()
+    assert "metformin" in lower
+    assert "lisinopril" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_multi_drug_turn_retains_all_drugs_in_session_last_tool_calls():
+    """Regression: a two-drug turn used to leave session["last_tool_call"] pointing at
+    only whichever drug's tool call ran last, so a follow-up question about "the
+    calculation" only had context for one of the two drugs. It must now retain both."""
+    session_id = "test-multi-drug-session"
+    message = f"What's the cost for metformin 500mg and lisinopril 10mg on plan {PLAN_FL_PDP}?"
+    await navigator.run(message, session_id=session_id)
+
+    session = session_manager.get_or_create(session_id)
+    last_calls = session.get("last_tool_calls") or []
+    assert len(last_calls) == 2
+    drug_names = {c["arguments"].get("drug_name") for c in last_calls}
+    assert drug_names == {"metformin", "lisinopril"}
+
+    context = _format_last_tool_calls(last_calls)
+    assert "metformin" in context.lower()
+    assert "lisinopril" in context.lower()
+
+
+def test_format_last_tool_calls_single_call_uses_singular_phrasing():
+    calls = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {"plan_key": "S1234-001", "drug_name": "metformin"},
+        }
+    ]
+    context = _format_last_tool_calls(calls)
+    assert context.startswith("Last cost estimate call:")
+    assert "metformin" in context
+
+
+def test_format_last_tool_calls_multiple_calls_lists_every_drug():
+    calls = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {"plan_key": "S1234-001", "drug_name": "metformin"},
+        },
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {"plan_key": "S1234-001", "drug_name": "lovastatin"},
+        },
+    ]
+    context = _format_last_tool_calls(calls)
+    assert "metformin" in context
+    assert "lovastatin" in context
+    assert "not just one" in context.lower()
+
+
+def test_merge_last_tool_calls_retains_prior_drugs_on_partial_reestimate():
+    prior = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {
+                "plan_key": "S5921-400",
+                "drug_name": "lovastatin",
+                "dosage": "40mg",
+                "ytd_oop_spend": 0,
+            },
+        },
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {
+                "plan_key": "S5921-400",
+                "drug_name": "metformin",
+                "dosage": "500mg",
+                "ytd_oop_spend": 0,
+            },
+        },
+    ]
+    new_calls = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {
+                "plan_key": "S5921-400",
+                "drug_name": "metformin",
+                "dosage": "500mg",
+                "ytd_oop_spend": 0,
+            },
+        }
+    ]
+    merged = _merge_last_tool_calls(prior, new_calls)
+    drug_names = {(c["arguments"].get("drug_name")) for c in merged}
+    assert drug_names == {"lovastatin", "metformin"}
+    metformin_call = next(c for c in merged if c["arguments"]["drug_name"] == "metformin")
+    assert metformin_call is new_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_navigator_plan_comparison_produces_two_entries_no_recommendation_language():
+    message = (
+        f"Compare lovastatin 40mg cost between plan {PLAN_FL_PDP} and plan {PLAN_FL_MAPD}."
+    )
+    response = await navigator.run(message)
+    assert response.status == "ok"
+    assert len(response.channel_estimates) == 2
+    plan_keys = {e.plan_key for e in response.channel_estimates}
+    assert plan_keys == {PLAN_FL_PDP, PLAN_FL_MAPD}
+
+    lower = response.explanation.lower()
+    for banned in ("best plan", "cheapest overall", "you should switch", "recommend switching"):
+        assert banned not in lower
+    assert "not a recommendation to switch plans" in lower
 
 
 def test_llm_requires_configuration(monkeypatch):

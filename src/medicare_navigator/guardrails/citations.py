@@ -11,7 +11,7 @@ from medicare_navigator.guardrails.source_catalog import (
     url_for_source_id,
 )
 from medicare_navigator.models.citation import Citation
-from medicare_navigator.models.response import DrugCostEstimate, MultiChannelDrugCostEstimate, MultiChannelDrugCostEstimate
+from medicare_navigator.models.response import DrugCostEstimate, MultiChannelDrugCostEstimate
 from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
 
 _ESTIMATE_TOOL_NAMES = ("estimate_drug_cost_all_channels", "estimate_drug_cost")
@@ -70,6 +70,8 @@ def _estimate_data(tool_artifacts: dict[str, dict[str, Any]]) -> dict[str, Any] 
 def extract_source_ids(tool_artifacts: dict[str, dict[str, Any]]) -> set[str]:
     ids: set[str] = set()
     for artifact in tool_artifacts.values():
+        if not isinstance(artifact, dict):
+            continue
         sid = artifact.get("source_id")
         if sid:
             ids.add(sid)
@@ -129,31 +131,60 @@ def _citation_from_artifact(artifact: dict[str, Any]) -> Citation:
     )
 
 
+def _estimate_dedup_key(data: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        data.get("plan_key"),
+        (data.get("drug_name") or "").lower(),
+        data.get("dosage"),
+        data.get("days_supply"),
+    )
+
+
 def build_citations_from_artifacts(
     tool_artifacts: dict[str, dict[str, Any]],
 ) -> list[Citation]:
     citations: list[Citation] = []
     drug_name = drug_name_from_artifacts(tool_artifacts)
+    seen_keys: set[tuple[Any, ...]] = set()
 
-    estimate = _primary_estimate_artifact(tool_artifacts)
-    if estimate and estimate.get("status") in ("ok", "not_covered") and estimate.get("data"):
-        data = estimate["data"]
-        source_id = estimate["source_id"]
-        citations.append(
-            Citation(
-                claim=formulary_citation_claim(data, drug_name),
-                source_id=source_id,
-                as_of_date=estimate.get("as_of_date", ""),
-                source_label=label_for_source_id(source_id),
-                url=url_for_source_id(source_id),
+    def _add_estimate_citation(artifact: dict[str, Any] | None) -> None:
+        if not artifact:
+            return
+        data = artifact.get("data")
+        status = artifact.get("status")
+        if isinstance(data, dict) and status in ("ok", "not_covered"):
+            key = _estimate_dedup_key(data)
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            source_id = artifact["source_id"]
+            citations.append(
+                Citation(
+                    claim=formulary_citation_claim(data, data.get("drug_name") or drug_name),
+                    source_id=source_id,
+                    as_of_date=artifact.get("as_of_date", ""),
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
+                )
             )
-        )
-    elif (
-        estimate
-        and estimate.get("source_id")
-        and estimate.get("status") in _CITABLE_LOOKUP_STATUSES
-    ):
-        citations.append(_citation_from_artifact(estimate))
+        elif artifact.get("source_id") and status in _CITABLE_LOOKUP_STATUSES:
+            key = (
+                status,
+                artifact.get("message"),
+                data.get("plan_key") if isinstance(data, dict) else None,
+            )
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            citations.append(_citation_from_artifact(artifact))
+
+    # Distinct calls made this turn (multi-drug / plan-comparison) — includes the primary call.
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if calls:
+        for artifact in calls:
+            _add_estimate_citation(artifact)
+    else:
+        _add_estimate_citation(_primary_estimate_artifact(tool_artifacts))
 
     if citations:
         return citations
@@ -183,28 +214,92 @@ def build_citations_from_artifacts(
     return citations
 
 
+def _add_estimate_dollar_amounts(
+    amounts: set[float], data: dict[str, Any] | None
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+    """Add data's dollar fields to `amounts`; return per-fill and remaining-year bounds."""
+    if not data:
+        return None, None
+    channels = data.get("channels")
+    fill_bounds = None
+    if channels:
+        cost_low, cost_high = channel_cost_bounds(channels)
+        if cost_low is not None:
+            amounts.add(round(float(cost_low), 2))
+        if cost_high is not None:
+            amounts.add(round(float(cost_high), 2))
+        for channel in channels.values():
+            if isinstance(channel, dict):
+                for field in ("cost_low", "cost_high"):
+                    value = channel.get(field)
+                    if value is not None:
+                        amounts.add(round(float(value), 2))
+        if cost_low is not None:
+            fill_bounds = (float(cost_low), float(cost_high) if cost_high is not None else float(cost_low))
+    else:
+        for field in ("cost_low", "cost_high"):
+            value = data.get(field)
+            if value is not None:
+                amounts.add(round(float(value), 2))
+        low, high = data.get("cost_low"), data.get("cost_high")
+        if low is not None:
+            fill_bounds = (float(low), float(high) if high is not None else float(low))
+
+    remaining_bounds = None
+    for field in (
+        "annual_budget_cost_low",
+        "annual_budget_cost_high",
+        "remaining_year_budget_cost_low",
+        "remaining_year_budget_cost_high",
+        "annual_oop_cap",
+        "remaining_oop_headroom",
+    ):
+        value = data.get(field)
+        if value is not None:
+            amounts.add(round(float(value), 2))
+    r_low, r_high = data.get("remaining_year_budget_cost_low"), data.get("remaining_year_budget_cost_high")
+    if r_low is not None:
+        remaining_bounds = (float(r_low), float(r_high) if r_high is not None else float(r_low))
+
+    return fill_bounds, remaining_bounds
+
+
 def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[float]:
     amounts: set[float] = set()
-    data = _estimate_data(tool_artifacts)
-    if data:
-        channels = data.get("channels")
-        if channels:
-            cost_low, cost_high = channel_cost_bounds(channels)
-            if cost_low is not None:
-                amounts.add(round(float(cost_low), 2))
-            if cost_high is not None:
-                amounts.add(round(float(cost_high), 2))
-            for channel in channels.values():
-                if isinstance(channel, dict):
-                    for field in ("cost_low", "cost_high"):
-                        value = channel.get(field)
-                        if value is not None:
-                            amounts.add(round(float(value), 2))
-        else:
-            for field in ("cost_low", "cost_high"):
-                value = data.get(field)
-                if value is not None:
-                    amounts.add(round(float(value), 2))
+
+    # Every distinct estimate call this turn contributes its own dollar figures — a multi-drug
+    # or plan-comparison turn calls the estimate tool more than once, and each call's cost_low/
+    # cost_high must be traceable even though only the last call is the "primary" one.
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    item_bounds: list[tuple[float, float]] = []
+    remaining_year_bounds: list[tuple[float, float]] = []
+    if calls:
+        for artifact in calls:
+            if not isinstance(artifact, dict):
+                continue
+            data = artifact.get("data")
+            fill_bounds, period_bounds = _add_estimate_dollar_amounts(
+                amounts, data if isinstance(data, dict) else None
+            )
+            if fill_bounds:
+                item_bounds.append(fill_bounds)
+            if period_bounds:
+                remaining_year_bounds.append(period_bounds)
+    else:
+        fill_bounds, period_bounds = _add_estimate_dollar_amounts(amounts, _estimate_data(tool_artifacts))
+        if fill_bounds:
+            item_bounds.append(fill_bounds)
+        if period_bounds:
+            remaining_year_bounds.append(period_bounds)
+
+    # A combined total (sum of each item's low/high) is only "traceable" when it's exactly the
+    # sum this module itself computes — the LLM is never allowed to invent its own arithmetic.
+    if len(item_bounds) > 1:
+        amounts.add(round(sum(b[0] for b in item_bounds), 2))
+        amounts.add(round(sum(b[1] for b in item_bounds), 2))
+    if len(remaining_year_bounds) > 1:
+        amounts.add(round(sum(b[0] for b in remaining_year_bounds), 2))
+        amounts.add(round(sum(b[1] for b in remaining_year_bounds), 2))
 
     lookup = tool_artifacts.get("lookup_plan")
     if lookup and lookup.get("status") == "ok":
@@ -227,45 +322,74 @@ def _has_formulary_evidence(tool_artifacts: dict[str, dict[str, Any]]) -> bool:
 def _enforced_texts(tool_artifacts: dict[str, dict[str, Any]]) -> list[str]:
     """Verbatim caveats/messages that must survive into the final explanation untouched."""
     texts: list[str] = []
-    estimate = _primary_estimate_artifact(tool_artifacts)
-    if not estimate:
-        return texts
-    status = estimate.get("status")
-    if status in _ENFORCED_STATUSES and estimate.get("message"):
-        texts.append(estimate["message"])
-    data = estimate.get("data")
-    if isinstance(data, dict):
-        for caveat in data.get("caveats") or []:
-            texts.append(caveat)
+    seen: set[str] = set()
+
+    def _collect(artifact: dict[str, Any] | None) -> None:
+        if not artifact:
+            return
+        status = artifact.get("status")
+        message = artifact.get("message")
+        if status in _ENFORCED_STATUSES and message and message not in seen:
+            texts.append(message)
+            seen.add(message)
+        data = artifact.get("data")
+        if isinstance(data, dict):
+            for caveat in data.get("caveats") or []:
+                if caveat not in seen:
+                    texts.append(caveat)
+                    seen.add(caveat)
+
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if calls:
+        for artifact in calls:
+            _collect(artifact)
+    else:
+        _collect(_primary_estimate_artifact(tool_artifacts))
     return texts
 
 
 def _stated_phase_mismatch(out: str, tool_artifacts: dict[str, dict[str, Any]]) -> str | None:
-    """Return an error string if the explanation names a benefit phase that contradicts the
-    actual phase the estimate tool returned for this turn (e.g. hallucinating "pre-deductible"
-    after the user reported meeting their deductible and a re-call returned initial_coverage)."""
+    """Return an error string if the explanation names a benefit phase that contradicts every
+    actual phase the estimate tool(s) returned for this turn (e.g. hallucinating "pre-deductible"
+    after the user reported meeting their deductible and a re-call returned initial_coverage).
+    A multi-drug or plan-comparison turn can legitimately mix phases across items, so a mention
+    is only flagged if it matches none of this turn's calls."""
     mentions_pre = bool(_PRE_DEDUCTIBLE_PHASE_RE.search(out))
     mentions_post = bool(_POST_DEDUCTIBLE_PHASE_RE.search(out))
     if not mentions_pre and not mentions_post:
         return None
 
-    data = _estimate_data(tool_artifacts)
-    if not data:
+    phases: set[str] = set()
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if calls:
+        for artifact in calls:
+            if not isinstance(artifact, dict):
+                continue
+            data = artifact.get("data")
+            if isinstance(data, dict):
+                phase = data.get("effective_phase") or data.get("benefit_phase")
+                if phase:
+                    phases.add(phase)
+    else:
+        data = _estimate_data(tool_artifacts)
+        if data:
+            phase = data.get("effective_phase") or data.get("benefit_phase")
+            if phase:
+                phases.add(phase)
+
+    if not phases:
         return "Stated a benefit phase without a matching estimate tool call this turn."
 
-    actual_phase = data.get("effective_phase") or data.get("benefit_phase")
-    if not actual_phase:
-        return None
-
-    if mentions_pre and actual_phase != "pre_deductible":
+    if mentions_pre and "pre_deductible" not in phases:
         return (
-            f"Explanation says 'pre-deductible' but the tool result's phase is "
-            f"'{actual_phase}' — restate using the actual phase."
+            "Explanation says 'pre-deductible' but no tool result this turn returned that "
+            f"phase (got: {', '.join(sorted(phases))}) — restate using the actual phase."
         )
-    if mentions_post and actual_phase != "initial_coverage":
+    if mentions_post and "initial_coverage" not in phases:
         return (
-            f"Explanation implies deductible already met but the tool result's phase is "
-            f"'{actual_phase}' — restate using the actual phase."
+            "Explanation implies deductible already met but no tool result this turn returned "
+            f"'initial_coverage' phase (got: {', '.join(sorted(phases))}) — restate using the "
+            "actual phase."
         )
     return None
 
@@ -331,6 +455,32 @@ def channel_estimate_from_artifact(
     if not isinstance(data, dict) or "channels" not in data:
         return None
     return MultiChannelDrugCostEstimate.model_validate(data)
+
+
+def channel_estimates_from_artifact(
+    tool_artifacts: dict[str, dict[str, Any]],
+) -> list[MultiChannelDrugCostEstimate]:
+    """All distinct multi-channel estimates from estimate_drug_cost_all_channels calls made
+    this turn (multi-drug basket / plan comparison), de-duplicated by
+    (plan_key, drug_name, dosage, days_supply). Falls back to the single primary call when the
+    agent made only one estimate call this turn."""
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if not calls:
+        single = channel_estimate_from_artifact(tool_artifacts)
+        return [single] if single is not None else []
+
+    seen: set[tuple[Any, ...]] = set()
+    estimates: list[MultiChannelDrugCostEstimate] = []
+    for artifact in calls:
+        data = artifact.get("data") if isinstance(artifact, dict) else None
+        if not isinstance(data, dict) or "channels" not in data:
+            continue
+        key = _estimate_dedup_key(data)
+        if key in seen:
+            continue
+        seen.add(key)
+        estimates.append(MultiChannelDrugCostEstimate.model_validate(data))
+    return estimates
 
 
 def estimate_from_artifact(

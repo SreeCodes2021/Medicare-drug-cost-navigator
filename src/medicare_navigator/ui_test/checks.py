@@ -79,6 +79,7 @@ CHAT_RESPONSE_UI_FIELDS = [
     "drug_name",
     "rxcui",
     "channel_estimate",
+    "channel_estimates",
 ]
 
 SMOKE_MESSAGES = [

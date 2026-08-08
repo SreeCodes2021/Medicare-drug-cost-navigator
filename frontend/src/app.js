@@ -2,8 +2,9 @@ const API = window.location.origin;
 let sessionId = null;
 let turnCount = 0;
 let resultsBaseline = null;
+let resultsBatch = null;
+let resultsComparison = null;
 let allPlans = [];
-let planListHighlight = -1;
 let sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
 const DEFAULT_MODEL = "gpt-5.4-nano";
@@ -51,6 +52,7 @@ const FIELD_TIPS = {
   annual_oop_cap: "Most you pay out of pocket for Part D drugs in the year.",
   remaining_oop: "Out-of-pocket dollars left before catastrophic coverage.",
   projected_annual_oop: "Rough yearly out-of-pocket if you keep this fill schedule.",
+  projected_remaining_year_oop: "Estimated out-of-pocket from today through year-end at this fill schedule.",
   channel: "Pharmacy type (retail or mail-order, preferred or standard).",
   plan_copay: "Fixed copay from plan data for this tier and channel.",
   plan_coinsurance: "Coinsurance percentage from plan data.",
@@ -306,6 +308,16 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
             : `${formatCurrency(data.annual_budget_cost_low)}–${formatCurrency(data.annual_budget_cost_high)}`
         )}</dd></div>`
       : "",
+    data.remaining_year_budget_cost_low != null
+      ? `<div><dt>${withFieldInfo(
+          `Rest-of-year OOP (${data.remaining_year_fills ?? "?"} fills, ${data.remaining_year_days ?? "?"} days left)`,
+          "projected_remaining_year_oop"
+        )}</dt><dd>${escapeHtml(
+          data.remaining_year_budget_cost_low === data.remaining_year_budget_cost_high
+            ? formatCurrency(data.remaining_year_budget_cost_low)
+            : `${formatCurrency(data.remaining_year_budget_cost_low)}–${formatCurrency(data.remaining_year_budget_cost_high)}`
+        )}</dd></div>`
+      : "",
   ]
     .filter(Boolean)
     .join("");
@@ -517,129 +529,167 @@ function sortPlans(plans) {
   });
 }
 
-function clearPlanSelection() {
-  el("filter-plan").value = "";
-  el("filter-plan-input").value = "";
-}
-
-function selectPlan(plan) {
-  el("filter-plan").value = plan.plan_key;
-  el("filter-plan-input").value = formatPlanLabel(plan);
-  closePlanListbox();
-}
-
-function openPlanListbox() {
-  el("filter-plan-listbox").classList.remove("hidden");
-  el("filter-plan-input").setAttribute("aria-expanded", "true");
-}
-
-function closePlanListbox() {
-  el("filter-plan-listbox").classList.add("hidden");
-  el("filter-plan-input").setAttribute("aria-expanded", "false");
-  el("filter-plan-input").removeAttribute("aria-activedescendant");
-  planListHighlight = -1;
-}
-
 function filterPlans(query) {
   const q = query.trim().toLowerCase();
   if (!q) return allPlans;
   return allPlans.filter((p) => planSearchText(p).includes(q));
 }
 
-function highlightPlanOption(options) {
-  options.forEach((opt, i) => {
-    opt.classList.toggle("plan-option--active", i === planListHighlight);
-    if (i === planListHighlight) {
-      opt.scrollIntoView({ block: "nearest" });
-      el("filter-plan-input").setAttribute("aria-activedescendant", opt.id);
+// Reusable plan combobox: the guided form needs one instance for the single-drug plan
+// field, one for the multi-drug basket's single plan field, and up to 4 dynamic instances
+// for compare-plans rows — all instances share this implementation and register themselves
+// so populatePlanSelect() can refresh every instance's displayed label when plans (re)load.
+let planComboboxInstances = [];
+
+function createPlanCombobox({ inputId, hiddenId, listboxId }) {
+  let highlight = -1;
+  const inputEl = () => el(inputId);
+  const hiddenEl = () => el(hiddenId);
+  const listboxEl = () => el(listboxId);
+
+  function clear() {
+    hiddenEl().value = "";
+    inputEl().value = "";
+  }
+
+  function close() {
+    listboxEl().classList.add("hidden");
+    inputEl().setAttribute("aria-expanded", "false");
+    inputEl().removeAttribute("aria-activedescendant");
+    highlight = -1;
+  }
+
+  function open() {
+    listboxEl().classList.remove("hidden");
+    inputEl().setAttribute("aria-expanded", "true");
+  }
+
+  function selectPlan(plan) {
+    hiddenEl().value = plan.plan_key;
+    inputEl().value = formatPlanLabel(plan);
+    close();
+  }
+
+  function render(plans) {
+    const listbox = listboxEl();
+    listbox.innerHTML = "";
+    plans.forEach((p, i) => {
+      const li = document.createElement("li");
+      li.className = "plan-option";
+      li.role = "option";
+      li.id = `${listboxId}-option-${i}`;
+      li.dataset.planKey = p.plan_key;
+      li.textContent = formatPlanLabel(p);
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectPlan(p);
+      });
+      listbox.appendChild(li);
+    });
+  }
+
+  function highlightOption(options) {
+    options.forEach((opt, i) => {
+      opt.classList.toggle("plan-option--active", i === highlight);
+      if (i === highlight) {
+        opt.scrollIntoView({ block: "nearest" });
+        inputEl().setAttribute("aria-activedescendant", opt.id);
+      }
+    });
+  }
+
+  function refreshLabel() {
+    const selected = hiddenEl().value;
+    if (!selected) return;
+    const plan = allPlans.find((p) => p.plan_key === selected);
+    if (plan) {
+      inputEl().value = formatPlanLabel(plan);
+    } else {
+      clear();
     }
-  });
+  }
+
+  function init() {
+    inputEl().addEventListener("focus", () => {
+      render(filterPlans(inputEl().value));
+      open();
+    });
+    inputEl().addEventListener("input", () => {
+      hiddenEl().value = "";
+      render(filterPlans(inputEl().value));
+      highlight = -1;
+      open();
+    });
+    inputEl().addEventListener("blur", () => {
+      setTimeout(() => {
+        close();
+        refreshLabel();
+      }, 150);
+    });
+    inputEl().addEventListener("keydown", (e) => {
+      const options = [...listboxEl().querySelectorAll(".plan-option")];
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (listboxEl().classList.contains("hidden")) {
+          render(filterPlans(inputEl().value));
+          open();
+        }
+        highlight = Math.min(highlight + 1, options.length - 1);
+        highlightOption(options);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        highlight = Math.max(highlight - 1, 0);
+        highlightOption(options);
+      } else if (e.key === "Enter" && highlight >= 0) {
+        e.preventDefault();
+        const opt = options[highlight];
+        if (opt) {
+          const plan = allPlans.find((p) => p.plan_key === opt.dataset.planKey);
+          if (plan) selectPlan(plan);
+        }
+      } else if (e.key === "Escape") {
+        close();
+      }
+    });
+  }
+
+  const instance = { init, render, refreshLabel, clear, selectPlan, getValue: () => hiddenEl().value };
+  planComboboxInstances.push(instance);
+  return instance;
 }
 
-function renderPlanListbox(plans) {
-  const listbox = el("filter-plan-listbox");
-  listbox.innerHTML = "";
-  plans.forEach((p, i) => {
-    const li = document.createElement("li");
-    li.className = "plan-option";
-    li.role = "option";
-    li.id = `plan-option-${i}`;
-    li.dataset.planKey = p.plan_key;
-    li.textContent = formatPlanLabel(p);
-    li.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      selectPlan(p);
-    });
-    listbox.appendChild(li);
-  });
+function unregisterPlanCombobox(instance) {
+  planComboboxInstances = planComboboxInstances.filter((inst) => inst !== instance);
+}
+
+const primaryPlanCombobox = createPlanCombobox({
+  inputId: "filter-plan-input",
+  hiddenId: "filter-plan",
+  listboxId: "filter-plan-listbox",
+});
+
+const mdPlanCombobox = createPlanCombobox({
+  inputId: "md-plan-input",
+  hiddenId: "md-plan",
+  listboxId: "md-plan-listbox",
+});
+
+function clearPlanSelection() {
+  primaryPlanCombobox.clear();
+}
+
+function selectPlan(plan) {
+  primaryPlanCombobox.selectPlan(plan);
 }
 
 function populatePlanSelect(plans) {
-  const selected = el("filter-plan").value;
   allPlans = sortPlans(plans);
-  renderPlanListbox(allPlans);
-  if (selected) {
-    const plan = allPlans.find((p) => p.plan_key === selected);
-    if (plan) {
-      el("filter-plan-input").value = formatPlanLabel(plan);
-    } else {
-      clearPlanSelection();
-    }
-  }
+  planComboboxInstances.forEach((inst) => inst.refreshLabel());
 }
 
 function initPlanCombobox() {
-  const input = el("filter-plan-input");
-  const listbox = el("filter-plan-listbox");
-
-  input.addEventListener("focus", () => {
-    renderPlanListbox(filterPlans(input.value));
-    openPlanListbox();
-  });
-
-  input.addEventListener("input", () => {
-    el("filter-plan").value = "";
-    renderPlanListbox(filterPlans(input.value));
-    planListHighlight = -1;
-    openPlanListbox();
-  });
-
-  input.addEventListener("blur", () => {
-    setTimeout(() => {
-      closePlanListbox();
-      const selected = el("filter-plan").value;
-      if (selected) {
-        const plan = allPlans.find((p) => p.plan_key === selected);
-        if (plan) input.value = formatPlanLabel(plan);
-      }
-    }, 150);
-  });
-
-  input.addEventListener("keydown", (e) => {
-    const options = [...listbox.querySelectorAll(".plan-option")];
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      if (listbox.classList.contains("hidden")) {
-        renderPlanListbox(filterPlans(input.value));
-        openPlanListbox();
-      }
-      planListHighlight = Math.min(planListHighlight + 1, options.length - 1);
-      highlightPlanOption(options);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      planListHighlight = Math.max(planListHighlight - 1, 0);
-      highlightPlanOption(options);
-    } else if (e.key === "Enter" && planListHighlight >= 0) {
-      e.preventDefault();
-      const opt = options[planListHighlight];
-      if (opt) {
-        const plan = allPlans.find((p) => p.plan_key === opt.dataset.planKey);
-        if (plan) selectPlan(plan);
-      }
-    } else if (e.key === "Escape") {
-      closePlanListbox();
-    }
-  });
+  primaryPlanCombobox.init();
+  mdPlanCombobox.init();
 }
 
 async function loadPlans() {
@@ -672,6 +722,312 @@ async function pollPlansUntilLoaded() {
     }
   }
   updatePlanLoadHint(0, "No plans yet — click Refresh after ingest finishes");
+}
+
+// ── Guided form: multi-drug basket rows (plain drug/dosage text pairs, cap 5) ──
+
+const MAX_BATCH_DRUGS = 5;
+const MAX_COMPARE_PLANS = 4;
+
+let drugRowCount = 0;
+let drugRows = [];
+
+function createDrugRowElement() {
+  drugRowCount += 1;
+  const idx = drugRowCount;
+  const row = document.createElement("div");
+  row.className = "repeatable-row";
+  row.dataset.rowId = String(idx);
+  row.innerHTML = `
+    <input type="text" id="md-drug-${idx}" placeholder="Drug, e.g. metformin" />
+    <input type="text" id="md-dosage-${idx}" placeholder="Dosage, e.g. 500mg" />
+    <button type="button" class="repeatable-row-remove" aria-label="Remove drug" title="Remove drug">&times;</button>
+  `;
+  el("multidrug-rows").appendChild(row);
+  row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(row));
+  return row;
+}
+
+function updateDrugRowControls() {
+  el("multidrug-add-row").disabled = drugRows.length >= MAX_BATCH_DRUGS;
+  drugRows.forEach((row) => {
+    row.querySelector(".repeatable-row-remove").disabled = drugRows.length <= 1;
+  });
+}
+
+function addDrugRow() {
+  if (drugRows.length >= MAX_BATCH_DRUGS) return;
+  drugRows.push(createDrugRowElement());
+  updateDrugRowControls();
+}
+
+function removeDrugRow(row) {
+  if (drugRows.length <= 1) return;
+  drugRows = drugRows.filter((r) => r !== row);
+  row.remove();
+  updateDrugRowControls();
+}
+
+function resetDrugRows() {
+  el("multidrug-rows").innerHTML = "";
+  drugRows = [];
+  addDrugRow();
+}
+
+function getDrugRowValues() {
+  return drugRows
+    .map((row) => {
+      const idx = row.dataset.rowId;
+      const drug = el(`md-drug-${idx}`).value.trim();
+      const dosage = el(`md-dosage-${idx}`).value.trim();
+      return drug ? { drug, dosage: dosage || undefined } : null;
+    })
+    .filter(Boolean);
+}
+
+// ── Guided form: compare-plans rows (repeatable plan combobox, cap 4) ──
+
+let comparePlanRowCount = 0;
+let comparePlanRows = [];
+
+function createComparePlanRowEntry() {
+  comparePlanRowCount += 1;
+  const idx = comparePlanRowCount;
+  const row = document.createElement("div");
+  row.className = "repeatable-row";
+  row.dataset.rowId = String(idx);
+  row.innerHTML = `
+    <div class="plan-combobox">
+      <input
+        type="text"
+        id="cp-plan-input-${idx}"
+        class="plan-combobox-input"
+        placeholder="Type or scroll to select a plan"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="cp-plan-listbox-${idx}"
+        aria-autocomplete="list"
+      />
+      <input type="hidden" id="cp-plan-${idx}" value="" />
+      <ul id="cp-plan-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+    </div>
+    <button type="button" class="repeatable-row-remove" aria-label="Remove plan" title="Remove plan">&times;</button>
+  `;
+  el("compareplans-rows").appendChild(row);
+  const combobox = createPlanCombobox({
+    inputId: `cp-plan-input-${idx}`,
+    hiddenId: `cp-plan-${idx}`,
+    listboxId: `cp-plan-listbox-${idx}`,
+  });
+  combobox.init();
+  row.querySelector(".repeatable-row-remove").addEventListener("click", () => {
+    removeComparePlanRow(entry);
+  });
+  const entry = { row, combobox };
+  return entry;
+}
+
+function updateComparePlanRowControls() {
+  el("compareplans-add-row").disabled = comparePlanRows.length >= MAX_COMPARE_PLANS;
+  comparePlanRows.forEach(({ row }) => {
+    row.querySelector(".repeatable-row-remove").disabled = comparePlanRows.length <= 2;
+  });
+}
+
+function addComparePlanRow() {
+  if (comparePlanRows.length >= MAX_COMPARE_PLANS) return;
+  comparePlanRows.push(createComparePlanRowEntry());
+  updateComparePlanRowControls();
+}
+
+function removeComparePlanRow(entry) {
+  if (comparePlanRows.length <= 2) return;
+  comparePlanRows = comparePlanRows.filter((r) => r !== entry);
+  unregisterPlanCombobox(entry.combobox);
+  entry.row.remove();
+  updateComparePlanRowControls();
+}
+
+function resetComparePlanRows() {
+  el("compareplans-rows").innerHTML = "";
+  comparePlanRows.forEach(({ combobox }) => unregisterPlanCombobox(combobox));
+  comparePlanRows = [];
+  addComparePlanRow();
+  addComparePlanRow();
+}
+
+function getComparePlanValues() {
+  return comparePlanRows.map(({ combobox }) => combobox.getValue()).filter(Boolean);
+}
+
+// ── Guided form: sub-mode tabs (Single / Multiple drugs / Compare plans) ──
+
+function switchGuidedSubmode(mode) {
+  ["single", "multidrug", "compareplans"].forEach((m) => {
+    const isActive = m === mode;
+    el(`guided-${m}`).classList.toggle("hidden", !isActive);
+    el(`guided-mode-${m}`).classList.toggle("active", isActive);
+    el(`guided-mode-${m}`).setAttribute("aria-selected", String(isActive));
+  });
+  showGuidedError("");
+}
+
+// ── Render + submit: multi-drug basket and plan comparison ──
+
+function renderBatchEstimateHtml(items, combinedTotal, caveat) {
+  const totalText =
+    combinedTotal.low != null
+      ? formatCostRange(combinedTotal.low, combinedTotal.high) || formatCurrency(combinedTotal.low)
+      : "Not available";
+  const bannerParts = [`<span class="batch-total">Combined estimate: ${escapeHtml(totalText)}</span>`];
+  if (caveat) bannerParts.push(`<span>${escapeHtml(caveat)}</span>`);
+  const banner = `<div class="batch-summary-banner">${bannerParts.join("")}</div>`;
+
+  const cards = items
+    .map((item) => {
+      const heading = `<div class="batch-item-heading">${escapeHtml(item.drug)}</div>`;
+      if (item.data) {
+        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true });
+      }
+      return heading + `<p class="card-placeholder">${escapeHtml(item.message || "No estimate available.")}</p>`;
+    })
+    .join("");
+
+  return banner + cards;
+}
+
+function renderPlanComparisonHtml(items, disclaimer) {
+  const banner = `<div class="comparison-disclaimer-banner">${escapeHtml(disclaimer)}</div>`;
+  const cards = items
+    .map((item) => {
+      const label = item.data?.plan_name ? `${item.data.plan_name} (${item.plan_id})` : item.plan_id;
+      const heading = `<div class="comparison-item-heading">${escapeHtml(label)}</div>`;
+      if (item.data) {
+        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true });
+      }
+      return heading + `<p class="card-placeholder">${escapeHtml(item.message || "No estimate available.")}</p>`;
+    })
+    .join("");
+  return banner + cards;
+}
+
+function renderBatchEstimateResults(body) {
+  resultsBatch = body;
+  el("data-as-of").classList.add("hidden");
+  el("results-content").innerHTML = renderBatchEstimateHtml(
+    body.items,
+    { low: body.combined_total_low, high: body.combined_total_high },
+    body.caveat
+  );
+}
+
+function renderPlanComparisonResults(body) {
+  resultsComparison = body;
+  el("data-as-of").classList.add("hidden");
+  el("results-content").innerHTML = renderPlanComparisonHtml(body.items, body.disclaimer);
+}
+
+async function submitMultiDrugEstimate() {
+  showGuidedError("");
+  const planId = el("md-plan").value;
+  const items = getDrugRowValues();
+  if (!planId) {
+    showGuidedError("Please select a plan.");
+    return;
+  }
+  if (!items.length) {
+    showGuidedError("Please enter at least one drug.");
+    return;
+  }
+  const daysSupply = parseInt(el("md-days-supply").value, 10) || 30;
+  const ytdRaw = el("md-ytd").value;
+  const ytdNum = parseFloat(ytdRaw);
+  const payload = {
+    plan_id: planId,
+    items,
+    days_supply: daysSupply,
+    ytd_oop_spend: ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0,
+  };
+
+  el("multidrug-submit").disabled = true;
+  showLoading("Computing combined cost…");
+  if (!resultsBaseline) renderResultsSkeleton();
+  try {
+    const res = await fetch(`${API}/api/estimate-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      showGuidedError(chatErrorMessage(res, body));
+      return;
+    }
+    renderBatchEstimateResults(body);
+  } catch (err) {
+    showGuidedError("Could not load combined estimate. Please try again.");
+    console.error(err);
+  } finally {
+    hideLoading();
+    el("multidrug-submit").disabled = false;
+  }
+}
+
+async function submitComparePlans() {
+  showGuidedError("");
+  const drug = el("cp-drug").value.trim();
+  const dosage = el("cp-dosage").value.trim();
+  const planIds = getComparePlanValues();
+  if (!drug) {
+    showGuidedError("Please enter a drug name.");
+    return;
+  }
+  if (planIds.length < 2) {
+    showGuidedError("Please select at least 2 plans to compare.");
+    return;
+  }
+  const daysSupply = parseInt(el("cp-days-supply").value, 10) || 30;
+  const ytdRaw = el("cp-ytd").value;
+  const ytdNum = parseFloat(ytdRaw);
+  const payload = {
+    drug,
+    plan_ids: planIds,
+    days_supply: daysSupply,
+    ytd_oop_spend: ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0,
+  };
+  if (dosage) payload.dosage = dosage;
+
+  el("compareplans-submit").disabled = true;
+  showLoading("Comparing plans…");
+  if (!resultsBaseline) renderResultsSkeleton();
+  try {
+    const res = await fetch(`${API}/api/compare-plans`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      showGuidedError(chatErrorMessage(res, body));
+      return;
+    }
+    renderPlanComparisonResults(body);
+  } catch (err) {
+    showGuidedError("Could not load plan comparison. Please try again.");
+    console.error(err);
+  } finally {
+    hideLoading();
+    el("compareplans-submit").disabled = false;
+  }
+}
+
+function getUserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago";
+  } catch {
+    return "America/Chicago";
+  }
 }
 
 function getFilters() {
@@ -864,7 +1220,40 @@ function chatEstimateBody(resp) {
   return view?.body ?? null;
 }
 
+function renderMultiEstimatesStackHtml(estimates) {
+  return estimates
+    .map((data) => {
+      const heading = `<div class="batch-item-heading">${escapeHtml(data.drug_name || "Drug")}</div>`;
+      return heading + renderMultiChannelEstimateCardHtml(data, { compact: true });
+    })
+    .join("");
+}
+
+function renderMultiEstimatePanel(estimates, { citations, toolStatuses, dataAsOf } = {}) {
+  const asOf = dataAsOf || {};
+  const dates = Object.values(asOf).filter(Boolean);
+  const badge = el("data-as-of");
+  if (dates.length) {
+    badge.textContent = `Data as of ${dates[0]}`;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+  const container = el("results-content");
+  container.innerHTML = renderMultiEstimatesStackHtml(estimates) + renderCitationsCard(citations);
+  if (toolStatuses && Object.keys(toolStatuses).length) {
+    const statuses = Object.entries(toolStatuses)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(" · ");
+    container.innerHTML += `<p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Tools: ${statuses}</p>`;
+  }
+}
+
 function renderPanelFromChatResponse(resp, { citations, toolStatuses, dataAsOf } = {}) {
+  if (resp.channel_estimates?.length > 1) {
+    renderMultiEstimatePanel(resp.channel_estimates, { citations, toolStatuses, dataAsOf });
+    return true;
+  }
   const body = chatEstimateBody(resp);
   if (body?.data) {
     renderDeterministicEstimate(body, { citations, toolStatuses, dataAsOf });
@@ -1031,6 +1420,7 @@ function establishBaseline(resp) {
     drug_name: resp.drug_name || null,
     estimate: resp.estimate || null,
     channel_estimate: resp.channel_estimate || null,
+    channel_estimates: resp.channel_estimates?.length ? resp.channel_estimates : null,
     citations: resp.citations?.length ? resp.citations : null,
     data_as_of: resp.data_as_of || {},
     tool_statuses: resp.tool_statuses || {},
@@ -1044,6 +1434,7 @@ function mergeResults(baseline, resp) {
   if (key) merged.drugKey = key;
   if (resp.estimate) merged.estimate = resp.estimate;
   if (resp.channel_estimate) merged.channel_estimate = resp.channel_estimate;
+  if (resp.channel_estimates?.length) merged.channel_estimates = resp.channel_estimates;
   if (resp.citations?.length) merged.citations = resp.citations;
   if (resp.data_as_of) Object.assign(merged.data_as_of, resp.data_as_of);
   if (resp.tool_statuses) Object.assign(merged.tool_statuses, resp.tool_statuses);
@@ -1101,6 +1492,7 @@ function renderSourcesPanel({ estimate, citations, dataAsOf, toolStatuses } = {}
 function renderBaseline(baseline) {
   const syntheticResp = {
     channel_estimate: baseline.channel_estimate,
+    channel_estimates: baseline.channel_estimates || [],
     estimate: baseline.estimate,
     tool_statuses: baseline.tool_statuses,
     data_as_of: baseline.data_as_of,
@@ -1223,6 +1615,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       session_id: sessionId,
       filters: getFilters(),
       model: getSelectedModel(),
+      timezone: getUserTimezone(),
     };
 
     const res = await fetch(`${API}/api/chat`, {
@@ -1362,6 +1755,14 @@ el("mode-tab-chat").addEventListener("click", () => switchMode("chat"));
 el("mode-tab-guided").addEventListener("click", () => switchMode("guided"));
 el("guided-submit").addEventListener("click", submitGuidedEstimate);
 
+el("guided-mode-single").addEventListener("click", () => switchGuidedSubmode("single"));
+el("guided-mode-multidrug").addEventListener("click", () => switchGuidedSubmode("multidrug"));
+el("guided-mode-compareplans").addEventListener("click", () => switchGuidedSubmode("compareplans"));
+el("multidrug-add-row").addEventListener("click", addDrugRow);
+el("multidrug-submit").addEventListener("click", submitMultiDrugEstimate);
+el("compareplans-add-row").addEventListener("click", addComparePlanRow);
+el("compareplans-submit").addEventListener("click", submitComparePlans);
+
 document.addEventListener("click", (event) => {
   const ref = event.target.closest(".citation-ref");
   if (!ref) return;
@@ -1406,7 +1807,10 @@ loadDisclaimer();
 initDisclaimerCollapse();
 initFieldInfoTooltips();
 initPlanCombobox();
+resetDrugRows();
+resetComparePlanRows();
 populateModelSelect();
 updateSessionUsageDisplay();
 pollPlansUntilLoaded();
 switchMode("chat");
+switchGuidedSubmode("single");

@@ -37,7 +37,11 @@ from medicare_navigator.tools.disclaimers import (
 )
 from medicare_navigator.tools.insulin import is_insulin
 from medicare_navigator.tools.normalize_drug import compute_benefit_phase, normalize_drug
-from medicare_navigator.tools.part_d_benefit_params import cap_fill_copay, project_annual_budget
+from medicare_navigator.tools.part_d_benefit_params import (
+    cap_fill_copay,
+    project_annual_budget,
+    project_remaining_year_budget,
+)
 from medicare_navigator.tools.pharmacy_channels import PHARMACY_CHANNELS
 
 SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
@@ -455,6 +459,9 @@ def _apply_annual_budget_fields(
     ytd_oop_spend: float,
     days_supply: int,
 ) -> None:
+    from medicare_navigator.agent.datetime_context import days_remaining_in_contract_year
+    from medicare_navigator.agent.request_context import get_request_timezone
+
     contract_year = int(plan.get("contract_year") or 2026)
     cost_low, cost_high = _channel_cost_bounds(estimate.channels)
     cap, headroom, budget_low, budget_high = project_annual_budget(
@@ -468,6 +475,27 @@ def _apply_annual_budget_fields(
     estimate.remaining_oop_headroom = headroom
     estimate.annual_budget_cost_low = budget_low
     estimate.annual_budget_cost_high = budget_high
+
+    days_remaining = days_remaining_in_contract_year(contract_year, get_request_timezone())
+    (
+        _cap,
+        _headroom,
+        remaining_low,
+        remaining_high,
+        remaining_days,
+        remaining_fills,
+    ) = project_remaining_year_budget(
+        ytd_oop_spend=ytd_oop_spend,
+        days_supply=days_supply,
+        cost_low=cost_low,
+        cost_high=cost_high,
+        contract_year=contract_year,
+        days_remaining=days_remaining,
+    )
+    estimate.remaining_year_days = remaining_days
+    estimate.remaining_year_fills = remaining_fills
+    estimate.remaining_year_budget_cost_low = remaining_low
+    estimate.remaining_year_budget_cost_high = remaining_high
 
 
 def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEstimate:

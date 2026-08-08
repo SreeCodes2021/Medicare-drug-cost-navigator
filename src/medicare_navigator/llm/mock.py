@@ -84,6 +84,18 @@ _QUESTION_WORDS = frozenset(
         "maximum",
         "max",
         "oop",
+        "compare",
+        "between",
+        "would",
+        "will",
+        "much",
+        "on",
+        "plan",
+        "medication",
+        "medications",
+        "today",
+        "start",
+        "taking",
     }
 )
 
@@ -256,6 +268,110 @@ def _tool_call(name: str, arguments: dict[str, Any]) -> ToolCallSpec:
     return ToolCallSpec(id=f"mock_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
 
 
+def _plan_keys_from_message(message: str) -> list[str]:
+    matches = re.findall(r"\b([A-Za-z]\d{4}-\d{3})\b", message, re.I)
+    seen: list[str] = []
+    for m in matches:
+        upper = m.upper()
+        if upper not in seen:
+            seen.append(upper)
+    return seen
+
+
+_MULTI_DRUG_SEGMENT_RE = re.compile(
+    r"(?:cost(?:s)?\s+for|estimate(?:s)?\s+for)\s+(.+?)\s+(?:on\s+plan|for\s+plan)",
+    re.I,
+)
+
+
+def _drug_fragments_from_message(message: str) -> list[str] | None:
+    """Detect a 'DRUG1[, DRUG2...] and DRUGN' list in a 'cost for ... on plan' clause, for
+    mock multi-drug-basket support. Returns None unless 2+ items are present."""
+    match = _MULTI_DRUG_SEGMENT_RE.search(message)
+    if not match:
+        return None
+    segment = match.group(1)
+    parts = [p.strip() for p in re.split(r"\s*,\s*|\s+and\s+", segment) if p.strip()]
+    return parts if len(parts) >= 2 else None
+
+
+def _parse_drug_fragment(fragment: str) -> tuple[str | None, str | None]:
+    dose_match = re.search(r"(\d+)\s*mg", fragment, re.I)
+    dosage = f"{dose_match.group(1)}mg" if dose_match else None
+    name_part = re.sub(r"\d+\s*mg", "", fragment, flags=re.I).strip()
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", name_part)
+    drug = tokens[0].lower() if tokens else None
+    return drug, dosage
+
+
+def _is_plan_comparison_question(message: str) -> bool:
+    return bool(re.search(r"\bcompar", message, re.I)) and len(_plan_keys_from_message(message)) >= 2
+
+
+def _prior_tool_call_args(messages: list[dict[str, Any]], tool_name: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == tool_name:
+                    calls.append(block.get("input") or {})
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            if fn.get("name") == tool_name:
+                try:
+                    calls.append(json.loads(fn.get("arguments") or "{}"))
+                except json.JSONDecodeError:
+                    calls.append({})
+    return calls
+
+
+def _prior_tool_results(messages: list[dict[str, Any]], tool_name: str) -> list[dict[str, Any]]:
+    id_to_name = _tool_use_ids(messages)
+    results: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "tool":
+            if id_to_name.get(msg.get("tool_call_id", "")) != tool_name:
+                continue
+            payload = msg.get("content")
+            if isinstance(payload, str):
+                try:
+                    results.append(json.loads(payload))
+                except json.JSONDecodeError:
+                    pass
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            if id_to_name.get(block.get("tool_use_id", "")) != tool_name:
+                continue
+            payload = block.get("content")
+            if isinstance(payload, str):
+                try:
+                    results.append(json.loads(payload))
+                except json.JSONDecodeError:
+                    pass
+    return results
+
+
+def _build_multi_drug_explanation(results: list[dict[str, Any]]) -> str:
+    return "\n\n".join(_build_final_explanation(estimate) for estimate in results)
+
+
+def _build_plan_comparison_explanation(results: list[dict[str, Any]]) -> str:
+    parts = [_build_final_explanation(estimate) for estimate in results]
+    parts.append(
+        "Plan premiums are not included in this comparison — only this fill's pharmacy "
+        "cost-share. This is not a recommendation to switch plans."
+    )
+    return "\n\n".join(parts)
+
+
 def _build_final_explanation(estimate: dict[str, Any] | None) -> str:
     if not estimate:
         return "I retrieved data for your query but could not build a supported summary."
@@ -367,6 +483,56 @@ async def mock_chat_with_tools(
             lookup = _tool_result(messages, "lookup_plan") if "lookup_plan" in done else None
             content = _build_plan_benefit_scope_refusal(lookup, parsed.plan_key)
             return ChatWithToolsResult(content=content, usage=_mock_usage(content))
+
+    plan_keys = _plan_keys_from_message(message)
+    drug_fragments = _drug_fragments_from_message(message)
+
+    if drug_fragments and len(plan_keys) == 1:
+        plan_key = plan_keys[0]
+        fragments = [_parse_drug_fragment(f) for f in drug_fragments]
+        fragments = [(d, dos) for d, dos in fragments if d]
+        prior_calls = _prior_tool_call_args(messages, "estimate_drug_cost_all_channels")
+        called = {(c.get("plan_key"), (c.get("drug_name") or "").lower()) for c in prior_calls}
+        pending = [(d, dos) for d, dos in fragments if (plan_key, d) not in called]
+        if pending:
+            calls = []
+            for drug, dosage in pending:
+                args: dict[str, Any] = {
+                    "plan_key": plan_key,
+                    "drug_name": drug,
+                    "ytd_oop_spend": parsed.ytd_oop_spend or 0.0,
+                }
+                if dosage:
+                    args["dosage"] = dosage
+                if parsed.days_supply:
+                    args["days_supply"] = parsed.days_supply
+                calls.append(_tool_call("estimate_drug_cost_all_channels", args))
+            return ChatWithToolsResult(content=None, tool_calls=calls, usage=_mock_usage(None))
+        results = _prior_tool_results(messages, "estimate_drug_cost_all_channels")
+        content = _build_multi_drug_explanation(results)
+        return ChatWithToolsResult(content=content, usage=_mock_usage(content))
+
+    if _is_plan_comparison_question(message) and parsed.drug and len(plan_keys) >= 2:
+        prior_calls = _prior_tool_call_args(messages, "estimate_drug_cost_all_channels")
+        called_plans = {c.get("plan_key") for c in prior_calls}
+        pending_plans = [p for p in plan_keys if p not in called_plans]
+        if pending_plans:
+            calls = []
+            for plan_key in pending_plans:
+                args: dict[str, Any] = {
+                    "plan_key": plan_key,
+                    "drug_name": parsed.drug,
+                    "ytd_oop_spend": parsed.ytd_oop_spend or 0.0,
+                }
+                if parsed.dosage:
+                    args["dosage"] = parsed.dosage
+                if parsed.days_supply:
+                    args["days_supply"] = parsed.days_supply
+                calls.append(_tool_call("estimate_drug_cost_all_channels", args))
+            return ChatWithToolsResult(content=None, tool_calls=calls, usage=_mock_usage(None))
+        results = _prior_tool_results(messages, "estimate_drug_cost_all_channels")
+        content = _build_plan_comparison_explanation(results)
+        return ChatWithToolsResult(content=content, usage=_mock_usage(content))
 
     if not parsed.drug:
         content = (

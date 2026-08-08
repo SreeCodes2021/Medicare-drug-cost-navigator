@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # Overrides yaml `states` default. Unset = use yaml defaults (local dev).
     ingest_states: str = Field(default="", validation_alias="INGEST_STATES")
 
+    default_timezone: str = Field(default="America/Chicago", validation_alias="DEFAULT_TIMEZONE")
+
     project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property

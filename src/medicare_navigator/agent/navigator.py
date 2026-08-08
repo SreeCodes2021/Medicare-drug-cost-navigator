@@ -5,12 +5,13 @@ import time
 import uuid
 from typing import Any
 
-from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT
+from medicare_navigator.agent.prompts import build_navigator_system_prompt
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.citations import (
     apply_guardrails,
     build_citations_from_artifacts,
     channel_estimate_from_artifact,
+    channel_estimates_from_artifact,
     estimate_from_artifact,
 )
 from medicare_navigator.llm.client import llm_client
@@ -27,15 +28,66 @@ from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_c
 
 _ESTIMATE_TOOL_NAMES = ("estimate_drug_cost", "estimate_drug_cost_all_channels")
 
+# Stable key under which every estimate_drug_cost_all_channels call this turn is appended (as a
+# list), so a second call in the same turn doesn't overwrite the first the way
+# tool_artifacts["estimate_drug_cost_all_channels"] (last-call-wins) does. lookup_plan and
+# normalize_drug stay single-shot and keep the plain dict-keyed behavior.
+_MULTI_CHANNEL_CALLS_KEY = "estimate_drug_cost_all_channels__calls"
+
+
+def _record_tool_artifact(
+    tool_artifacts: dict[str, Any], name: str, artifact: dict[str, Any]
+) -> None:
+    tool_artifacts[name] = artifact
+    if name == "estimate_drug_cost_all_channels":
+        tool_artifacts.setdefault(_MULTI_CHANNEL_CALLS_KEY, []).append(artifact)
+
+
+def _last_tool_call_key(arguments: dict[str, Any]) -> str:
+    drug = str(arguments.get("drug_name") or "").strip().lower()
+    if drug:
+        return drug
+    plan = str(arguments.get("plan_key") or "").strip().lower()
+    if plan:
+        return f"__plan_{plan}"
+    return ""
+
+
+def _record_last_tool_call(
+    calls_by_drug: dict[str, dict[str, Any]], name: str, arguments: dict[str, Any]
+) -> None:
+    """Keeps one entry per drug so a multi-drug turn doesn't lose earlier drugs to
+    last-call-wins, while a re-call for the same drug (e.g. a correction) still overwrites."""
+    key = _last_tool_call_key(arguments) or f"__unkeyed_{len(calls_by_drug)}"
+    calls_by_drug[key] = {"name": name, "arguments": arguments}
+
+
+def _merge_last_tool_calls(
+    prior: list[dict] | None, new_calls: list[dict]
+) -> list[dict]:
+    """Retain prior drugs when a follow-up turn re-estimates only a subset (e.g. one of two
+    drugs in a basket). New calls for the same drug overwrite the prior entry."""
+    merged: dict[str, dict[str, Any]] = {}
+    for call in prior or []:
+        args = call.get("arguments") or {}
+        key = _last_tool_call_key(args) or f"__prior_{len(merged)}"
+        merged[key] = call
+    for call in new_calls:
+        args = call.get("arguments") or {}
+        key = _last_tool_call_key(args) or f"__new_{len(merged)}"
+        merged[key] = call
+    return list(merged.values())
+
 
 async def ensure_channel_estimate(
     tool_artifacts: dict[str, dict[str, Any]],
-    last_tool_call: dict | None,
+    last_tool_calls: list[dict] | None,
 ) -> MultiChannelDrugCostEstimate | None:
     """Single source of truth for the UI: same multi-channel payload the agent estimated."""
     channel = channel_estimate_from_artifact(tool_artifacts)
     if channel is not None:
         return channel
+    last_tool_call = last_tool_calls[-1] if last_tool_calls else None
     if not last_tool_call or last_tool_call.get("name") not in _ESTIMATE_TOOL_NAMES:
         return None
     args = last_tool_call.get("arguments") or {}
@@ -93,28 +145,44 @@ def _format_history(chat_history: list[dict] | None, max_turns: int = 3) -> str:
     return "\n".join(lines)
 
 
-def _format_last_tool_call(last_tool_call: dict | None) -> str:
-    if not last_tool_call:
+def _format_last_tool_calls(last_tool_calls: list[dict] | None) -> str:
+    calls = [
+        c
+        for c in (last_tool_calls or [])
+        if c.get("name") in ("estimate_drug_cost", "estimate_drug_cost_all_channels")
+    ]
+    if not calls:
         return ""
-    name = last_tool_call.get("name")
-    if name not in ("estimate_drug_cost", "estimate_drug_cost_all_channels"):
-        return ""
-    args = last_tool_call.get("arguments") or {}
-    return (
-        "Last cost estimate call: "
-        f"{name}({json.dumps(args)}). If the user's new message states a fact that changes "
-        "the cost inputs (e.g. deductible met/not met, different days supply, different "
-        "pharmacy channel), you MUST re-call this tool with the same plan_key/drug_name/"
-        "dosage/days_supply and an updated ytd_oop_spend (or other changed argument) — do "
-        "not reuse the previous answer's dollar figures without a new tool call."
+    if len(calls) == 1:
+        name = calls[0].get("name")
+        args = calls[0].get("arguments") or {}
+        return (
+            "Last cost estimate call: "
+            f"{name}({json.dumps(args)}). If the user's new message states a fact that changes "
+            "the cost inputs (e.g. deductible met/not met, different days supply, different "
+            "pharmacy channel), you MUST re-call this tool with the same plan_key/drug_name/"
+            "dosage/days_supply and an updated ytd_oop_spend (or other changed argument) — do "
+            "not reuse the previous answer's dollar figures without a new tool call."
+        )
+    lines = ["Last cost estimate calls (multiple drugs from the prior turn — all of them, not just one):"]
+    for call in calls:
+        lines.append(f"- {call.get('name')}({json.dumps(call.get('arguments') or {})})")
+    lines.append(
+        "If the user's new message states a fact that changes the cost inputs (e.g. deductible "
+        "met/not met, different days supply, different pharmacy channel), or asks a question "
+        "about the prior calculation (e.g. days supply used, which channel), answer for EVERY "
+        "drug listed above, not just one. Re-call the relevant tool(s) with the same plan_key/"
+        "drug_name/dosage/days_supply and updated arguments where inputs changed — do not reuse "
+        "previous dollar figures without a new tool call."
     )
+    return "\n".join(lines)
 
 
 def _build_initial_messages(
     message: str,
     chat_history: list[dict] | None,
     filters: QuerySlots | None,
-    last_tool_call: dict | None = None,
+    last_tool_calls: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     blocks = []
     history = _format_history(chat_history)
@@ -123,7 +191,7 @@ def _build_initial_messages(
     filter_ctx = _format_filters_context(filters)
     if filter_ctx:
         blocks.append(filter_ctx)
-    last_call_ctx = _format_last_tool_call(last_tool_call)
+    last_call_ctx = _format_last_tool_calls(last_tool_calls)
     if last_call_ctx:
         blocks.append(last_call_ctx)
     blocks.append(f"Current user message: {message}")
@@ -235,6 +303,7 @@ class Navigator:
         filter_slots: QuerySlots | None = None,
         session_id: str | None = None,
         llm_model: str | None = None,
+        timezone: str | None = None,
     ) -> QueryResponse:
         start = time.perf_counter()
         query_id = str(uuid.uuid4())
@@ -257,11 +326,15 @@ class Navigator:
             )
 
         session_manager.increment_turn(session)
-        last_tool_call = session.get("last_tool_call")
+        last_tool_calls = session.get("last_tool_calls") or []
 
-        explanation, tool_artifacts, tools_invoked, response_source, token_usage, new_last_tool_call = (
+        from medicare_navigator.agent.request_context import set_request_timezone
+
+        set_request_timezone(timezone)
+
+        explanation, tool_artifacts, tools_invoked, response_source, token_usage, new_last_tool_calls = (
             await self._run_agent_loop(
-                message, filter_slots, chat_history, model_id, last_tool_call
+                message, filter_slots, chat_history, model_id, last_tool_calls, timezone
             )
         )
 
@@ -277,7 +350,7 @@ class Navigator:
                 _,
                 retry_artifacts,
                 retry_tools_invoked,
-                retry_last_tool_call,
+                retry_last_tool_calls,
             ) = await self._retry_after_guardrail(
                 message,
                 filter_slots,
@@ -285,25 +358,30 @@ class Navigator:
                 tool_artifacts,
                 guard_errors,
                 model_id,
+                timezone,
+                last_tool_calls,
             )
             token_usage = token_usage + retry_usage
             tool_artifacts.update(retry_artifacts)
             for name in retry_tools_invoked:
                 if name not in tools_invoked:
                     tools_invoked.append(name)
-            if retry_last_tool_call:
-                new_last_tool_call = retry_last_tool_call
+            if retry_last_tool_calls:
+                new_last_tool_calls = retry_last_tool_calls
             if retry_explanation:
                 explanation = retry_explanation
                 citations = retry_citations
 
-        if new_last_tool_call:
-            session_manager.set_last_tool_call(
-                session, new_last_tool_call["name"], new_last_tool_call["arguments"]
+        if new_last_tool_calls:
+            prior_last_tool_calls = session.get("last_tool_calls") or []
+            merged_last_tool_calls = _merge_last_tool_calls(
+                prior_last_tool_calls, new_last_tool_calls
             )
+            session_manager.set_last_tool_calls(session, merged_last_tool_calls)
 
         drug_name, rxcui, estimate, data_as_of = _extract_response_fields(tool_artifacts)
-        channel_estimate = await ensure_channel_estimate(tool_artifacts, new_last_tool_call)
+        channel_estimate = await ensure_channel_estimate(tool_artifacts, new_last_tool_calls)
+        channel_estimates = channel_estimates_from_artifact(tool_artifacts)
         tool_statuses = {
             name: artifact.get("status", "unknown")
             for name, artifact in tool_artifacts.items()
@@ -345,6 +423,7 @@ class Navigator:
             rxcui=rxcui,
             estimate=estimate,
             channel_estimate=channel_estimate,
+            channel_estimates=channel_estimates,
             explanation=explanation,
             citations=citations,
             disclaimer=settings.disclaimer_text,
@@ -361,21 +440,23 @@ class Navigator:
         filter_slots: QuerySlots | None,
         chat_history: list[dict] | None,
         model_id: str,
-        last_tool_call: dict | None = None,
-    ) -> tuple[str, dict[str, dict[str, Any]], list[str], str, TokenUsage, dict | None]:
-        messages = _build_initial_messages(message, chat_history, filter_slots, last_tool_call)
+        last_tool_calls: list[dict] | None = None,
+        timezone: str | None = None,
+    ) -> tuple[str, dict[str, dict[str, Any]], list[str], str, TokenUsage, list[dict]]:
+        messages = _build_initial_messages(message, chat_history, filter_slots, last_tool_calls)
         tool_artifacts: dict[str, dict[str, Any]] = {}
         tools_invoked: list[str] = []
         spec = resolve_model(model_id)
         tools = openai_tools() if spec.provider == "openai" else anthropic_tools()
         is_openai = spec.provider == "openai"
         token_usage = TokenUsage()
-        new_last_tool_call: dict | None = None
+        new_last_tool_calls_by_drug: dict[str, dict[str, Any]] = {}
+        system_prompt = build_navigator_system_prompt(timezone)
 
         explanation = ""
         for _ in range(settings.max_tool_rounds):
             result = await llm_client.chat_with_tools(
-                NAVIGATOR_SYSTEM_PROMPT, messages, tools, model=model_id
+                system_prompt, messages, tools, model=model_id
             )
             token_usage = token_usage + result.usage
 
@@ -416,11 +497,11 @@ class Navigator:
                 batch_results: list[dict[str, Any]] = []
                 for tc in result.tool_calls:
                     artifact = await call_tool(tc.name, tc.arguments)
-                    tool_artifacts[tc.name] = artifact
+                    _record_tool_artifact(tool_artifacts, tc.name, artifact)
                     if tc.name not in tools_invoked:
                         tools_invoked.append(tc.name)
                     if tc.name in ("estimate_drug_cost", "estimate_drug_cost_all_channels"):
-                        new_last_tool_call = {"name": tc.name, "arguments": tc.arguments}
+                        _record_last_tool_call(new_last_tool_calls_by_drug, tc.name, tc.arguments)
                     batch_results.append(artifact)
 
                 if is_openai:
@@ -447,7 +528,7 @@ class Navigator:
             tools_invoked,
             llm_client.model_label(model_id),
             token_usage,
-            new_last_tool_call,
+            list(new_last_tool_calls_by_drug.values()),
         )
 
     async def _retry_after_guardrail(
@@ -458,8 +539,12 @@ class Navigator:
         tool_artifacts: dict[str, dict[str, Any]],
         errors: list[str],
         model_id: str,
-    ) -> tuple[str | None, list, TokenUsage, list[str], dict[str, dict[str, Any]], list[str], dict | None]:
-        retry_messages = _build_initial_messages(message, chat_history, filter_slots)
+        timezone: str | None = None,
+        last_tool_calls: list[dict] | None = None,
+    ) -> tuple[str | None, list, TokenUsage, list[str], dict[str, dict[str, Any]], list[str], list[dict]]:
+        retry_messages = _build_initial_messages(
+            message, chat_history, filter_slots, last_tool_calls
+        )
         retry_messages.append(
             {
                 "role": "user",
@@ -478,17 +563,31 @@ class Navigator:
         tools = openai_tools() if spec.provider == "openai" else anthropic_tools()
         is_openai = spec.provider == "openai"
         merged_artifacts = dict(tool_artifacts)
+        if _MULTI_CHANNEL_CALLS_KEY in merged_artifacts:
+            # dict(...) is shallow — copy the list so retry appends don't mutate the caller's.
+            merged_artifacts[_MULTI_CHANNEL_CALLS_KEY] = list(
+                merged_artifacts[_MULTI_CHANNEL_CALLS_KEY]
+            )
         retry_tools_invoked: list[str] = []
-        new_last_tool_call: dict | None = None
+        new_last_tool_calls_by_drug: dict[str, dict[str, Any]] = {}
         token_usage = TokenUsage()
+        system_prompt = build_navigator_system_prompt(timezone)
 
         for _ in range(settings.max_tool_rounds):
             try:
                 result = await llm_client.chat_with_tools(
-                    NAVIGATOR_SYSTEM_PROMPT, retry_messages, tools, model=model_id
+                    system_prompt, retry_messages, tools, model=model_id
                 )
             except Exception:
-                return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_call
+                return (
+                    None,
+                    [],
+                    token_usage,
+                    errors,
+                    merged_artifacts,
+                    retry_tools_invoked,
+                    list(new_last_tool_calls_by_drug.values()),
+                )
             token_usage = token_usage + result.usage
 
             if result.tool_calls:
@@ -523,11 +622,11 @@ class Navigator:
                 batch_results: list[dict[str, Any]] = []
                 for tc in result.tool_calls:
                     artifact = await call_tool(tc.name, tc.arguments)
-                    merged_artifacts[tc.name] = artifact
+                    _record_tool_artifact(merged_artifacts, tc.name, artifact)
                     if tc.name not in retry_tools_invoked:
                         retry_tools_invoked.append(tc.name)
                     if tc.name in ("estimate_drug_cost", "estimate_drug_cost_all_channels"):
-                        new_last_tool_call = {"name": tc.name, "arguments": tc.arguments}
+                        _record_last_tool_call(new_last_tool_calls_by_drug, tc.name, tc.arguments)
                     batch_results.append(artifact)
 
                 if is_openai:
@@ -539,18 +638,27 @@ class Navigator:
                     )
                 continue
 
+            new_last_tool_calls = list(new_last_tool_calls_by_drug.values())
             if not result.content:
-                return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_call
+                return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_calls
 
             citations = build_citations_from_artifacts(merged_artifacts)
             explanation, citations, retry_errors = apply_guardrails(
                 result.content, merged_artifacts, citations
             )
             if retry_errors:
-                return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_call
-            return explanation, citations, token_usage, [], merged_artifacts, retry_tools_invoked, new_last_tool_call
+                return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_calls
+            return explanation, citations, token_usage, [], merged_artifacts, retry_tools_invoked, new_last_tool_calls
 
-        return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_call
+        return (
+            None,
+            [],
+            token_usage,
+            errors,
+            merged_artifacts,
+            retry_tools_invoked,
+            list(new_last_tool_calls_by_drug.values()),
+        )
 
 
 navigator = Navigator()

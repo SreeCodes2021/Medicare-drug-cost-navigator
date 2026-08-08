@@ -47,6 +47,11 @@ async def test_all_channels_returns_four_pharmacy_rows():
     assert data.remaining_oop_headroom == pytest.approx(2100.0)
     assert data.annual_budget_cost_low is not None
     assert data.annual_budget_cost_high is not None
+    assert data.remaining_year_days is not None
+    assert data.remaining_year_fills is not None
+    assert data.remaining_year_budget_cost_low is not None
+    assert data.remaining_year_budget_cost_high is not None
+    assert data.remaining_year_budget_cost_low < data.annual_budget_cost_low
 
 
 @pytest.mark.asyncio

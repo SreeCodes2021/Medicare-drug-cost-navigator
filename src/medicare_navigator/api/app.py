@@ -16,9 +16,23 @@ from starlette.responses import Response
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
 from medicare_navigator.models.query import QuerySlots
-from medicare_navigator.models.response import ChatResponse, EstimateApiResponse, MultiChannelDrugCostEstimate
+from medicare_navigator.models.response import (
+    BatchEstimateApiResponse,
+    BatchEstimateItem,
+    ChatResponse,
+    EstimateApiResponse,
+    MultiChannelDrugCostEstimate,
+    PlanComparisonApiResponse,
+    PlanComparisonItem,
+)
 from medicare_navigator.orchestrator.router import orchestrator
 from medicare_navigator.storage.repository import PlanRepository
+from medicare_navigator.tools.batch_estimate import (
+    MAX_BATCH_DRUGS,
+    MAX_COMPARE_PLANS,
+    BatchEstimateRequest,
+    run_batch_estimates,
+)
 
 
 @asynccontextmanager
@@ -87,6 +101,7 @@ class ChatRequest(BaseModel):
     message: str
     filters: FilterPayload | None = None
     model: str | None = None
+    timezone: str | None = None
 
 
 class EstimateRequest(BaseModel):
@@ -95,6 +110,43 @@ class EstimateRequest(BaseModel):
     dosage: str | None = None
     days_supply: int = 30
     ytd_oop_spend: float = 0.0
+
+
+class BatchEstimateDrugItem(BaseModel):
+    drug: str
+    dosage: str | None = None
+
+
+class BatchEstimateRequestPayload(BaseModel):
+    plan_id: str
+    items: list[BatchEstimateDrugItem]
+    days_supply: int = 30
+    ytd_oop_spend: float = 0.0
+
+
+class ComparePlansRequestPayload(BaseModel):
+    drug: str
+    dosage: str | None = None
+    plan_ids: list[str]
+    days_supply: int = 30
+    ytd_oop_spend: float = 0.0
+
+
+def _estimate_cost_bounds(
+    data: MultiChannelDrugCostEstimate,
+) -> tuple[float | None, float | None]:
+    lows: list[float] = []
+    highs: list[float] = []
+    for channel in data.channels.values():
+        if channel.cost_low is not None:
+            lows.append(channel.cost_low)
+        if channel.cost_high is not None:
+            highs.append(channel.cost_high)
+        elif channel.cost_low is not None:
+            highs.append(channel.cost_low)
+    if not lows:
+        return None, None
+    return min(lows), max(highs) if highs else max(lows)
 
 
 def _filters_to_slots(filters: FilterPayload | None, message: str = "") -> QuerySlots | None:
@@ -176,6 +228,112 @@ async def estimate_costs(req: EstimateRequest):
     )
 
 
+@app.post("/api/estimate-batch", response_model=BatchEstimateApiResponse)
+async def estimate_batch(req: BatchEstimateRequestPayload):
+    plan_id = req.plan_id.strip()
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required")
+    if not req.items:
+        raise HTTPException(status_code=400, detail="At least one drug is required")
+    if len(req.items) > MAX_BATCH_DRUGS:
+        raise HTTPException(
+            status_code=400, detail=f"At most {MAX_BATCH_DRUGS} drugs are supported per request"
+        )
+    for item in req.items:
+        if not item.drug.strip():
+            raise HTTPException(status_code=400, detail="Each item requires a drug name")
+
+    requests = [
+        BatchEstimateRequest(
+            plan_key=plan_id,
+            drug_name=item.drug.strip(),
+            dosage=item.dosage.strip() if item.dosage else None,
+            days_supply=req.days_supply,
+            ytd_oop_spend=req.ytd_oop_spend,
+        )
+        for item in req.items
+    ]
+    results = await run_batch_estimates(requests)
+
+    items: list[BatchEstimateItem] = []
+    combined_low = 0.0
+    combined_high = 0.0
+    any_cost = False
+    any_incomplete = False
+    for result in results:
+        items.append(
+            BatchEstimateItem(
+                drug=result.request.drug_name,
+                data=result.data,
+                status=result.status,
+                message=result.message,
+            )
+        )
+        if result.status != "ok" or result.data is None:
+            any_incomplete = True
+            continue
+        low, high = _estimate_cost_bounds(result.data)
+        if low is None:
+            any_incomplete = True
+            continue
+        combined_low += low
+        combined_high += high if high is not None else low
+        any_cost = True
+
+    caveat = None
+    if any_incomplete:
+        caveat = (
+            "One or more drugs in this basket could not be totaled (not covered, blocked, or "
+            "missing cost-share data) — the combined total below excludes them and may "
+            "under-count your actual cost."
+        )
+
+    return BatchEstimateApiResponse(
+        status="ok",
+        items=items,
+        combined_total_low=combined_low if any_cost else None,
+        combined_total_high=combined_high if any_cost else None,
+        caveat=caveat,
+    )
+
+
+@app.post("/api/compare-plans", response_model=PlanComparisonApiResponse)
+async def compare_plans(req: ComparePlansRequestPayload):
+    drug = req.drug.strip()
+    if not drug:
+        raise HTTPException(status_code=400, detail="drug is required")
+    plan_ids = [p.strip() for p in req.plan_ids if p.strip()]
+    if len(plan_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 plan_ids are required to compare")
+    if len(plan_ids) > MAX_COMPARE_PLANS:
+        raise HTTPException(
+            status_code=400, detail=f"At most {MAX_COMPARE_PLANS} plans are supported per comparison"
+        )
+
+    requests = [
+        BatchEstimateRequest(
+            plan_key=plan_id,
+            drug_name=drug,
+            dosage=req.dosage.strip() if req.dosage else None,
+            days_supply=req.days_supply,
+            ytd_oop_spend=req.ytd_oop_spend,
+        )
+        for plan_id in plan_ids
+    ]
+    results = await run_batch_estimates(requests)
+
+    items = [
+        PlanComparisonItem(
+            plan_id=result.request.plan_key,
+            data=result.data,
+            status=result.status,
+            message=result.message,
+        )
+        for result in results
+    ]
+    return PlanComparisonApiResponse(status="ok", items=items)
+
+
 @app.post("/api/query")
 async def query(req: QueryRequest):
     message = req.message or _build_message_from_fields(req)
@@ -214,6 +372,7 @@ async def chat(req: ChatRequest):
             filter_slots=filters,
             session_id=req.session_id,
             llm_model=req.model,
+            timezone=req.timezone,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
