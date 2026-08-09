@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Drug Cost Navigator" />
-  <link rel="stylesheet" href="/styles.css?v=29" />
+  <link rel="stylesheet" href="/styles.css?v=33" />
 </head>
 <body>
   <header class="topbar">
@@ -101,16 +101,58 @@
           <span id="loading-text">Estimating cost…</span>
         </div>
 
+        <details class="location-picker location-picker--compact" id="chat-location-picker">
+          <summary>Plan lookup helper (optional) — pick a state/plan instead of typing a plan ID</summary>
+          <div class="location-picker-fields">
+            <label>State
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="chat-state-input"
+                  class="plan-combobox-input"
+                  placeholder="Type or scroll to select a state"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="chat-state-listbox"
+                  aria-autocomplete="list"
+                />
+                <input type="hidden" id="chat-state" value="" />
+                <ul id="chat-state-listbox" class="plan-listbox hidden" role="listbox" aria-label="States"></ul>
+              </div>
+            </label>
+            <label>Zip code <span class="field-hint">(optional — prefills state)</span>
+              <input type="text" id="chat-zip-input" inputmode="numeric" maxlength="5" placeholder="e.g. 72201" />
+            </label>
+            <p id="chat-zip-caution" class="zip-caution hidden" role="alert"></p>
+            <label class="guided-field-full">Plan (optional)
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="chat-plan-input"
+                  class="plan-combobox-input"
+                  placeholder="Select a state above first"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="chat-plan-listbox"
+                  aria-autocomplete="list"
+                  disabled
+                />
+                <input type="hidden" id="chat-plan" value="" />
+                <ul id="chat-plan-listbox" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+              </div>
+            </label>
+          </div>
+        </details>
+
         <div class="composer">
           <form id="chat-form" class="chat-form">
             <textarea id="chat-input" rows="1" placeholder="Ask anything — e.g. lovastatin 40mg on S5921-400, 90-day supply, spent $800 YTD" required></textarea>
             <div class="input-toolbar">
               <span class="composer-hint">Ask a follow-up</span>
               <div class="input-toolbar-right">
-                <label class="model-select-label" for="model-select">
-                  Model
-                  <select id="model-select" aria-label="LLM model"></select>
-                </label>
+                <select id="model-select" class="model-select" aria-label="LLM model"></select>
                 <button type="submit" id="send-btn">Send</button>
               </div>
             </div>
@@ -130,11 +172,31 @@
 
       <div id="mode-guided" class="mode-panel guided-page hidden" role="tabpanel" aria-labelledby="mode-tab-guided" hidden>
         <div class="guided-body" id="guided-body">
-          <div class="guided-heading">
-            <h1>Guided estimate</h1>
-            <p class="guided-intro">Fill in the details to get an LLM summary, then ask up to four follow-up questions below.</p>
-          </div>
           <p id="guided-error" class="guided-error guided-field-full hidden" role="alert"></p>
+
+          <div class="location-picker guided-field-full" id="guided-location-picker">
+            <label>State <span class="field-hint">(required — filters the plan list below)</span>
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="guided-state-input"
+                  class="plan-combobox-input"
+                  placeholder="Type or scroll to select a state"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="guided-state-listbox"
+                  aria-autocomplete="list"
+                />
+                <input type="hidden" id="guided-state" value="" />
+                <ul id="guided-state-listbox" class="plan-listbox hidden" role="listbox" aria-label="States"></ul>
+              </div>
+            </label>
+            <label>Zip code <span class="field-hint">(optional — prefills state)</span>
+              <input type="text" id="guided-zip-input" inputmode="numeric" maxlength="5" placeholder="e.g. 72201" />
+            </label>
+            <p id="guided-zip-caution" class="zip-caution hidden" role="alert"></p>
+          </div>
 
           <div class="mode-tabs guided-submode-tabs" role="tablist" aria-label="Guided estimate mode">
             <button type="button" id="guided-mode-single" class="mode-tab active" role="tab" aria-selected="true">Single</button>
@@ -143,8 +205,53 @@
           </div>
 
           <div id="guided-single" class="guided-fields">
-            <label>Drug <input type="text" id="filter-drug" placeholder="e.g. metformin" /></label>
-            <label>Dosage <input type="text" id="filter-dosage" placeholder="e.g. 500mg" /></label>
+            <label>Drug
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="filter-drug-input"
+                  class="plan-combobox-input"
+                  placeholder="Click to select a drug"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="filter-drug-listbox"
+                  aria-autocomplete="list"
+                  readonly
+                />
+                <input type="hidden" id="filter-drug" value="" />
+                <div id="filter-drug-panel" class="plan-dropdown-panel hidden" role="presentation">
+                  <input
+                    type="text"
+                    id="filter-drug-filter"
+                    class="combobox-filter"
+                    placeholder="Search drugs…"
+                    autocomplete="off"
+                    aria-label="Search drugs"
+                  />
+                  <ul id="filter-drug-listbox" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+                </div>
+              </div>
+            </label>
+            <label>Dosage
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="filter-dosage-input"
+                  class="plan-combobox-input"
+                  placeholder="Select a drug first"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="filter-dosage-listbox"
+                  aria-autocomplete="list"
+                  readonly
+                  disabled
+                />
+                <input type="hidden" id="filter-dosage" value="" />
+                <ul id="filter-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+              </div>
+            </label>
             <label class="guided-field-full">Plan
               <div class="plan-row">
                 <div class="plan-combobox">
@@ -166,21 +273,22 @@
               </div>
               <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
             </label>
-            <label>Contract year
-              <select id="filter-year">
-                <option value="2026">2026</option>
-                <option value="2025">2025</option>
-              </select>
-            </label>
-            <label>Days supply
-              <select id="filter-days-supply">
-                <option value="30">30</option>
-                <option value="60">60</option>
-                <option value="90">90</option>
-              </select>
-            </label>
-            <label>YTD out-of-pocket ($) <input type="number" id="filter-ytd" min="0" step="1" placeholder="optional" /></label>
-            <button type="button" id="guided-submit" class="btn-primary guided-field-full">Get estimate</button>
+            <div class="guided-fill-options guided-field-full">
+              <label>Contract year
+                <select id="filter-year">
+                  <option value="2026">2026</option>
+                  <option value="2025">2025</option>
+                </select>
+              </label>
+              <label>Days supply
+                <select id="filter-days-supply">
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                  <option value="90">90</option>
+                </select>
+              </label>
+              <label>YTD out-of-pocket ($) <input type="number" id="filter-ytd" min="0" step="1" placeholder="optional" /></label>
+            </div>
           </div>
 
           <div id="guided-multidrug" class="guided-fields hidden">
@@ -213,12 +321,56 @@
               </select>
             </label>
             <label>YTD out-of-pocket ($) <input type="number" id="md-ytd" min="0" step="1" placeholder="optional" /></label>
-            <button type="button" id="multidrug-submit" class="btn-primary guided-field-full">Get combined estimate</button>
           </div>
 
           <div id="guided-compareplans" class="guided-fields hidden">
-            <label>Drug <input type="text" id="cp-drug" placeholder="e.g. metformin" /></label>
-            <label>Dosage <input type="text" id="cp-dosage" placeholder="e.g. 500mg" /></label>
+            <label>Drug
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="cp-drug-input"
+                  class="plan-combobox-input"
+                  placeholder="Click to select a drug"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="cp-drug-listbox"
+                  aria-autocomplete="list"
+                  readonly
+                />
+                <input type="hidden" id="cp-drug" value="" />
+                <div id="cp-drug-panel" class="plan-dropdown-panel hidden" role="presentation">
+                  <input
+                    type="text"
+                    id="cp-drug-filter"
+                    class="combobox-filter"
+                    placeholder="Search drugs…"
+                    autocomplete="off"
+                    aria-label="Search drugs"
+                  />
+                  <ul id="cp-drug-listbox" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+                </div>
+              </div>
+            </label>
+            <label>Dosage
+              <div class="plan-combobox">
+                <input
+                  type="text"
+                  id="cp-dosage-input"
+                  class="plan-combobox-input"
+                  placeholder="Select a drug first"
+                  autocomplete="off"
+                  role="combobox"
+                  aria-expanded="false"
+                  aria-controls="cp-dosage-listbox"
+                  aria-autocomplete="list"
+                  readonly
+                  disabled
+                />
+                <input type="hidden" id="cp-dosage" value="" />
+                <ul id="cp-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+              </div>
+            </label>
             <div id="compareplans-rows" class="repeatable-rows guided-field-full"></div>
             <button type="button" id="compareplans-add-row" class="btn-secondary guided-field-full">+ Add plan</button>
             <label>Days supply
@@ -229,7 +381,13 @@
               </select>
             </label>
             <label>YTD out-of-pocket ($) <input type="number" id="cp-ytd" min="0" step="1" placeholder="optional" /></label>
-            <button type="button" id="compareplans-submit" class="btn-primary guided-field-full">Compare plans</button>
+          </div>
+
+          <div class="guided-action-row guided-field-full">
+            <button type="button" id="guided-submit" class="btn-primary">Get estimate</button>
+            <button type="button" id="multidrug-submit" class="btn-primary hidden">Get combined estimate</button>
+            <button type="button" id="compareplans-submit" class="btn-primary hidden">Compare plans</button>
+            <select id="guided-model-select" class="model-select" aria-label="LLM model"></select>
           </div>
 
           <section id="guided-conversation" class="guided-conversation" aria-labelledby="guided-conversation-title">
@@ -248,7 +406,9 @@
               <textarea id="guided-chat-input" rows="1" placeholder="Ask a follow-up about this estimate" required disabled></textarea>
               <div class="input-toolbar">
                 <span class="composer-hint">Four follow-ups available after the estimate</span>
-                <button type="submit" id="guided-send-btn" disabled>Send</button>
+                <div class="input-toolbar-right">
+                  <button type="submit" id="guided-send-btn" disabled>Send</button>
+                </div>
               </div>
             </form>
           </section>
@@ -280,6 +440,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=28"></script>
+  <script src="/app.js?v=32"></script>
 </body>
 </html>

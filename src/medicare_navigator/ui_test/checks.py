@@ -24,7 +24,13 @@ REQUIRED_ELEMENT_IDS = [
     "guided-error",
     "guided-submit",
     "filter-drug",
+    "filter-drug-input",
+    "filter-drug-panel",
+    "filter-drug-filter",
     "filter-dosage",
+    "filter-dosage-input",
+    "filter-drug-listbox",
+    "filter-dosage-listbox",
     "filter-plan",
     "filter-plan-input",
     "filter-plan-listbox",
@@ -75,7 +81,13 @@ GUIDED_ELEMENT_IDS = [
     "compareplans-add-row",
     "compareplans-submit",
     "cp-drug",
+    "cp-drug-input",
+    "cp-drug-panel",
+    "cp-drug-filter",
+    "cp-drug-listbox",
     "cp-dosage",
+    "cp-dosage-input",
+    "cp-dosage-listbox",
     "cp-days-supply",
     "cp-ytd",
     "guided-conversation",
@@ -86,6 +98,27 @@ GUIDED_ELEMENT_IDS = [
     "guided-turn-counter",
     "guided-results-panel",
     "guided-results-content",
+    "guided-model-select",
+]
+
+# State (required) + zip (optional prefill) plan-discovery widgets — Guided form and Chat.
+# Never sent to /api/estimate*, /api/estimate-batch, or /api/compare-plans.
+LOCATION_PICKER_ELEMENT_IDS = [
+    "guided-location-picker",
+    "guided-state-input",
+    "guided-state",
+    "guided-state-listbox",
+    "guided-zip-input",
+    "guided-zip-caution",
+    "chat-location-picker",
+    "chat-state-input",
+    "chat-state",
+    "chat-state-listbox",
+    "chat-zip-input",
+    "chat-zip-caution",
+    "chat-plan-input",
+    "chat-plan",
+    "chat-plan-listbox",
 ]
 
 REQUIRED_API_PATHS = [
@@ -95,6 +128,8 @@ REQUIRED_API_PATHS = [
     "/api/plans",
     "/api/models",
     "/api/meta/as-of",
+    "/api/states",
+    "/api/drugs",
 ]
 
 # Fields app.js reads from /api/chat responses.
@@ -302,11 +337,25 @@ def check_guided_ui_contract(html: str, js: str, css: str) -> CheckReport:
             group="guided",
         )
 
+    for element_id in LOCATION_PICKER_ELEMENT_IDS:
+        found = f'id="{element_id}"' in html or f"id='{element_id}'" in html
+        report.add(
+            f"location:html:id:{element_id}",
+            found,
+            detail="missing state/zip picker element" if not found else "",
+            group="guided",
+        )
+
     for fn in (
         "switchGuidedSubmode",
         "submitMultiDrugEstimate",
         "submitComparePlans",
         "createPlanCombobox",
+        "createStateCombobox",
+        "wireZipPicker",
+        "loadStates",
+        "lookupZipState",
+        "initLocationPickers",
         "resetGuidedFields",
         "resetGuidedConversation",
         "sendGuidedInitial",
@@ -462,6 +511,66 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
                     detail=f"missing on first plan: {sample}",
                     group="api",
                 )
+
+    status, states_body = getter.get("/api/states")
+    if status == 200:
+        import json
+
+        data = json.loads(states_body)
+        report.add(
+            "api:states:shape",
+            isinstance(data.get("states"), list),
+            detail=f"body={data}",
+            group="api",
+        )
+
+    status, zip_body = getter.get("/api/zip-lookup?zip=72201")
+    report.add(
+        "api:zip-lookup:known_zip",
+        status == 200,
+        detail=f"status={status}",
+        group="api",
+    )
+    if status == 200:
+        import json
+
+        data = json.loads(zip_body)
+        report.add(
+            "api:zip-lookup:resolves_state",
+            data.get("state") == "AR",
+            detail=f"body={data}",
+            group="api",
+        )
+
+    status, drugs_body = getter.get("/api/drugs")
+    if status == 200:
+        import json
+
+        data = json.loads(drugs_body)
+        report.add(
+            "api:drugs:shape",
+            isinstance(data.get("drugs"), list) and "metformin" in data.get("drugs", []),
+            detail=f"body={data}",
+            group="api",
+        )
+
+    status, dosages_body = getter.get("/api/drug-dosages?drug=metformin")
+    report.add(
+        "api:drug-dosages:known_drug",
+        status == 200,
+        detail=f"status={status}",
+        group="api",
+    )
+    if status == 200:
+        import json
+
+        data = json.loads(dosages_body)
+        report.add(
+            "api:drug-dosages:shape",
+            isinstance(data.get("dosages"), list),
+            detail=f"body={data}",
+            group="api",
+        )
 
     status, estimate_body = getter.post_json(
         "/api/estimate",

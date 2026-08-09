@@ -195,6 +195,42 @@ async def list_plans(plan_type: str | None = None, state: str | None = None, yea
     return repo.list_plans(plan_type=plan_type, state=state, contract_year=year)
 
 
+@app.get("/api/states")
+async def list_states():
+    """States with at least one ingested plan — drives the state picker UI."""
+    return {"states": PlanRepository().list_states()}
+
+
+@app.get("/api/zip-lookup")
+async def zip_lookup(zip: str):
+    """Best-effort zip -> state (static USPS ZIP3 table). Discovery/UX only —
+    never used to filter or adjust cost estimates."""
+    from medicare_navigator.tools.zip_lookup import zip_to_state
+
+    return {"zip": zip, "state": zip_to_state(zip)}
+
+
+@app.get("/api/drugs")
+async def list_drugs(q: str | None = None, plan_id: str | None = None):
+    """Drug names for the guided-form picker — discovery/UX only."""
+    from medicare_navigator.tools.drug_lookup import search_drugs
+
+    plan_key = (plan_id or "").strip() or None
+    return {"drugs": await search_drugs(q, plan_id=plan_key)}
+
+
+@app.get("/api/drug-dosages")
+async def list_drug_dosages(drug: str, plan_id: str | None = None):
+    """Dosage strengths available for a drug (RxNorm) — discovery/UX only."""
+    from medicare_navigator.tools.drug_lookup import list_drug_dosages as lookup_dosages
+
+    name = drug.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="drug is required")
+    plan_key = (plan_id or "").strip() or None
+    return {"drug": name, "dosages": await lookup_dosages(name, plan_id=plan_key)}
+
+
 @app.get("/api/disclaimer")
 async def get_disclaimer():
     return {"text": settings.disclaimer_text}

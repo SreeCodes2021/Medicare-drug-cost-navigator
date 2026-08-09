@@ -45,13 +45,8 @@ def _dosage_in_name(name: str, dosage: str) -> bool:
     return dosage.lower().replace(" ", "") in name.lower().replace(" ", "")
 
 
-async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]:
-    """Resolve to the strength-specific clinical-drug RXCUI (RxNorm TTY SCD/SBD), which is
-    what CMS SPUF formulary rows actually reference — the plain ingredient-level rxcui.json
-    exact match (_rxnorm_exact_lookup) returns the ingredient concept only (e.g. "lovastatin"
-    -> 6472), which will never match a formulary row keyed on "lovastatin 40 MG Oral Tablet"
-    (197905). Without this, any dosage-qualified query would resolve to the wrong RXCUI and
-    be reported as not covered even when the drug is on the formulary."""
+async def list_strength_concepts(name: str) -> list[dict]:
+    """All single-ingredient SCD/SBD strength concepts for a drug name (RxNorm /drugs.json)."""
     base = "https://rxnav.nlm.nih.gov/REST"
     matches: list[dict] = []
     try:
@@ -67,14 +62,13 @@ async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]
                         concept_name = prop.get("name") or ""
                         if " / " in concept_name:
                             continue
-                        if _dosage_in_name(concept_name, dosage):
-                            matches.append(
-                                {
-                                    "rxcui": prop.get("rxcui"),
-                                    "tty": tty,
-                                    "concept_name": concept_name,
-                                }
-                            )
+                        matches.append(
+                            {
+                                "rxcui": prop.get("rxcui"),
+                                "tty": tty,
+                                "concept_name": concept_name,
+                            }
+                        )
     except httpx.HTTPError:
         pass
     name_lower = name.lower()
@@ -95,6 +89,20 @@ async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]
             "source": "rxnorm_drugs_api",
         }
         for m in matches
+    ]
+
+
+async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]:
+    """Resolve to the strength-specific clinical-drug RXCUI (RxNorm TTY SCD/SBD), which is
+    what CMS SPUF formulary rows actually reference — the plain ingredient-level rxcui.json
+    exact match (_rxnorm_exact_lookup) returns the ingredient concept only (e.g. "lovastatin"
+    -> 6472), which will never match a formulary row keyed on "lovastatin 40 MG Oral Tablet"
+    (197905). Without this, any dosage-qualified query would resolve to the wrong RXCUI and
+    be reported as not covered even when the drug is on the formulary."""
+    return [
+        match
+        for match in await list_strength_concepts(name)
+        if _dosage_in_name(match.get("concept_name") or "", dosage)
     ]
 
 

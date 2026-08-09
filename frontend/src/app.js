@@ -43,7 +43,7 @@ const FIELD_TIPS = {
   section_plan_fill: "Drug, dosage, plan, and fill length used for this estimate.",
   section_benefit: "Formulary coverage, deductible, tier, and Part D benefit phase.",
   section_channel: "Plan cost share and estimated out-of-pocket by pharmacy type.",
-  drug: "Medication name on the plan formulary.",
+  drug: "Medication name (search shows all drugs; coverage is checked against your selected plan).",
   dosage: "Strength and form you asked about.",
   plan: "Medicare Part D plan name and contract ID.",
   days_supply: "How many days one prescription fill is intended to cover.",
@@ -111,12 +111,15 @@ function accumulateSessionUsage(usage) {
   updateSessionUsageDisplay();
 }
 
-function getSelectedModel() {
-  return el("model-select").value || DEFAULT_MODEL;
+// Guided form has its own model selector (guided-model-select) alongside the plain
+// Chat tab's (model-select) — both default to the same model but can be changed
+// independently since they're separate conversations.
+function getSelectedModel(selectId = "model-select") {
+  return el(selectId).value || DEFAULT_MODEL;
 }
 
-function populateModelSelect() {
-  const select = el("model-select");
+function populateModelSelect(selectId = "model-select") {
+  const select = el(selectId);
   select.innerHTML = "";
   MODEL_OPTIONS.forEach((model) => {
     const option = document.createElement("option");
@@ -239,6 +242,7 @@ function renderEstimateCardHtml(estimate, { compact = false } = {}) {
     }
   } else if (estimate.covered === false) {
     costHtml = `<div class="estimate-cost estimate-cost--blocked">Not covered</div>`;
+    costHtml += `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary (shown in the picker when a plan is selected).</p>`;
   } else if (cost) {
     costHtml = `<div class="estimate-cost">${escapeHtml(cost)}</div>`;
   }
@@ -340,6 +344,11 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
       }</p>`
     : "";
 
+  const notCoveredHtml =
+    data.covered === false
+      ? `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary (shown in the picker when a plan is selected).</p>`
+      : "";
+
   const compactClass = compact ? " estimate-card--compact" : "";
   const variant =
     data.quantity_limit_blocked || data.covered === false
@@ -359,6 +368,7 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
         </div>
       </div>
       ${blockedHtml}
+      ${notCoveredHtml}
       <section class="estimate-section" aria-labelledby="estimate-plan-fill-heading">
         <h4 class="estimate-section-title" id="estimate-plan-fill-heading">${withFieldInfo("Plan & fill", "section_plan_fill")}</h4>
         <dl class="estimate-facts">
@@ -427,10 +437,7 @@ function buildEstimatePayload() {
 function syncGuidedFormFromEstimate(data) {
   if (!data) return;
   if (data.drug_name) {
-    el("filter-drug").value = data.drug_name;
-  }
-  if (data.dosage != null) {
-    el("filter-dosage").value = data.dosage;
+    void singleDrugPicker.selectDrug(data.drug_name, data.dosage);
   }
   if (data.plan_key && allPlans.length) {
     const plan = allPlans.find((p) => p.plan_key === data.plan_key);
@@ -569,8 +576,8 @@ async function showPrivacyModal() {
 // ---- New chat ----
 
 function resetGuidedFields() {
-  el("filter-drug").value = "";
-  el("filter-dosage").value = "";
+  singleDrugPicker.clear();
+  compareDrugPicker.clear();
   el("filter-plan").value = "";
   el("filter-plan-input").value = "";
   el("filter-ytd").value = "";
@@ -643,17 +650,44 @@ function filterPlans(query) {
 // field, one for the multi-drug basket's single plan field, and up to 4 dynamic instances
 // for compare-plans rows — all instances share this implementation and register themselves
 // so populatePlanSelect() can refresh every instance's displayed label when plans (re)load.
+// `getPlans` scopes the candidate list (defaults to the full unscoped allPlans list); the
+// state-picker feature uses it to restrict a combobox to plans in the selected state and
+// disables the input until a state is chosen (state/zip stay discovery-only — never sent to
+// any estimate endpoint).
 let planComboboxInstances = [];
 
-function createPlanCombobox({ inputId, hiddenId, listboxId }) {
+function createPlanCombobox({ inputId, hiddenId, listboxId, getPlans = () => allPlans, onSelect }) {
   let highlight = -1;
   const inputEl = () => el(inputId);
   const hiddenEl = () => el(hiddenId);
   const listboxEl = () => el(listboxId);
 
+  function localFilterPlans(query) {
+    const plans = getPlans();
+    const q = query.trim().toLowerCase();
+    if (!q) return plans;
+    return plans.filter((p) => planSearchText(p).includes(q));
+  }
+
   function clear() {
     hiddenEl().value = "";
     inputEl().value = "";
+  }
+
+  function setDisabled(disabled, placeholder) {
+    inputEl().disabled = disabled;
+    if (disabled) {
+      clear();
+      close();
+    }
+    if (placeholder) inputEl().placeholder = placeholder;
+  }
+
+  function onPlansRescoped() {
+    const selected = hiddenEl().value;
+    if (selected && !getPlans().some((p) => p.plan_key === selected)) {
+      clear();
+    }
   }
 
   function close() {
@@ -672,6 +706,7 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
     hiddenEl().value = plan.plan_key;
     inputEl().value = formatPlanLabel(plan);
     close();
+    if (onSelect) onSelect(plan);
   }
 
   function render(plans) {
@@ -705,7 +740,7 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
   function refreshLabel() {
     const selected = hiddenEl().value;
     if (!selected) return;
-    const plan = allPlans.find((p) => p.plan_key === selected);
+    const plan = getPlans().find((p) => p.plan_key === selected);
     if (plan) {
       inputEl().value = formatPlanLabel(plan);
     } else {
@@ -715,12 +750,13 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
 
   function init() {
     inputEl().addEventListener("focus", () => {
-      render(filterPlans(inputEl().value));
+      if (inputEl().disabled) return;
+      render(localFilterPlans(inputEl().value));
       open();
     });
     inputEl().addEventListener("input", () => {
       hiddenEl().value = "";
-      render(filterPlans(inputEl().value));
+      render(localFilterPlans(inputEl().value));
       highlight = -1;
       open();
     });
@@ -735,7 +771,7 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
         if (listboxEl().classList.contains("hidden")) {
-          render(filterPlans(inputEl().value));
+          render(localFilterPlans(inputEl().value));
           open();
         }
         const visibleOptions = [...listboxEl().querySelectorAll(".plan-option")];
@@ -752,7 +788,7 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
         e.preventDefault();
         const opt = options[highlight];
         if (opt) {
-          const plan = allPlans.find((p) => p.plan_key === opt.dataset.planKey);
+          const plan = getPlans().find((p) => p.plan_key === opt.dataset.planKey);
           if (plan) selectPlan(plan);
         }
       } else if (e.key === "Escape") {
@@ -761,7 +797,16 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
     });
   }
 
-  const instance = { init, render, refreshLabel, clear, selectPlan, getValue: () => hiddenEl().value };
+  const instance = {
+    init,
+    render,
+    refreshLabel,
+    clear,
+    selectPlan,
+    setDisabled,
+    onPlansRescoped,
+    getValue: () => hiddenEl().value,
+  };
   planComboboxInstances.push(instance);
   return instance;
 }
@@ -770,16 +815,52 @@ function unregisterPlanCombobox(instance) {
   planComboboxInstances = planComboboxInstances.filter((inst) => inst !== instance);
 }
 
+// Guided form: a single shared State (required) scopes every plan combobox in all
+// three submodes to `allPlans.filter(p => p.state === guidedState)` — no separate
+// /api/plans?state= round trip needed since allPlans is already loaded in full.
+let guidedState = "";
+
+function guidedScopedPlans() {
+  return guidedState ? allPlans.filter((p) => p.state === guidedState) : [];
+}
+
+function guidedPlanComboboxInstances() {
+  return [primaryPlanCombobox, mdPlanCombobox, ...comparePlanRows.map((r) => r.combobox)];
+}
+
+function onGuidedStateChanged(state) {
+  guidedState = state || "";
+  guidedPlanComboboxInstances().forEach((inst) => {
+    inst.setDisabled(
+      !guidedState,
+      guidedState ? "Type or scroll to select a plan" : "Select a state above first"
+    );
+    inst.onPlansRescoped();
+  });
+}
+
+function refreshSingleDrugPickers() {
+  void singleDrugPicker.refreshForPlanChange?.();
+}
+
+function refreshMultiDrugPickers() {
+  drugRows.forEach(({ picker }) => void picker.refreshForPlanChange?.());
+}
+
 const primaryPlanCombobox = createPlanCombobox({
   inputId: "filter-plan-input",
   hiddenId: "filter-plan",
   listboxId: "filter-plan-listbox",
+  getPlans: guidedScopedPlans,
+  onSelect: () => refreshSingleDrugPickers(),
 });
 
 const mdPlanCombobox = createPlanCombobox({
   inputId: "md-plan-input",
   hiddenId: "md-plan",
   listboxId: "md-plan-listbox",
+  getPlans: guidedScopedPlans,
+  onSelect: () => refreshMultiDrugPickers(),
 });
 
 function clearPlanSelection() {
@@ -798,6 +879,7 @@ function populatePlanSelect(plans) {
 function initPlanCombobox() {
   primaryPlanCombobox.init();
   mdPlanCombobox.init();
+  onGuidedStateChanged("");
 }
 
 async function loadPlans() {
@@ -832,6 +914,813 @@ async function pollPlansUntilLoaded() {
   updatePlanLoadHint(0, "No plans yet — click Refresh after ingest finishes");
 }
 
+// ── Location picker (State required, zip optional prefill) ──
+// State is the only real filter — zip is a static USPS ZIP3->state lookup used purely to
+// prefill/suggest State. Neither is ever sent to /api/estimate*, /api/estimate-batch, or
+// /api/compare-plans, and neither affects any cost figure.
+
+let availableStates = [];
+
+async function loadStates() {
+  try {
+    const res = await fetch(`${API}/api/states`);
+    if (!res.ok) throw new Error(`states API ${res.status}`);
+    const data = await res.json();
+    availableStates = Array.isArray(data.states) ? data.states : [];
+  } catch (e) {
+    console.warn("Could not load states", e);
+    availableStates = [];
+  }
+  return availableStates;
+}
+
+async function lookupZipState(zip) {
+  const res = await fetch(`${API}/api/zip-lookup?zip=${encodeURIComponent(zip)}`);
+  if (!res.ok) throw new Error(`zip-lookup API ${res.status}`);
+  const data = await res.json();
+  return data.state || null;
+}
+
+function createStateCombobox({ inputId, hiddenId, listboxId, onSelect }) {
+  let highlight = -1;
+  const inputEl = () => el(inputId);
+  const hiddenEl = () => el(hiddenId);
+  const listboxEl = () => el(listboxId);
+
+  function matchingStates(query) {
+    const q = query.trim().toUpperCase();
+    if (!q) return availableStates;
+    return availableStates.filter((s) => s.includes(q));
+  }
+
+  function close() {
+    listboxEl().classList.add("hidden");
+    inputEl().setAttribute("aria-expanded", "false");
+    inputEl().removeAttribute("aria-activedescendant");
+    highlight = -1;
+  }
+
+  function open() {
+    listboxEl().classList.remove("hidden");
+    inputEl().setAttribute("aria-expanded", "true");
+  }
+
+  function clear() {
+    hiddenEl().value = "";
+    inputEl().value = "";
+  }
+
+  function selectState(state, { silent = false } = {}) {
+    const changed = hiddenEl().value !== state;
+    hiddenEl().value = state;
+    inputEl().value = state;
+    close();
+    if (!silent && changed && onSelect) onSelect(state);
+  }
+
+  function render(states) {
+    const listbox = listboxEl();
+    listbox.innerHTML = "";
+    states.forEach((s, i) => {
+      const li = document.createElement("li");
+      li.className = "plan-option";
+      li.role = "option";
+      li.id = `${listboxId}-option-${i}`;
+      li.dataset.state = s;
+      li.textContent = s;
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectState(s);
+      });
+      listbox.appendChild(li);
+    });
+  }
+
+  function highlightOption(options) {
+    options.forEach((opt, i) => {
+      opt.classList.toggle("plan-option--active", i === highlight);
+      if (i === highlight) {
+        opt.scrollIntoView({ block: "nearest" });
+        inputEl().setAttribute("aria-activedescendant", opt.id);
+      }
+    });
+  }
+
+  function init() {
+    inputEl().addEventListener("focus", () => {
+      render(matchingStates(inputEl().value));
+      open();
+    });
+    inputEl().addEventListener("input", () => {
+      hiddenEl().value = "";
+      render(matchingStates(inputEl().value));
+      highlight = -1;
+      open();
+    });
+    inputEl().addEventListener("blur", () => {
+      setTimeout(() => {
+        close();
+        const typed = inputEl().value.trim().toUpperCase();
+        const match = availableStates.find((s) => s === typed);
+        if (match) {
+          selectState(match);
+        } else if (hiddenEl().value) {
+          inputEl().value = hiddenEl().value;
+        } else {
+          clear();
+        }
+      }, 150);
+    });
+    inputEl().addEventListener("keydown", (e) => {
+      const options = [...listboxEl().querySelectorAll(".plan-option")];
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (listboxEl().classList.contains("hidden")) {
+          render(matchingStates(inputEl().value));
+          open();
+        }
+        const visible = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visible.length) return;
+        highlight = Math.min(highlight + 1, visible.length - 1);
+        highlightOption(visible);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const visible = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visible.length) return;
+        highlight = Math.max(highlight - 1, 0);
+        highlightOption(visible);
+      } else if (e.key === "Enter" && highlight >= 0) {
+        e.preventDefault();
+        const opt = options[highlight];
+        if (opt) selectState(opt.dataset.state);
+      } else if (e.key === "Escape") {
+        close();
+      }
+    });
+  }
+
+  return { init, selectState, clear, getValue: () => hiddenEl().value };
+}
+
+// Wires an optional zip field to a state combobox: prefills an empty state, or shows a
+// confirm-before-switch caution banner when zip and an already-picked state disagree
+// (never silently overwrites, never silently ignores — the user always decides).
+function wireZipPicker({ zipInputId, cautionId, stateCombobox, getCurrentState }) {
+  const zipInputEl = () => el(zipInputId);
+  const cautionEl = () => el(cautionId);
+  let debounceTimer = null;
+
+  function hideCaution() {
+    cautionEl().classList.add("hidden");
+    cautionEl().innerHTML = "";
+    delete cautionEl().dataset.zipState;
+  }
+
+  function showMismatch(zipState, currentState) {
+    cautionEl().innerHTML =
+      `This zip looks like it's in ${zipState}, but ${currentState} is selected. ` +
+      `<button type="button" class="link-btn" data-action="use-zip-state">Use ${zipState}</button> · ` +
+      `<button type="button" class="link-btn" data-action="keep-state">Keep ${currentState}</button>`;
+    cautionEl().dataset.zipState = zipState;
+    cautionEl().classList.remove("hidden");
+  }
+
+  function showUnrecognized() {
+    cautionEl().textContent = "Couldn't recognize that zip code.";
+    cautionEl().classList.remove("hidden");
+  }
+
+  cautionEl().addEventListener("click", (e) => {
+    const action = e.target.dataset.action;
+    if (!action) return;
+    if (action === "use-zip-state" && cautionEl().dataset.zipState) {
+      stateCombobox.selectState(cautionEl().dataset.zipState);
+    }
+    hideCaution();
+  });
+
+  async function handleZip(zip) {
+    let zipState = null;
+    try {
+      zipState = await lookupZipState(zip);
+    } catch (e) {
+      console.warn("zip lookup failed", e);
+      return;
+    }
+    if (!zipState) {
+      showUnrecognized();
+      return;
+    }
+    const current = getCurrentState();
+    if (!current) {
+      stateCombobox.selectState(zipState);
+      hideCaution();
+    } else if (current !== zipState) {
+      showMismatch(zipState, current);
+    } else {
+      hideCaution();
+    }
+  }
+
+  zipInputEl().addEventListener("input", () => {
+    hideCaution();
+    clearTimeout(debounceTimer);
+    const raw = zipInputEl().value.trim();
+    if (raw.length !== 5) return;
+    debounceTimer = setTimeout(() => handleZip(raw), 400);
+  });
+  zipInputEl().addEventListener("blur", () => {
+    const raw = zipInputEl().value.trim();
+    if (raw.length === 5) handleZip(raw);
+  });
+}
+
+const guidedStateCombobox = createStateCombobox({
+  inputId: "guided-state-input",
+  hiddenId: "guided-state",
+  listboxId: "guided-state-listbox",
+  onSelect: onGuidedStateChanged,
+});
+
+// Chat mode: a lightweight, optional plan-picker widget. A picked plan only ever
+// populates filters.plan_id on the /api/chat request (see getFilters()) — the user can
+// still type/override plan info in the message text.
+let chatState = "";
+
+function chatScopedPlans() {
+  return chatState ? allPlans.filter((p) => p.state === chatState) : [];
+}
+
+function onChatStateChanged(state) {
+  chatState = state || "";
+  chatPlanCombobox.setDisabled(
+    !chatState,
+    chatState ? "Type or scroll to select a plan (optional)" : "Select a state above first"
+  );
+  chatPlanCombobox.onPlansRescoped();
+}
+
+const chatStateCombobox = createStateCombobox({
+  inputId: "chat-state-input",
+  hiddenId: "chat-state",
+  listboxId: "chat-state-listbox",
+  onSelect: onChatStateChanged,
+});
+
+const chatPlanCombobox = createPlanCombobox({
+  inputId: "chat-plan-input",
+  hiddenId: "chat-plan",
+  listboxId: "chat-plan-listbox",
+  getPlans: chatScopedPlans,
+});
+
+function initLocationPickers() {
+  guidedStateCombobox.init();
+  chatStateCombobox.init();
+  chatPlanCombobox.init();
+  chatPlanCombobox.setDisabled(true, "Select a state above first");
+  wireZipPicker({
+    zipInputId: "guided-zip-input",
+    cautionId: "guided-zip-caution",
+    stateCombobox: guidedStateCombobox,
+    getCurrentState: () => guidedState,
+  });
+  wireZipPicker({
+    zipInputId: "chat-zip-input",
+    cautionId: "chat-zip-caution",
+    stateCombobox: chatStateCombobox,
+    getCurrentState: () => chatState,
+  });
+}
+
+// ── Drug + dosage pickers (select-only; list opens on click only) ──
+
+const optionComboboxInstances = [];
+const drugDosagePickerInstances = [];
+
+async function fetchDrugs(query = "", planId = "") {
+  try {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set("q", query.trim());
+    if (planId) params.set("plan_id", planId);
+    const qs = params.toString();
+    const res = await fetch(`${API}/api/drugs${qs ? `?${qs}` : ""}`);
+    if (!res.ok) throw new Error(`drugs API ${res.status}`);
+    const data = await res.json();
+    const drugs = Array.isArray(data.drugs) ? data.drugs : [];
+    if (!planId) return drugs;
+    return drugs.map((item) => {
+      if (typeof item === "string") {
+        return { name: item, value: item, label: item };
+      }
+      return {
+        name: item.name,
+        value: item.name,
+        label: item.name,
+        on_formulary: item.on_formulary,
+      };
+    });
+  } catch (e) {
+    console.warn("Could not load drugs", e);
+    return [];
+  }
+}
+
+async function fetchDrugDosages(drug, planId = "") {
+  if (!drug) return [];
+  try {
+    const params = new URLSearchParams({ drug });
+    if (planId) params.set("plan_id", planId);
+    const res = await fetch(`${API}/api/drug-dosages?${params.toString()}`);
+    if (!res.ok) throw new Error(`drug-dosages API ${res.status}`);
+    const data = await res.json();
+    const dosages = Array.isArray(data.dosages) ? data.dosages : [];
+    if (!planId) return dosages;
+    return dosages.map((item) => {
+      if (typeof item === "string") {
+        return { dosage: item, value: item, label: item };
+      }
+      return {
+        dosage: item.dosage,
+        value: item.dosage,
+        label: item.dosage,
+        on_formulary: item.on_formulary,
+      };
+    });
+  } catch (e) {
+    console.warn("Could not load dosages", e);
+    return [];
+  }
+}
+
+function closeAllDrugPickers() {
+  optionComboboxInstances.forEach((inst) => inst.close());
+}
+
+function normalizeComboboxOption(opt) {
+  if (typeof opt === "string") {
+    return { value: opt, label: opt, meta: null, metaClass: null };
+  }
+  const value = opt.value ?? opt.name ?? opt.dosage ?? "";
+  const label = opt.label ?? opt.name ?? opt.dosage ?? value;
+  let meta = opt.meta ?? null;
+  let metaClass = opt.metaClass ?? null;
+  if (opt.on_formulary === true) {
+    meta = meta ?? "On formulary";
+    metaClass = metaClass ?? "picker-meta--on-formulary";
+  } else if (opt.on_formulary === false) {
+    meta = meta ?? "Not on formulary";
+    metaClass = metaClass ?? "picker-meta--off-formulary";
+  }
+  return { value, label, meta, metaClass };
+}
+
+function comboboxOptionValue(opt) {
+  return normalizeComboboxOption(opt).value;
+}
+
+function createOptionCombobox({
+  inputId,
+  hiddenId,
+  listboxId,
+  panelId = null,
+  filterInputId = null,
+  getOptions,
+  onSelect,
+  onSearch,
+  onOpen,
+  ariaLabel,
+  selectionOnly = false,
+  openOn = "focus",
+}) {
+  let highlight = -1;
+  let searchTimer = null;
+  let searchToken = 0;
+  const inputEl = () => el(inputId);
+  const hiddenEl = () => el(hiddenId);
+  const listboxEl = () => el(listboxId);
+  const panelEl = () => (panelId ? el(panelId) : null);
+  const filterEl = () => (filterInputId ? el(filterInputId) : null);
+
+  function matchingOptions(query) {
+    const q = query.trim().toLowerCase();
+    const options = getOptions();
+    if (!q) return options;
+    return options.filter((opt) => {
+      const normalized = normalizeComboboxOption(opt);
+      return (
+        normalized.label.toLowerCase().includes(q) ||
+        normalized.value.toLowerCase().includes(q)
+      );
+    });
+  }
+
+  function isDropdownFocusWithin() {
+    const active = document.activeElement;
+    if (!active) return false;
+    if (active === inputEl() || active === filterEl()) return true;
+    if (panelEl()?.contains(active)) return true;
+    if (listboxEl().contains(active)) return true;
+    return false;
+  }
+
+  async function refreshOptions(query) {
+    let options;
+    if (onSearch) {
+      const token = ++searchToken;
+      options = await onSearch(query);
+      if (token !== searchToken) return options;
+    } else {
+      options = matchingOptions(query);
+    }
+    render(options);
+    open();
+    return options;
+  }
+
+  function close() {
+    if (panelEl()) {
+      panelEl().classList.add("hidden");
+    } else {
+      listboxEl().classList.add("hidden");
+    }
+    inputEl().setAttribute("aria-expanded", "false");
+    inputEl().removeAttribute("aria-activedescendant");
+    highlight = -1;
+  }
+
+  function open() {
+    if (panelEl()) {
+      panelEl().classList.remove("hidden");
+    } else {
+      listboxEl().classList.remove("hidden");
+    }
+    inputEl().setAttribute("aria-expanded", "true");
+  }
+
+  function clear() {
+    hiddenEl().value = "";
+    inputEl().value = "";
+    if (filterEl()) filterEl().value = "";
+  }
+
+  function setDisabled(disabled, placeholder) {
+    inputEl().disabled = disabled;
+    if (disabled) {
+      clear();
+      close();
+    }
+    if (placeholder) inputEl().placeholder = placeholder;
+  }
+
+  function selectOption(value, { silent = false } = {}) {
+    const normalized = normalizeComboboxOption(value);
+    const changed = hiddenEl().value !== normalized.value;
+    hiddenEl().value = normalized.value;
+    inputEl().value = normalized.label;
+    if (filterEl()) filterEl().value = "";
+    close();
+    if (!silent && changed && onSelect) onSelect(normalized.value);
+  }
+
+  function render(options) {
+    const listbox = listboxEl();
+    listbox.innerHTML = "";
+    options.forEach((opt, i) => {
+      const normalized = normalizeComboboxOption(opt);
+      const li = document.createElement("li");
+      li.className = "plan-option";
+      if (normalized.metaClass) li.classList.add(normalized.metaClass);
+      li.role = "option";
+      li.id = `${listboxId}-option-${i}`;
+      li.dataset.value = normalized.value;
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "picker-option-label";
+      labelSpan.textContent = normalized.label;
+      li.appendChild(labelSpan);
+      if (normalized.meta) {
+        const metaSpan = document.createElement("span");
+        metaSpan.className = `picker-meta ${normalized.metaClass || ""}`.trim();
+        metaSpan.textContent = normalized.meta;
+        li.appendChild(metaSpan);
+      }
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectOption(opt);
+      });
+      listbox.appendChild(li);
+    });
+  }
+
+  function highlightOption(options) {
+    options.forEach((opt, i) => {
+      opt.classList.toggle("plan-option--active", i === highlight);
+      if (i === highlight) {
+        opt.scrollIntoView({ block: "nearest" });
+        inputEl().setAttribute("aria-activedescendant", opt.id);
+      }
+    });
+  }
+
+  async function openDropdown(query = "") {
+    if (inputEl().disabled) return;
+    if (onOpen) onOpen();
+    await refreshOptions(query);
+    if (filterEl()) {
+      filterEl().focus();
+      filterEl().select();
+    }
+  }
+
+  function init() {
+    if (selectionOnly) {
+      inputEl().readOnly = true;
+    }
+
+    if (openOn === "click") {
+      inputEl().addEventListener("click", (e) => {
+        if (inputEl().disabled) return;
+        e.preventDefault();
+        void openDropdown(filterEl()?.value || "");
+      });
+    } else {
+      inputEl().addEventListener("focus", () => {
+        if (inputEl().disabled) return;
+        void openDropdown(inputEl().value);
+      });
+      inputEl().addEventListener("input", () => {
+        hiddenEl().value = "";
+        highlight = -1;
+        clearTimeout(searchTimer);
+        const query = inputEl().value;
+        if (onSearch) {
+          const delay = query.trim() ? 250 : 0;
+          searchTimer = setTimeout(() => void refreshOptions(query), delay);
+        } else {
+          render(matchingOptions(query));
+          open();
+        }
+      });
+    }
+
+    if (selectionOnly) {
+      inputEl().addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Escape") {
+          return;
+        }
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+        }
+      });
+    }
+
+    if (filterEl()) {
+      filterEl().addEventListener("input", () => {
+        highlight = -1;
+        clearTimeout(searchTimer);
+        const query = filterEl().value;
+        const delay = query.trim() ? 250 : 0;
+        searchTimer = setTimeout(() => void refreshOptions(query), delay);
+      });
+      filterEl().addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          close();
+          inputEl().focus();
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          const visible = [...listboxEl().querySelectorAll(".plan-option")];
+          if (!visible.length) return;
+          highlight = 0;
+          highlightOption(visible);
+        }
+      });
+    }
+
+    if (panelEl()) {
+      panelEl().addEventListener("mousedown", (e) => {
+        e.preventDefault();
+      });
+    }
+
+    inputEl().addEventListener("blur", () => {
+      setTimeout(() => {
+        if (isDropdownFocusWithin()) return;
+        close();
+        if (hiddenEl().value) {
+          inputEl().value = hiddenEl().value;
+        } else {
+          clear();
+        }
+      }, 150);
+    });
+
+    if (filterEl()) {
+      filterEl().addEventListener("blur", () => {
+        setTimeout(() => {
+          if (isDropdownFocusWithin()) return;
+          close();
+          if (hiddenEl().value) {
+            inputEl().value = hiddenEl().value;
+          } else {
+            clear();
+          }
+        }, 150);
+      });
+    }
+
+    inputEl().addEventListener("keydown", (e) => {
+      const options = [...listboxEl().querySelectorAll(".plan-option")];
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (panelEl()?.classList.contains("hidden") && listboxEl().classList.contains("hidden")) {
+          void openDropdown(filterEl()?.value || "");
+        }
+        const visible = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visible.length) return;
+        highlight = Math.min(highlight + 1, visible.length - 1);
+        highlightOption(visible);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const visible = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visible.length) return;
+        highlight = Math.max(highlight - 1, 0);
+        highlightOption(visible);
+      } else if (e.key === "Enter" && highlight >= 0) {
+        e.preventDefault();
+        const opt = options[highlight];
+        if (opt) selectOption(opt.dataset.value);
+      } else if (e.key === "Escape") {
+        close();
+      }
+    });
+
+    if (ariaLabel) listboxEl().setAttribute("aria-label", ariaLabel);
+  }
+
+  const instance = {
+    init,
+    selectOption,
+    clear,
+    setDisabled,
+    render,
+    close,
+    openDropdown,
+    getValue: () => hiddenEl().value,
+  };
+  optionComboboxInstances.push(instance);
+  return instance;
+}
+
+function createDrugDosagePicker({
+  drugInputId,
+  drugHiddenId,
+  drugListboxId,
+  drugPanelId,
+  drugFilterInputId,
+  dosageInputId,
+  dosageHiddenId,
+  dosageListboxId,
+  getPlanId = () => "",
+}) {
+  let pickerDrugs = [];
+  let availableDosages = [];
+
+  const dosageCombobox = createOptionCombobox({
+    inputId: dosageInputId,
+    hiddenId: dosageHiddenId,
+    listboxId: dosageListboxId,
+    getOptions: () => availableDosages,
+    ariaLabel: "Dosages",
+    selectionOnly: true,
+    openOn: "click",
+  });
+
+  async function loadDosagesForDrug(drug) {
+    const hasDrug = Boolean(drug);
+    availableDosages = hasDrug ? await fetchDrugDosages(drug, getPlanId()) : [];
+    const current = dosageCombobox.getValue();
+    if (
+      current &&
+      !availableDosages.some((d) => comboboxOptionValue(d).toLowerCase() === current.toLowerCase())
+    ) {
+      dosageCombobox.clear();
+    }
+    dosageCombobox.setDisabled(
+      !hasDrug,
+      hasDrug ? "Click to select a dosage" : "Select a drug first"
+    );
+  }
+
+  async function searchPickerDrugs(query) {
+    pickerDrugs = await fetchDrugs(query, getPlanId());
+    return pickerDrugs;
+  }
+
+  const drugCombobox = createOptionCombobox({
+    inputId: drugInputId,
+    hiddenId: drugHiddenId,
+    listboxId: drugListboxId,
+    panelId: drugPanelId,
+    filterInputId: drugFilterInputId,
+    getOptions: () => pickerDrugs,
+    onSearch: searchPickerDrugs,
+    onSelect: (drug) => {
+      dosageCombobox.clear();
+      void loadDosagesForDrug(drug);
+    },
+    ariaLabel: "Drugs",
+    selectionOnly: true,
+    openOn: "click",
+  });
+
+  function clear() {
+    pickerDrugs = [];
+    availableDosages = [];
+    drugCombobox.clear();
+    dosageCombobox.clear();
+    dosageCombobox.setDisabled(true, "Select a drug first");
+  }
+
+  async function selectDrug(drug, dosage, { silent = false } = {}) {
+    if (!drug) {
+      clear();
+      return;
+    }
+    drugCombobox.selectOption(drug, { silent: true });
+    await loadDosagesForDrug(drug);
+    if (dosage) {
+      const match = availableDosages.find(
+        (d) => comboboxOptionValue(d).toLowerCase() === String(dosage).toLowerCase()
+      );
+      if (match) dosageCombobox.selectOption(match, { silent });
+    }
+  }
+
+  async function refreshForPlanChange() {
+    const drug = drugCombobox.getValue();
+    if (drug) {
+      await loadDosagesForDrug(drug);
+    }
+    const panel = drugPanelId ? el(drugPanelId) : null;
+    const listbox = el(drugListboxId);
+    const isOpen = panel ? !panel.classList.contains("hidden") : !listbox.classList.contains("hidden");
+    if (isOpen) {
+      const query = drugFilterInputId ? el(drugFilterInputId).value : "";
+      pickerDrugs = await fetchDrugs(query, getPlanId());
+      drugCombobox.render(pickerDrugs);
+    }
+  }
+
+  function init() {
+    drugCombobox.init();
+    dosageCombobox.init();
+    dosageCombobox.setDisabled(true, "Select a drug first");
+  }
+
+  const picker = {
+    init,
+    clear,
+    selectDrug,
+    refreshForPlanChange,
+    close: () => {
+      drugCombobox.close();
+      dosageCombobox.close();
+    },
+    getDrug: () => drugCombobox.getValue(),
+    getDosage: () => dosageCombobox.getValue(),
+  };
+  drugDosagePickerInstances.push(picker);
+  return picker;
+}
+
+const singleDrugPicker = createDrugDosagePicker({
+  drugInputId: "filter-drug-input",
+  drugHiddenId: "filter-drug",
+  drugListboxId: "filter-drug-listbox",
+  drugPanelId: "filter-drug-panel",
+  drugFilterInputId: "filter-drug-filter",
+  dosageInputId: "filter-dosage-input",
+  dosageHiddenId: "filter-dosage",
+  dosageListboxId: "filter-dosage-listbox",
+  getPlanId: () => el("filter-plan").value,
+});
+
+const compareDrugPicker = createDrugDosagePicker({
+  drugInputId: "cp-drug-input",
+  drugHiddenId: "cp-drug",
+  drugListboxId: "cp-drug-listbox",
+  drugPanelId: "cp-drug-panel",
+  drugFilterInputId: "cp-drug-filter",
+  dosageInputId: "cp-dosage-input",
+  dosageHiddenId: "cp-dosage",
+  dosageListboxId: "cp-dosage-listbox",
+});
+
+function initDrugPickers() {
+  singleDrugPicker.init();
+  compareDrugPicker.init();
+}
+
 // ── Guided form: multi-drug basket rows (plain drug/dosage text pairs, cap 5) ──
 
 const MAX_BATCH_DRUGS = 5;
@@ -847,18 +1736,72 @@ function createDrugRowElement() {
   row.className = "repeatable-row";
   row.dataset.rowId = String(idx);
   row.innerHTML = `
-    <input type="text" id="md-drug-${idx}" placeholder="Drug, e.g. metformin" />
-    <input type="text" id="md-dosage-${idx}" placeholder="Dosage, e.g. 500mg" />
+    <div class="plan-combobox">
+      <input
+        type="text"
+        id="md-drug-input-${idx}"
+        class="plan-combobox-input"
+        placeholder="Click to select a drug"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="md-drug-listbox-${idx}"
+        aria-autocomplete="list"
+        readonly
+      />
+      <input type="hidden" id="md-drug-${idx}" value="" />
+      <div id="md-drug-panel-${idx}" class="plan-dropdown-panel hidden" role="presentation">
+        <input
+          type="text"
+          id="md-drug-filter-${idx}"
+          class="combobox-filter"
+          placeholder="Search drugs…"
+          autocomplete="off"
+          aria-label="Search drugs"
+        />
+        <ul id="md-drug-listbox-${idx}" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+      </div>
+    </div>
+    <div class="plan-combobox">
+      <input
+        type="text"
+        id="md-dosage-input-${idx}"
+        class="plan-combobox-input"
+        placeholder="Select a drug first"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="md-dosage-listbox-${idx}"
+        aria-autocomplete="list"
+        readonly
+        disabled
+      />
+      <input type="hidden" id="md-dosage-${idx}" value="" />
+      <ul id="md-dosage-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+    </div>
     <button type="button" class="repeatable-row-remove" aria-label="Remove drug" title="Remove drug">&times;</button>
   `;
   el("multidrug-rows").appendChild(row);
-  row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(row));
-  return row;
+  const picker = createDrugDosagePicker({
+    drugInputId: `md-drug-input-${idx}`,
+    drugHiddenId: `md-drug-${idx}`,
+    drugListboxId: `md-drug-listbox-${idx}`,
+    drugPanelId: `md-drug-panel-${idx}`,
+    drugFilterInputId: `md-drug-filter-${idx}`,
+    dosageInputId: `md-dosage-input-${idx}`,
+    dosageHiddenId: `md-dosage-${idx}`,
+    dosageListboxId: `md-dosage-listbox-${idx}`,
+    getPlanId: () => el("md-plan").value,
+  });
+  picker.init();
+  const entry = { row, picker };
+  row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(entry));
+  return entry;
 }
 
 function updateDrugRowControls() {
   el("multidrug-add-row").disabled = drugRows.length >= MAX_BATCH_DRUGS;
-  drugRows.forEach((row) => {
+  drugRows.forEach(({ row }) => {
     row.querySelector(".repeatable-row-remove").disabled = drugRows.length <= 1;
   });
 }
@@ -869,10 +1812,10 @@ function addDrugRow() {
   updateDrugRowControls();
 }
 
-function removeDrugRow(row) {
+function removeDrugRow(entry) {
   if (drugRows.length <= 1) return;
-  drugRows = drugRows.filter((r) => r !== row);
-  row.remove();
+  drugRows = drugRows.filter((r) => r !== entry);
+  entry.row.remove();
   updateDrugRowControls();
 }
 
@@ -884,10 +1827,9 @@ function resetDrugRows() {
 
 function getDrugRowValues() {
   return drugRows
-    .map((row) => {
-      const idx = row.dataset.rowId;
-      const drug = el(`md-drug-${idx}`).value.trim();
-      const dosage = el(`md-dosage-${idx}`).value.trim();
+    .map(({ picker }) => {
+      const drug = picker.getDrug();
+      const dosage = picker.getDosage();
       return drug ? { drug, dosage: dosage || undefined } : null;
     })
     .filter(Boolean);
@@ -927,8 +1869,10 @@ function createComparePlanRowEntry() {
     inputId: `cp-plan-input-${idx}`,
     hiddenId: `cp-plan-${idx}`,
     listboxId: `cp-plan-listbox-${idx}`,
+    getPlans: guidedScopedPlans,
   });
   combobox.init();
+  combobox.setDisabled(!guidedState, guidedState ? "Type or scroll to select a plan" : "Select a state above first");
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => {
     removeComparePlanRow(entry);
   });
@@ -972,11 +1916,19 @@ function getComparePlanValues() {
 // ── Guided form: sub-mode tabs (Single / Multiple drugs / Compare plans) ──
 
 function switchGuidedSubmode(mode) {
+  const submitByMode = {
+    single: "guided-submit",
+    multidrug: "multidrug-submit",
+    compareplans: "compareplans-submit",
+  };
+  closeAllDrugPickers();
   ["single", "multidrug", "compareplans"].forEach((m) => {
     const isActive = m === mode;
     el(`guided-${m}`).classList.toggle("hidden", !isActive);
     el(`guided-mode-${m}`).classList.toggle("active", isActive);
     el(`guided-mode-${m}`).setAttribute("aria-selected", String(isActive));
+    const submitBtn = el(submitByMode[m]);
+    if (submitBtn) submitBtn.classList.toggle("hidden", !isActive);
   });
   showGuidedError("");
 }
@@ -1045,7 +1997,12 @@ async function submitMultiDrugEstimate() {
     return;
   }
   if (!items.length) {
-    showGuidedError("Please enter at least one drug.");
+    showGuidedError("Please select at least one drug.");
+    return;
+  }
+  const missingDosage = items.find((item) => !item.dosage);
+  if (missingDosage) {
+    showGuidedError(`Please select a dosage for ${missingDosage.drug}.`);
     return;
   }
   const daysSupply = parseInt(el("md-days-supply").value, 10) || 30;
@@ -1068,7 +2025,11 @@ async function submitComparePlans() {
   const dosage = el("cp-dosage").value.trim();
   const planIds = getComparePlanValues();
   if (!drug) {
-    showGuidedError("Please enter a drug name.");
+    showGuidedError("Please select a drug.");
+    return;
+  }
+  if (!dosage) {
+    showGuidedError("Please select a dosage.");
     return;
   }
   if (planIds.length < 2) {
@@ -1104,7 +2065,10 @@ function getFilters() {
   const filters = {};
   const drug = el("filter-drug").value.trim();
   const dosage = el("filter-dosage").value.trim();
-  const plan = el("filter-plan").value;
+  // Falls back to the Chat plan-picker widget's selection when the Guided form's own
+  // plan field is empty (e.g. sending from the plain Chat tab) — plan_id is the only
+  // field the chat picker ever contributes; state/zip themselves are never sent here.
+  const plan = el("filter-plan").value || chatPlanCombobox.getValue();
   const year = el("filter-year").value;
   const daysSupply = el("filter-days-supply").value;
   const ytd = el("filter-ytd").value;
@@ -1620,6 +2584,7 @@ function renderResults(resp) {
 
 function switchMode(mode) {
   const isChat = mode === "chat";
+  closeAllDrugPickers();
   el("mode-chat").classList.toggle("hidden", !isChat);
   el("mode-chat").hidden = !isChat;
   el("mode-guided").classList.toggle("hidden", isChat);
@@ -1631,7 +2596,9 @@ function switchMode(mode) {
   el("mode-tab-guided").setAttribute("aria-selected", String(!isChat));
   el("mode-tab-guided").tabIndex = isChat ? -1 : 0;
   el("turn-counter").classList.toggle("hidden", !isChat);
-  (isChat ? el("chat-input") : el("filter-drug"))?.focus();
+  if (isChat) {
+    el("chat-input")?.focus();
+  }
 }
 
 function composeGuidedMessage() {
@@ -1772,9 +2739,18 @@ async function sendMessage(message, { switchToChat = false } = {}) {
 function submitGuidedEstimate() {
   showGuidedError("");
   const drug = el("filter-drug").value.trim();
+  const dosage = el("filter-dosage").value.trim();
   const plan = el("filter-plan").value;
-  if (!drug || !plan) {
-    showGuidedError("Please enter a drug name and select a plan.");
+  if (!drug) {
+    showGuidedError("Please select a drug.");
+    return;
+  }
+  if (!dosage) {
+    showGuidedError("Please select a dosage.");
+    return;
+  }
+  if (!plan) {
+    showGuidedError("Please select a plan.");
     return;
   }
   void sendGuidedInitial(composeGuidedMessage(), getFilters());
@@ -1861,7 +2837,7 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
         message,
         session_id: guidedSessionId,
         filters,
-        model: getSelectedModel(),
+        model: getSelectedModel("guided-model-select"),
         timezone: getUserTimezone(),
       }),
     });
@@ -2022,10 +2998,14 @@ loadDisclaimer();
 initDisclaimerCollapse();
 initFieldInfoTooltips();
 initPlanCombobox();
+initLocationPickers();
+initDrugPickers();
 resetDrugRows();
 resetComparePlanRows();
 populateModelSelect();
+populateModelSelect("guided-model-select");
 updateSessionUsageDisplay();
+loadStates();
 pollPlansUntilLoaded();
 resetGuidedConversation();
 switchMode("chat");

@@ -78,6 +78,14 @@ class PlanRepository:
         )
         return [self._row_to_dict(r) for r in rows]
 
+    def list_states(self) -> list[str]:
+        """Distinct states with at least one ingested plan, for state-picker UIs."""
+        rows = self.db.fetchall(
+            "SELECT DISTINCT state FROM plans WHERE state IS NOT NULL AND state != '' "
+            "ORDER BY state"
+        )
+        return [r[0] for r in rows]
+
     def get_plan(self, plan_key: str) -> dict | None:
         row = self.db.fetchone(
             f"SELECT {self._COLUMNS} FROM plans WHERE plan_key = ?",
@@ -132,6 +140,21 @@ class BasicDrugsFormularyRepository:
             )
             for r in rows
         ]
+
+    def has_any_rxcui(self, formulary_id: str, rxcuis: list[str]) -> bool:
+        if not rxcuis:
+            return False
+        placeholders = ", ".join("?" for _ in rxcuis)
+        row = self.db.fetchone(
+            f"""
+            SELECT 1
+            FROM basic_drugs_formulary
+            WHERE formulary_id = ? AND rxcui IN ({placeholders})
+            LIMIT 1
+            """,
+            [formulary_id, *rxcuis],
+        )
+        return row is not None
 
 
 class BeneficiaryCostRepository:

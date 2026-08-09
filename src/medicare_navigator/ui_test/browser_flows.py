@@ -75,6 +75,15 @@ def _wait_for_plans(page, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
     raise TimeoutError("Plan list did not load within timeout")
 
 
+def _select_option_combobox(page, input_id: str, listbox_id: str, value: str) -> None:
+    inp = page.locator(f"#{input_id}")
+    inp.click()
+    inp.fill(value)
+    page.wait_for_selector(f"#{listbox_id} .plan-option", timeout=DEFAULT_TIMEOUT_MS)
+    option = page.locator(f"#{listbox_id} .plan-option").filter(has_text=value)
+    option.first.click()
+
+
 def _select_plan_combobox(page, input_id: str, listbox_id: str, plan_key: str) -> None:
     inp = page.locator(f"#{input_id}")
     inp.click()
@@ -153,8 +162,8 @@ def run_guided_single_flow(
 
         _wait_for_plans(page, timeout_ms)
         page.locator("#mode-tab-guided").click()
-        page.locator("#filter-drug").fill("metformin")
-        page.locator("#filter-dosage").fill("500mg")
+        _select_option_combobox(page, "filter-drug-input", "filter-drug-listbox", "metformin")
+        _select_option_combobox(page, "filter-dosage-input", "filter-dosage-listbox", "500mg")
         _select_plan_combobox(page, "filter-plan-input", "filter-plan-listbox", PLAN_FL_PDP)
         page.locator("#guided-submit").click()
 
@@ -196,11 +205,11 @@ def run_guided_multi_flow(
         page.locator("#guided-mode-multidrug").click()
         _select_plan_combobox(page, "md-plan-input", "md-plan-listbox", PLAN_FL_PDP)
 
-        page.locator("#md-drug-1").fill("metformin")
-        page.locator("#md-dosage-1").fill("500mg")
+        _select_option_combobox(page, "md-drug-input-1", "md-drug-listbox-1", "metformin")
+        _select_option_combobox(page, "md-dosage-input-1", "md-dosage-listbox-1", "500mg")
         page.locator("#multidrug-add-row").click()
-        page.locator("#md-drug-2").fill("januvia")
-        page.locator("#md-dosage-2").fill("100mg")
+        _select_option_combobox(page, "md-drug-input-2", "md-drug-listbox-2", "januvia")
+        _select_option_combobox(page, "md-dosage-input-2", "md-dosage-listbox-2", "100mg")
         page.locator("#multidrug-submit").click()
 
         page.wait_for_selector("#guided-chat-messages .message.assistant", timeout=timeout_ms)
@@ -237,8 +246,8 @@ def run_guided_compare_plan_flow(
         _wait_for_plans(page, timeout_ms)
         page.locator("#mode-tab-guided").click()
         page.locator("#guided-mode-compareplans").click()
-        page.locator("#cp-drug").fill("metformin")
-        page.locator("#cp-dosage").fill("500mg")
+        _select_option_combobox(page, "cp-drug-input", "cp-drug-listbox", "metformin")
+        _select_option_combobox(page, "cp-dosage-input", "cp-dosage-listbox", "500mg")
         _select_plan_combobox(page, "cp-plan-input-1", "cp-plan-listbox-1", PLAN_FL_PDP)
         _select_plan_combobox(page, "cp-plan-input-2", "cp-plan-listbox-2", PLAN_FL_MAPD)
         page.locator("#compareplans-submit").click()
