@@ -13,25 +13,29 @@ All pytest runs are offline — [`tests/conftest.py`](../../../tests/conftest.py
 
 | Staged path pattern | Required commands |
 |---------------------|-------------------|
-| `src/medicare_navigator/tools/**` | `pytest tests/test_tools.py -v` |
-| `src/medicare_navigator/intake/**` | `pytest tests/test_intake.py tests/test_tools.py -v` |
-| `src/medicare_navigator/orchestrator/**`, `session/**` | `pytest tests/test_follow_up.py -v` |
-| `src/medicare_navigator/api/**` | `pytest tests/test_follow_up.py -v` |
-| `src/medicare_navigator/agents/**`, `llm/**` | `pytest tests/test_follow_up.py tests/test_intake.py -v` |
+| `src/medicare_navigator/tools/**` | `pytest tests/test_estimate_drug_cost.py tests/test_estimate_all_channels.py tests/test_drug_lookup.py tests/test_ndc.py tests/test_zip_lookup.py tests/test_benefit_phase.py tests/test_part_d_benefit_params.py -v` |
+| `src/medicare_navigator/agent/**` | `pytest tests/test_navigator.py tests/test_citations.py -v` |
+| `src/medicare_navigator/orchestrator/**`, `session/**` | `pytest tests/test_navigator.py -v` |
+| `src/medicare_navigator/api/**` | `pytest tests/test_ui.py tests/test_disclaimer_coverage.py tests/test_compare_plans.py tests/test_batch_estimate.py -v` |
+| `src/medicare_navigator/agents/**`, `llm/**` | `pytest tests/test_navigator.py tests/test_llm_client.py tests/test_llm_mock.py -v` |
+| `src/medicare_navigator/guardrails/**` | `pytest tests/test_citations.py tests/test_channel_parity.py tests/test_navigator.py -v` |
 | `src/medicare_navigator/ingestion/**`, `storage/**` | `pytest tests/ -v` |
 | `src/medicare_navigator/models/**`, `config.py` | `pytest tests/ -v` |
 | `src/medicare_navigator/eval/**` | `pytest tests/ -v` (also note `medicare-eval` if eval queries/results changed) |
-| `tests/test_tools.py` | `pytest tests/test_tools.py -v` |
-| `tests/test_intake.py` | `pytest tests/test_intake.py -v` |
-| `tests/test_follow_up.py` | `pytest tests/test_follow_up.py -v` |
+| `src/medicare_navigator/qa/**` | `pytest tests/test_chat_qa.py -v` |
+| `src/medicare_navigator/ui_test/**` | `pytest tests/test_ui.py tests/test_smoke_fields.py -v` |
+| `tests/test_estimate_drug_cost.py`, `tests/test_estimate_all_channels.py` | `pytest tests/test_estimate_drug_cost.py tests/test_estimate_all_channels.py -v` |
+| `tests/test_drug_lookup.py` | `pytest tests/test_drug_lookup.py -v` |
+| `tests/test_disclaimer_coverage.py` | `pytest tests/test_disclaimer_coverage.py -v` |
+| `tests/test_smoke_fields.py` | `pytest tests/test_smoke_fields.py -v` |
 | `tests/**` (only test files staged) | `pytest <staged test paths> -v` |
 | `pyproject.toml`, `tests/conftest.py` | `pytest tests/ -v` |
 | `src/**` (fallback) | `pytest tests/ -v` |
 
 Rows are additive: multiple matches → union of commands, then dedupe.
 
-| `frontend/**` | `pytest tests/test_ui.py -v` |
-| `src/medicare_navigator/ui_test/**` | `pytest tests/test_ui.py -v` |
+| `frontend/**` | `pytest tests/test_ui.py tests/test_smoke_fields.py tests/test_disclaimer_coverage.py -v` |
+| `.cursor/skills/numeric-accuracy/golden-cases.jsonl`, `scripts/run_golden_cases.py` | `python scripts/run_golden_cases.py` |
 
 ### Frontend only
 

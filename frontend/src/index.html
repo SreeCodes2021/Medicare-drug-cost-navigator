@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Drug Cost Navigator" />
-  <link rel="stylesheet" href="/styles.css?v=33" />
+  <link rel="stylesheet" href="/styles.css?v=35" />
 </head>
 <body>
   <header class="topbar">
@@ -150,7 +150,7 @@
           <form id="chat-form" class="chat-form">
             <textarea id="chat-input" rows="1" placeholder="Ask anything — e.g. lovastatin 40mg on S5921-400, 90-day supply, spent $800 YTD" required></textarea>
             <div class="input-toolbar">
-              <span class="composer-hint">Ask a follow-up</span>
+              <span id="chat-composer-hint" class="composer-hint hidden">Ask a follow-up</span>
               <div class="input-toolbar-right">
                 <select id="model-select" class="model-select" aria-label="LLM model"></select>
                 <button type="submit" id="send-btn">Send</button>
@@ -440,6 +440,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=32"></script>
+  <script src="/app.js?v=33"></script>
 </body>
 </html>

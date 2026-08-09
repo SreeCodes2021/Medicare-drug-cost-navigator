@@ -146,6 +146,59 @@ def test_drugs_endpoint_with_plan_id_returns_objects(spuf_db):
     assert metformin["on_formulary"] is True
 
 
+def test_dosage_combobox_clears_and_reloads_when_drug_changes():
+    """Functional contract: changing the drug field must re-fetch dosages
+    scoped to the new drug and clear any dosage selection that doesn't belong
+    to it (frontend/src/app.js createDrugDosagePicker). Prevents the
+    known-bad UX of a drug's dosage list "sticking" from a previous drug."""
+    from medicare_navigator.ui_test.checks import frontend_dist_dir
+
+    js = (frontend_dist_dir() / "app.js").read_text(encoding="utf-8")
+    assert "async function loadDosagesForDrug(drug)" in js
+    # On drug selection: dosage cleared *before* the new dosage list loads.
+    onselect_idx = js.index("onSelect: (drug) => {")
+    onselect_block = js[onselect_idx : onselect_idx + 200]
+    assert "dosageCombobox.clear();" in onselect_block
+    assert "loadDosagesForDrug(drug);" in onselect_block
+    # Stale dosage (not valid for the new drug) is cleared inside the loader too.
+    loader_idx = js.index("async function loadDosagesForDrug(drug)")
+    loader_block = js[loader_idx : loader_idx + 600]
+    assert "dosageCombobox.clear();" in loader_block
+    assert "!hasDrug" in loader_block  # disabled with no drug selected
+
+
+def test_dosage_endpoint_is_scoped_to_the_named_drug_not_global(spuf_db):
+    """/api/drug-dosages must return dosages for the requested drug only —
+    this is the backend half of "dosage should follow drug name"."""
+    client = TestClient(app)
+    metformin_concepts = [
+        {"rxcui": "6809", "concept_name": "metformin 500 MG Oral Tablet", "tty": "SCD"},
+    ]
+    lisinopril_concepts = [
+        {"rxcui": "29046", "concept_name": "lisinopril 10 MG Oral Tablet", "tty": "SCD"},
+    ]
+
+    async def fake_cached(name: str):
+        if name == "metformin":
+            return metformin_concepts
+        if name == "lisinopril":
+            return lisinopril_concepts
+        return []
+
+    with patch(
+        "medicare_navigator.tools.drug_lookup._cached_list_strength_concepts",
+        new=AsyncMock(side_effect=fake_cached),
+    ):
+        met_response = client.get("/api/drug-dosages", params={"drug": "metformin"})
+        lis_response = client.get("/api/drug-dosages", params={"drug": "lisinopril"})
+
+    met_dosages = met_response.json()["dosages"]
+    lis_dosages = lis_response.json()["dosages"]
+    assert met_dosages and "500mg" in met_dosages
+    assert lis_dosages and "10mg" in lis_dosages
+    assert met_dosages != lis_dosages, "different drugs must not share a dosage list"
+
+
 def test_drug_dosages_endpoint_with_plan_id_returns_objects(spuf_db):
     client = TestClient(app)
     concepts = [{"rxcui": "6809", "concept_name": "metformin 500 MG Oral Tablet", "tty": "SCD"}]

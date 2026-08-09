@@ -56,13 +56,16 @@ def _cmd_list(args: argparse.Namespace) -> int:
         REQUIRED_API_PATHS,
         REQUIRED_ELEMENT_IDS,
         REQUIRED_STATIC_PATHS,
+        SMOKE_BLANK_SUBMIT_CASES,
         SMOKE_MESSAGES,
+        SMOKE_SELECT_IDS,
+        SMOKE_TEXT_INPUT_IDS,
     )
 
     print(
         json.dumps(
             {
-                "groups": ["static", "api", "chat", "guided"],
+                "groups": ["static", "api", "chat", "guided", "fields"],
                 "browser_flows": list(BROWSER_FLOW_NAMES),
                 "static_paths": REQUIRED_STATIC_PATHS,
                 "api_paths": REQUIRED_API_PATHS,
@@ -71,6 +74,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
                 "chat_response_fields": CHAT_RESPONSE_UI_FIELDS,
                 "smoke_messages": SMOKE_MESSAGES,
                 "guided_smoke_flows": GUIDED_SMOKE_FLOWS,
+                "smoke_text_input_ids": SMOKE_TEXT_INPUT_IDS,
+                "smoke_select_ids": SMOKE_SELECT_IDS,
+                "smoke_blank_submit_cases": [c[0] for c in SMOKE_BLANK_SUBMIT_CASES],
             },
             indent=2,
         )
@@ -99,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="Run UI checks (default: static + api + chat)")
     run.add_argument(
         "--groups",
-        help="Comma-separated groups: static,api,chat,guided (default: all except guided)",
+        help="Comma-separated groups: static,api,chat,guided,fields (default: static,api,chat)",
     )
     run.add_argument(
         "--offline",

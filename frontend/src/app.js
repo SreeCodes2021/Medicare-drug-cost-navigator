@@ -611,6 +611,14 @@ function resetChat() {
 
   el("chat-input").value = "";
   el("chat-input").focus();
+  updateChatComposerHint();
+}
+
+function updateChatComposerHint() {
+  const hint = el("chat-composer-hint");
+  if (!hint) return;
+  const hasThread = el("chat-messages")?.classList.contains("is-thread");
+  hint.classList.toggle("hidden", !hasThread);
 }
 
 function updatePlanLoadHint(count, message) {
@@ -2372,6 +2380,7 @@ function appendMessage(role, text, source, citations, usage, containerId = "chat
     const empty = el("empty-state");
     if (empty) empty.remove();
     container.classList.add("is-thread");
+    updateChatComposerHint();
   } else {
     el("guided-chat-placeholder")?.remove();
   }
@@ -2597,7 +2606,12 @@ function switchMode(mode) {
   el("mode-tab-guided").tabIndex = isChat ? -1 : 0;
   el("turn-counter").classList.toggle("hidden", !isChat);
   if (isChat) {
-    el("chat-input")?.focus();
+    const hasThread = el("chat-messages")?.classList.contains("is-thread");
+    if (!hasThread) {
+      window.scrollTo(0, 0);
+    }
+  } else {
+    el("chat-input")?.blur();
   }
 }
 
@@ -2994,6 +3008,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 emptyStateHtml = el("empty-state").outerHTML;
+updateChatComposerHint();
 loadDisclaimer();
 initDisclaimerCollapse();
 initFieldInfoTooltips();

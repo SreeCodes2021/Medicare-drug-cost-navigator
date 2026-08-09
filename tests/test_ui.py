@@ -123,6 +123,45 @@ def test_chat_response_fields_documented():
         assert field_name in model_fields, f"{field_name} missing from QueryResponse"
 
 
+def test_guided_state_is_shared_across_guided_submodes_but_not_with_chat():
+    """State-carryover contract (frontend/src/app.js):
+    - `guidedState` is ONE variable shared by Single/Multiple/Compare so
+      switching guided sub-tabs keeps the selected state and its scoped plans.
+    - `chatState` is a SEPARATE variable — selecting a state in the Chat tab
+      must never leak into the Guided tab's plan scoping, and vice versa.
+    A regression here would either silently reset guided plans when switching
+    sub-tabs, or leak Chat's location context into Guided (privacy/logic bug).
+    """
+    js = (frontend_dist_dir() / "app.js").read_text(encoding="utf-8")
+    assert "let guidedState = " in js
+    assert "let chatState = " in js
+    assert "function onGuidedStateChanged(state) {\n  guidedState = state" in js.replace(
+        "\r\n", "\n"
+    )
+    assert "function onChatStateChanged(state) {\n  chatState = state" in js.replace(
+        "\r\n", "\n"
+    )
+    # All three guided submode plan comboboxes read from the one shared guidedState.
+    scoped_idx = js.index("function guidedScopedPlans()")
+    scoped_block = js[scoped_idx : scoped_idx + 200]
+    assert "guidedState" in scoped_block
+    instances_idx = js.index("function guidedPlanComboboxInstances()")
+    instances_block = js[instances_idx : instances_idx + 200]
+    for name in ("primaryPlanCombobox", "mdPlanCombobox", "comparePlanRows"):
+        assert name in instances_block, f"{name} must be scoped by the shared guidedState"
+
+
+def test_guided_drug_and_dosage_fields_reset_per_submode_not_shared():
+    """Each guided submode (single/multi/compare) owns its own drug/dosage
+    picker instance — selecting metformin in Single must not pre-fill or leak
+    into Multi-drug or Compare-plans when the user switches sub-tabs."""
+    js = (frontend_dist_dir() / "app.js").read_text(encoding="utf-8")
+    assert "const singleDrugPicker = createDrugDosagePicker({" in js
+    assert "const compareDrugPicker = createDrugDosagePicker({" in js
+    # Multi-drug rows each get their own picker instance (per-row, not shared).
+    assert "picker" in js[js.index("drugRows") : js.index("drugRows") + 4000]
+
+
 def test_fastapi_mounts_frontend_dist():
     dist = settings.project_root / "frontend" / "dist"
     assert dist.is_dir()

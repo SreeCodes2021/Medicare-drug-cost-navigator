@@ -154,7 +154,8 @@ body {
   top: 0;
   z-index: 1000;
   flex-shrink: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 0.75rem;
   padding: 0.6rem calc(0.85rem + var(--safe-right)) 0.6rem calc(0.85rem + var(--safe-left));
@@ -164,7 +165,7 @@ body {
 
 .topbar-menu {
   position: relative;
-  flex-shrink: 0;
+  justify-self: start;
 }
 
 .menu-btn {
@@ -223,11 +224,13 @@ body {
 .app-menu-item:hover { background: var(--bg); }
 
 .topbar-title {
-  flex: 1;
+  justify-self: center;
   min-width: 0;
+  max-width: 100%;
   font-size: 0.92rem;
   font-weight: 600;
   color: var(--text);
+  text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1065,11 +1068,16 @@ body.modal-open {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  margin-left: auto;
 }
 
 .composer-hint {
   font-size: 0.76rem;
   color: var(--muted);
+}
+
+.composer-hint.hidden {
+  display: none;
 }
 
 #send-btn,
@@ -1107,6 +1115,7 @@ body.modal-open {
   flex-wrap: nowrap;
   flex-shrink: 0;
   justify-content: flex-end;
+  justify-self: end;
 }
 
 .model-select {
@@ -1666,7 +1675,7 @@ body.modal-open {
   }
 
   .topbar-title {
-    display: none;
+    font-size: 0.85rem;
   }
 
   .main-header-controls {

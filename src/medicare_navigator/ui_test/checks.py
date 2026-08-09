@@ -205,6 +205,46 @@ GUIDED_SMOKE_FLOWS = [
 
 BROWSER_FLOW_NAMES = ("chat", "guided-single", "guided-multi", "guided-compare-plan")
 
+# Every text/number input and select-like control a beneficiary can type into
+# or open, across chat and all three guided submodes. Tier-1 smoke: exists,
+# accepts blank/whitespace, and (for pickers) offers options once data loads.
+SMOKE_TEXT_INPUT_IDS = [
+    "chat-input",
+    "filter-drug-input",
+    "filter-drug-filter",
+    "filter-dosage-input",
+    "filter-plan-input",
+    "filter-ytd",
+    "guided-chat-input",
+    "guided-state-input",
+    "guided-zip-input",
+    "chat-state-input",
+    "chat-zip-input",
+    "md-ytd",
+    "cp-drug-input",
+    "cp-drug-filter",
+    "cp-dosage-input",
+    "cp-ytd",
+]
+
+SMOKE_SELECT_IDS = [
+    "model-select",
+    "guided-model-select",
+    "filter-year",
+    "filter-days-supply",
+    "md-days-supply",
+    "cp-days-supply",
+]
+
+SMOKE_BLANK_SUBMIT_CASES = [
+    # (name, method, path, payload_or_params, expected_status_codes)
+    ("estimate_blank_drug", "post", "/api/estimate", {"plan_id": "S9999-001", "drug": ""}, {400, 422}),
+    ("estimate_blank_plan", "post", "/api/estimate", {"plan_id": "", "drug": "metformin"}, {400, 422}),
+    ("drug_dosages_blank_drug", "get", "/api/drug-dosages?drug=", None, {400}),
+    ("drug_dosages_whitespace_drug", "get", "/api/drug-dosages?drug=%20%20", None, {400}),
+    ("chat_blank_message", "post", "/api/chat", {"message": ""}, {200, 400, 422}),
+]
+
 
 class HttpGetter(Protocol):
     def get(self, path: str) -> tuple[int, str]: ...
@@ -428,6 +468,59 @@ def check_app_js_contract(js: str) -> CheckReport:
             f"function {fn}" in js or f"async function {fn}" in js,
             detail="function missing" if fn not in js else "",
             group="static",
+        )
+    return report
+
+
+def check_field_element_contract(html: str) -> CheckReport:
+    """Every smoke-tracked input/select id actually exists in the shipped HTML."""
+    report = CheckReport()
+    for element_id in SMOKE_TEXT_INPUT_IDS + SMOKE_SELECT_IDS:
+        found = f'id="{element_id}"' in html or f"id='{element_id}'" in html
+        report.add(
+            f"fields:html:id:{element_id}",
+            found,
+            detail="missing input/select id" if not found else "",
+            group="fields",
+        )
+    return report
+
+
+def check_field_blank_whitespace_handling(getter: HttpGetter) -> CheckReport:
+    """Blank/whitespace field values must be rejected or handled gracefully —
+    never a 500 or an unhandled exception. This is the "smoke" bar (doesn't
+    crash), not the "functional" bar (does the right thing)."""
+    report = CheckReport()
+    for name, method, path, payload, expected_statuses in SMOKE_BLANK_SUBMIT_CASES:
+        if method == "get":
+            status, _ = getter.get(path)
+        else:
+            status, _ = getter.post_json(path, payload or {})
+        report.add(
+            f"fields:blank:{name}",
+            status in expected_statuses and status != 500,
+            detail=f"status={status}, expected one of {sorted(expected_statuses)}",
+            group="fields",
+        )
+    return report
+
+
+def check_model_selects_populated(getter: HttpGetter) -> CheckReport:
+    """#model-select / #guided-model-select must have >=1 non-empty option,
+    sourced from GET /api/models — otherwise the dropdown renders empty."""
+    report = CheckReport()
+    status, body = getter.get("/api/models")
+    report.add("fields:models:http", status == 200, detail=f"status={status}", group="fields")
+    if status == 200:
+        import json
+
+        data = json.loads(body)
+        models = data.get("models") or []
+        report.add(
+            "fields:models:nonempty",
+            isinstance(models, list) and len(models) > 0,
+            detail=f"models={models}",
+            group="fields",
         )
     return report
 
@@ -761,12 +854,19 @@ def run_checks(
         finally:
             getter.close()
 
-    needs_getter = "api" in selected or "chat" in selected or "guided" in selected
+    if "fields" in selected:
+        dist = frontend_dist_dir()
+        report.merge(check_field_element_contract((dist / "index.html").read_text(encoding="utf-8")))
+
+    needs_getter = "api" in selected or "chat" in selected or "guided" in selected or "fields" in selected
     if needs_getter:
         getter = InProcessGetter() if offline else HttpxGetter(base_url, timeout=timeout)
         try:
             if "api" in selected:
                 report.merge(check_api_contract(getter))
+            if "fields" in selected:
+                report.merge(check_field_blank_whitespace_handling(getter))
+                report.merge(check_model_selects_populated(getter))
             if "chat" in selected:
                 report.merge(check_chat_smoke(getter))
             if "guided" in selected:

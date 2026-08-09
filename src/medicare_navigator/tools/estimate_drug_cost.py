@@ -215,9 +215,6 @@ def _compute_channel_costs(
         if cost_share is None:
             applied_copays.append(None)
             applied_pcts.append(None)
-            if phase_for_lookup == "catastrophic":
-                ndc_costs.append(0.0)
-                applied_copays[-1] = 0.0
             continue
         cost_type, copay, coinsurance_pct, tier_cost_max = cost_share
         if cost_type == "coinsurance":

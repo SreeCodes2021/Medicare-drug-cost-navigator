@@ -26,6 +26,7 @@ def invoke_chat(
     *,
     session_id: str | None = None,
     filters: dict[str, Any] | None = None,
+    model: str | None = None,
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
@@ -35,12 +36,15 @@ def invoke_chat(
         payload["session_id"] = session_id
     if filters:
         payload["filters"] = filters
+    if model:
+        payload["model"] = model
 
     with httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout) as client:
         response = client.post("/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
 
+    data["_model_requested"] = model
     return build_grading_bundle(message, data)
 
 
@@ -59,6 +63,7 @@ def build_grading_bundle(user_message: str, chat_response: dict[str, Any]) -> di
         "user_message": user_message,
         "session_id": chat_response.get("session_id"),
         "turn_count": chat_response.get("turn_count"),
+        "model_requested": chat_response.get("_model_requested"),
         "grading": {
             "explanation": shown_text,
             "status": inner.get("status"),

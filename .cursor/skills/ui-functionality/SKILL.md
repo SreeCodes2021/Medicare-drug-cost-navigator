@@ -21,6 +21,12 @@ User invoked this skill — exercise the live portal like a beneficiary, report 
 | `/ui-functionality/guided-single` | Guided → Single | [guided-single/SKILL.md](guided-single/SKILL.md) |
 | `/ui-functionality/guided-multi` | Guided → Multiple drugs | [guided-multi/SKILL.md](guided-multi/SKILL.md) |
 | `/ui-functionality/guided-compare-plan` | Guided → Compare plans | [guided-compare-plan/SKILL.md](guided-compare-plan/SKILL.md) |
+| `/ui-functionality/dosage-dependency` | Dosage list follows drug name | [dosage-dependency/SKILL.md](dosage-dependency/SKILL.md) |
+| `/ui-functionality/state-carryover` | Cross-tab/sub-tab state persist-vs-reset | [state-carryover/SKILL.md](state-carryover/SKILL.md) |
+| `/ui-functionality/disclaimer-everywhere` | Disclaimer on every status/surface | [disclaimer-everywhere/SKILL.md](disclaimer-everywhere/SKILL.md) |
+| `/ui-functionality/llm-availability` | Every catalog LLM actually responds | [llm-availability/SKILL.md](llm-availability/SKILL.md) |
+
+For a single call that runs this skill plus all eight sub-skills together, use [`/functional-test`](../functional-test/SKILL.md).
 
 If the user names a surface, read and follow that sub-skill. Otherwise run offline contracts for all groups, then browser flows for each surface.
 

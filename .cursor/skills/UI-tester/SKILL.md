@@ -163,6 +163,8 @@ Present results as:
 
 For **end-to-end portal flows** (Playwright + guided API smoke), use [`/ui-functionality`](../ui-functionality/SKILL.md).
 
+For a single call that runs this skill plus the field/keyboard sweep and responsive checklist together, use [`/smoke-test`](../smoke-test/SKILL.md).
+
 ## Frontend build pre-flight
 
 Before live or browser testing, ensure static assets are current:

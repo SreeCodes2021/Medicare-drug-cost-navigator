@@ -120,6 +120,27 @@ async def test_catastrophic_phase_when_ytd_at_or_above_annual_oop_cap():
 
 
 @pytest.mark.asyncio
+async def test_catastrophic_phase_unmapped_days_supply_does_not_fabricate_zero_cost():
+    """Regression guard: an unmapped days-supply (no beneficiary_cost CODE at all, same gap as
+    test_unmapped_days_supply_without_cost_does_not_claim_ingredient_cost) must not fabricate a
+    $0.00 catastrophic-phase cost. Every dollar figure must trace back to a real CMS
+    coverage_level=3 record — the same standard already enforced for every other phase."""
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_PDP,
+        drug_name="lisinopril",
+        dosage="10mg",
+        days_supply=45,
+        ytd_oop_spend=2200,
+    )
+    assert result.status == ToolStatus.ok
+    assert result.data.benefit_phase == "catastrophic"
+    assert result.data.cost_low is None
+    assert result.data.cost_high is None
+    assert any("45-day supply" in c for c in result.data.caveats)
+    assert not any("reflects ingredient cost only" in c for c in result.data.caveats)
+
+
+@pytest.mark.asyncio
 async def test_bug5_multiple_ndcs_cross_tier_flagged_more_severely():
     """Lisinopril matches NDCs at tier 1 and tier 2 -> same_tier False, stronger caveat."""
     result = await estimate_drug_cost(
