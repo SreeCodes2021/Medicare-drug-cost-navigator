@@ -55,7 +55,21 @@ The `--include-live` cases require a real ingest first:
 medicare-ingest spuf --download --states AR --merge-states
 ```
 
-Golden cases file: [`golden-cases.jsonl`](golden-cases.jsonl). Each row has `requires_live_ingest`, the exact request (`drug`, `dosage`, `plan_id`, `days_supply`, `ytd_oop_spend`), an optional `channel`, and the expected `cost_low`/`cost_high`/`tier`/`phase`.
+Golden cases file: [`golden-cases.jsonl`](golden-cases.jsonl). Each row has `requires_live_ingest`, the exact request (`drug`, `dosage`, `plan_id`, `days_supply`, `ytd_oop_spend`), an optional `channel`, optional `case_group`, and expected fields:
+
+| `case_group` | Expected fields |
+|--------------|-----------------|
+| `tier_lookup` | `expected_tier` |
+| `channel` | `expected_cost_low` / `expected_cost_high` (channel pinned) |
+| `benefit_phase` | `expected_benefit_phase`, optional `expected_effective_phase` |
+| `copay` | `expected_plan_copay`, `expected_applied_copay` (both non-NA) |
+| `coinsurance` | `expected_plan_coinsurance_pct`, `expected_applied_coinsurance_pct`; use `expect_cost_na: true` when Bug 4 blocks dollar estimate |
+| `estimated_cost_copay` | non-NA `expected_cost_low` / `expected_cost_high` on copay-type fills |
+| `estimated_cost_coinsurance` | non-NA cost where ingredient pricing applies, plus coinsurance fields where relevant |
+
+Run with `--by-group` to summarize pass counts per group. Plain-English intent is in each row's `notes` field.
+
+**Live-ingest provenance bar:** every `requires_live_ingest: true` row must cite a reproducible source — e.g. [`docs/business-solution.md` §3.3](../../../docs/business-solution.md) verification bullets, a sibling golden case on the same plan/drug, **and** a fresh `POST /api/estimate` cross-check whose `channels` breakdown you inspected. Example: `golden-006` ($13 `standard_retail`) is anchored to §3.3 + `golden-001` ($5 `preferred_retail`) on plan `S5921-400` / lovastatin 40mg. Do not mark verified from LLM prose or an undocumented ingest date alone.
 
 **Always pin a `channel`** (`preferred_retail`, `standard_retail`, `preferred_mail`, or `standard_mail`) whenever the source figure you verified came from one specific channel — which is almost always, since CMS pricing legitimately differs per channel (e.g. plan `S5921-400` lovastatin 40mg is $5 preferred-retail but $13 standard-retail). Omitting `channel` makes the runner aggregate min/max across all four channels, which will produce false failures (or worse, false passes) whenever channels diverge. Only omit `channel` if you've confirmed all populated channels genuinely share the same price for that case.
 

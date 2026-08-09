@@ -594,7 +594,7 @@ flowchart TD
 | 90 | 90 | 2 |
 | Other | varies | `None` — no beneficiary_cost lookup is attempted (CMS code 3/"other" exists in the file but v1 does not map to it) |
 
-A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a dollar figure still comes back depends on benefit phase: pre-deductible fills price from `pricing.UNIT_COST` directly (keyed on the raw day count, not the CODE) and can still return an ingredient-cost-only estimate; initial-coverage fills have no such fallback, so the tool returns `cost_low`/`cost_high` as `null` with a caveat explaining that no cost-sharing data could be found for that fill size — never a silent `ok` with blank numbers and no explanation.
+A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a dollar figure still comes back depends on benefit phase: pre-deductible fills price from `pricing.UNIT_COST` directly (keyed on the raw day count, not the CODE) and can still return an ingredient-cost-only estimate; initial-coverage and catastrophic fills have no such fallback, so the tool returns `cost_low`/`cost_high` as `null` with a caveat explaining that no cost-sharing data could be found for that fill size — never a silent `ok` with blank numbers and no explanation, and never a fabricated `$0.00` for catastrophic in place of an actual `COVERAGE_LEVEL=3` record.
 
 ### 6.3 Coverage level codes (verified on real 2026 CMS data)
 

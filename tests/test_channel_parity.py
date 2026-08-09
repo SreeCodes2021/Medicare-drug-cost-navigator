@@ -3,9 +3,11 @@
 from medicare_navigator.guardrails.channel_parity import (
     channel_coverage_note,
     channel_wording_for_channels,
+    cost_sentence_for_estimate,
     prose_channel_overclaim_warnings,
     prose_false_unavailable_warnings,
     prose_tied_lowest_warnings,
+    repair_false_unavailable_prose,
     summarize_channel_coverage,
     summarize_channels_dict,
 )
@@ -148,3 +150,67 @@ def test_prose_tied_lowest_warnings_when_only_one_plan_named():
     )
     assert warnings
     assert "H2802-063" in warnings[0]
+
+
+def test_cost_sentence_for_estimate_zero_dollar_standard_retail():
+    sentence = cost_sentence_for_estimate(
+        {
+            "drug_name": "metformin",
+            "dosage": "500mg",
+            "days_supply": 30,
+            "plan_key": "H1045-057",
+            "channels": {
+                "preferred_retail": {"cost_low": None},
+                "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                "preferred_mail": {"cost_low": None},
+                "standard_mail": {"cost_low": None},
+            },
+        }
+    )
+    assert sentence is not None
+    assert "$0.00" in sentence
+    assert "H1045-057" in sentence
+
+
+def test_repair_false_unavailable_prepends_zero_dollar_lead():
+    est = {
+        "drug_name": "metformin",
+        "dosage": "500mg",
+        "days_supply": 30,
+        "plan_key": "H1045-057",
+        "channels": {
+            "preferred_retail": {"cost_low": None},
+            "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+            "preferred_mail": {"cost_low": None},
+            "standard_mail": {"cost_low": None},
+        },
+    }
+    bad = (
+        "For metformin 500 mg on plan H1045-057, the tool can't calculate a dollar "
+        "out-of-pocket estimate."
+    )
+    repaired = repair_false_unavailable_prose(bad, [est])
+    assert repaired.startswith("Metformin")
+    assert "$0.00" in repaired
+    assert "can't calculate" in repaired
+
+
+def test_prose_false_unavailable_catches_cant_calculate_phrase():
+    coverage = summarize_channel_coverage(
+        [
+            {
+                "plan_key": "H1045-057",
+                "channels": {
+                    "preferred_retail": {"cost_low": None},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "preferred_mail": {"cost_low": None},
+                    "standard_mail": {"cost_low": None},
+                },
+            }
+        ]
+    )
+    warnings = prose_false_unavailable_warnings(
+        "H1045-057: can't calculate a dollar estimate for this fill.",
+        coverage,
+    )
+    assert warnings

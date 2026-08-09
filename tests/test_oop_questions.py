@@ -46,6 +46,43 @@ def test_medical_moop_with_plan_uses_lookup():
     assert "spuf" in explanation.lower() or "formulary" in explanation.lower()
 
 
+def test_medical_moop_uses_filter_plan_when_no_plan_in_message():
+    resolved = resolve_oop_question(
+        "what's the in-network vs out-of-network MOOP for my plan?",
+        filter_plan_id="H1889-014",
+    )
+    assert resolved is not None
+    explanation, artifacts, tools = resolved
+    assert tools == ["lookup_plan"]
+    assert "lookup_plan" in artifacts
+    assert "H1889-014" in explanation
+
+
+def test_any_plan_plus_explicit_plan_id_prefers_explicit_plan():
+    resolved = resolve_oop_question(
+        "for any plan, what's the in-network vs out-of-network max OOP for H1889-014?"
+    )
+    assert resolved is not None
+    explanation, artifacts, tools = resolved
+    assert tools == ["lookup_plan"]
+    assert "H1889-014" in explanation
+
+
+def test_in_and_out_of_network_phrasing_triggers_medical_moop_via_filter():
+    from medicare_navigator.agent.oop_questions import is_medical_moop_question
+
+    assert is_medical_moop_question(
+        "what's the MOOP in and out of network for my plan?"
+    )
+    resolved = resolve_oop_question(
+        "what's the MOOP in and out of network for my plan?",
+        filter_plan_id="H1889-014",
+    )
+    assert resolved is not None
+    _, _, tools = resolved
+    assert tools == ["lookup_plan"]
+
+
 def test_any_plan_wording_ignores_filter_plan():
     resolved = resolve_oop_question(
         "for any plan, what is my max oop according to the cms?",

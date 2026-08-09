@@ -114,6 +114,23 @@ def _merge_last_tool_calls(
     return list(merged.values())
 
 
+async def _channel_estimates_for_guardrails(
+    tool_artifacts: dict[str, dict[str, Any]],
+    last_tool_calls: list[dict] | None,
+) -> list[dict[str, Any]]:
+    """Channel estimate dicts for guardrails without mutating the live artifact map."""
+    estimates = channel_estimates_from_artifact(tool_artifacts)
+    if estimates:
+        return [est.model_dump() for est in estimates]
+    preview: dict[str, dict[str, Any]] = dict(tool_artifacts)
+    if _MULTI_CHANNEL_CALLS_KEY in tool_artifacts:
+        preview[_MULTI_CHANNEL_CALLS_KEY] = list(tool_artifacts[_MULTI_CHANNEL_CALLS_KEY])
+    channel = await ensure_channel_estimate(preview, last_tool_calls)
+    if channel is None:
+        return []
+    return [channel.model_dump()]
+
+
 async def ensure_channel_estimate(
     tool_artifacts: dict[str, dict[str, Any]],
     last_tool_calls: list[dict] | None,
@@ -137,7 +154,10 @@ async def ensure_channel_estimate(
         days_supply=int(args.get("days_supply") or 30),
         ytd_oop_spend=float(args.get("ytd_oop_spend") or 0),
     )
-    tool_artifacts["estimate_drug_cost_all_channels"] = serialize_tool_result(result)
+    serialized = serialize_tool_result(result)
+    if serialized.get("status") != "ok" or not serialized.get("data"):
+        return None
+    tool_artifacts["estimate_drug_cost_all_channels"] = serialized
     return channel_estimate_from_artifact(tool_artifacts)
 
 
@@ -402,6 +422,8 @@ class Navigator:
             )
 
         from medicare_navigator.agent.request_context import set_request_timezone
+        from medicare_navigator.agent.alternatives_questions import resolve_alternatives_question
+        from medicare_navigator.agent.dosage_questions import resolve_dosage_question
         from medicare_navigator.agent.oop_questions import resolve_oop_question
         from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
 
@@ -434,15 +456,68 @@ class Navigator:
                 response_source="System/OOP",
             )
 
+        alternatives_result = resolve_alternatives_question(message)
+        if alternatives_result:
+            explanation, tool_artifacts, tools_invoked = alternatives_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/Alternatives",
+            )
+
+        # When a plan is already known, defer strength clarification to the estimate
+        # tool so suppressed-plan and insulin hard-stops run before needs_dosage.
+        plan_known = _parsed_plan_in_message(message) or bool(filter_plan_id)
+        dosage_result = None
+        if not plan_known:
+            dosage_result = await resolve_dosage_question(
+                message,
+                filter_drug=filter_slots.drug if filter_slots else None,
+                filter_dosage=filter_slots.dosage if filter_slots else None,
+            )
+        if dosage_result:
+            explanation, tool_artifacts, tools_invoked = dosage_result
+            explanation = _explanation_with_disclaimer(explanation)
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="needs_clarification",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/Dosage",
+            )
+
         explanation, tool_artifacts, tools_invoked, response_source, token_usage, new_last_tool_calls = (
             await self._run_agent_loop(
                 message, filter_slots, chat_history, model_id, last_tool_calls, timezone
             )
         )
 
+        guardrail_channel_estimates = await _channel_estimates_for_guardrails(
+            tool_artifacts, new_last_tool_calls
+        )
+
         citations = build_citations_from_artifacts(tool_artifacts)
         explanation, citations, guard_errors = apply_guardrails(
-            explanation, tool_artifacts, citations
+            explanation, tool_artifacts, citations, channel_estimates=guardrail_channel_estimates
         )
         if guard_errors:
             (
@@ -484,6 +559,19 @@ class Navigator:
         drug_name, rxcui, estimate, data_as_of = _extract_response_fields(tool_artifacts)
         channel_estimate = await ensure_channel_estimate(tool_artifacts, new_last_tool_calls)
         channel_estimates = channel_estimates_from_artifact(tool_artifacts)
+        if channel_estimate is not None:
+            channel_based = estimate_from_artifact(
+                {"estimate_drug_cost_all_channels": {
+                    "status": "ok",
+                    "data": channel_estimate.model_dump(),
+                }}
+            )
+            if channel_based and (estimate is None or estimate.cost_low is None):
+                estimate = channel_based
+                if channel_estimate.drug_name:
+                    drug_name = channel_estimate.drug_name
+                if channel_estimate.rxcui:
+                    rxcui = channel_estimate.rxcui
         tool_statuses = {
             name: artifact.get("status", "unknown")
             for name, artifact in tool_artifacts.items()
@@ -666,8 +754,10 @@ class Navigator:
                     + "\nIf a benefit phase or cost input changed (e.g. deductible met/not met), "
                     "re-call the estimate tool with updated arguments before answering — do not "
                     "guess. Otherwise rewrite using ONLY dollar amounts and phase language "
-                    "supported by tool results (cost_low/cost_high, benefit_phase/"
-                    "effective_phase)."
+                    "supported by tool results (channels.*.cost_low/cost_high when the tool "
+                    "returned a channels object, or top-level cost_low/cost_high, plus "
+                    "benefit_phase/effective_phase). $0.00 is a valid estimate — do not claim "
+                    "no dollar figure exists when any channel has a numeric cost."
                 ),
             }
         )
@@ -754,9 +844,15 @@ class Navigator:
             if not result.content:
                 return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_calls
 
+            guardrail_channel_estimates = await _channel_estimates_for_guardrails(
+                merged_artifacts, new_last_tool_calls
+            )
             citations = build_citations_from_artifacts(merged_artifacts)
             explanation, citations, retry_errors = apply_guardrails(
-                result.content, merged_artifacts, citations
+                result.content,
+                merged_artifacts,
+                citations,
+                channel_estimates=guardrail_channel_estimates,
             )
             if retry_errors:
                 return None, [], token_usage, errors, merged_artifacts, retry_tools_invoked, new_last_tool_calls

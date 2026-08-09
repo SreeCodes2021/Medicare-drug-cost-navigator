@@ -53,11 +53,15 @@ under 50 total unless they explicitly raise the cap:
 
 | Section | Default budget | Notes |
 |---------|-----------------|-------|
-| Numeric accuracy — live oracle diffs | 5 queries | Real chat/guided questions whose `$` figures get diffed against `/api/estimate`/`/api/compare-plans` (no LLM needed for the oracle side, but the chat side is a real query) |
-| Happy-path quality baseline | 10 queries | Representative normal questions + follow-ups across chat, guided single/multi/compare, spread across at least 2 of the 3 catalog models |
-| **OOP / MOOP scope** | **4 queries (required)** | **Always run** — see [§ OOP / MOOP scope](#oop--moop-scope-mandatory) below; counts toward the 50-query total (carve from happy-path + exploratory if needed) |
-| On-the-fly exploratory questioning | 26 queries | Fresh questions per [`exploratory-qa`](../exploratory-qa/SKILL.md) — malformed input, out-of-scope asks, meaningful/meaningless follow-ups, prompt injection (OOP/MOOP cases live in the dedicated section above, not here) |
-| **Total** | **≤ 50** | If the user asks for a smaller/faster pass, scale each row down proportionally and say so in the report header — **never skip the OOP/MOOP block entirely** |
+| **Deterministic golden cases (free)** | **0 queries** | **Always run** — `python scripts/run_golden_cases.py [--include-live]` covers tier, channel, benefit phase, copay, coinsurance, and estimated cost (see [§ 1b](#1b-deterministic-golden-cases-mandatory--free)) |
+| Numeric accuracy — live oracle diffs | 5 queries | Real chat/guided questions whose `$` figures get diffed against `/api/estimate`/`/api/compare-plans` |
+| Happy-path quality baseline | 8 queries | Representative normal questions + follow-ups (carve from here when mandatory LLM blocks below run) |
+| **OOP / MOOP scope** | **6 queries (required)** | See [§ 2b](#2b-oop--moop-scope-mandatory--6-queries-every-run) |
+| **Formulary tier lookup** | **2 queries (required)** | See [§ 2c](#2c-formulary-tier-lookup-mandatory--2-queries-every-run) |
+| **Pharmacy channels** | **2 queries (required)** | See [§ 2d](#2d-pharmacy-channels-mandatory--2-queries-every-run) |
+| **Benefit phase** | **2 queries (required)** | See [§ 2e](#2e-benefit-phase-mandatory--2-queries-every-run) |
+| On-the-fly exploratory questioning | 22 queries | Fresh questions per [`exploratory-qa`](../exploratory-qa/SKILL.md); grade alternatives/trend claims per updated [`chat-QA`](../chat-QA/SKILL.md) dimension 1 (Phase 8 tools not shipped) |
+| **Total** | **≤ 50** | Scale proportionally on a faster pass — **never skip** § 1b or § 2b–2e entirely |
 
 Use real plan/drug combinations from the live data actually loaded on this
 server (check `GET /api/plans`, `GET /api/drugs`, `GET /api/states` first) —
@@ -75,16 +79,32 @@ If it fails, ask the user to start the server (`uvicorn medicare_navigator.api.a
 
 ### 1. Numeric accuracy (budget: 5 real queries + oracle diffs)
 
-Follow [`numeric-accuracy/SKILL.md`](../numeric-accuracy/SKILL.md):
+Follow [`numeric-accuracy/SKILL.md`](../numeric-accuracy/SKILL.md).
+
+### 1b. Deterministic golden cases (mandatory — free)
+
+**Always run before any LLM grading.** Plain-English catalog: [`golden-cases.jsonl`](../numeric-accuracy/golden-cases.jsonl) (`notes` field on each row). Runner groups by `case_group`:
 
 ```bash
-python scripts/run_golden_cases.py                                          # offline fixture golden cases (no LLM, free)
-python scripts/run_golden_cases.py --include-live --base-url http://localhost:8000  # + real CMS golden cases (no LLM, free)
+python scripts/run_golden_cases.py --by-group
+python scripts/run_golden_cases.py --include-live --base-url http://localhost:8000 --by-group
 ```
 
-These two commands are free (no LLM) — they don't count against the 50-query budget. Then spend up to 5 real queries on live oracle diffs: ask the chat/guided pipeline the same question the deterministic oracle just answered, and diff the `$` figures in the real LLM's prose against it.
+| `case_group` | Min cases (offline) | What it checks |
+|--------------|---------------------|----------------|
+| `tier_lookup` | 3 | `expected_tier` on `/api/estimate` |
+| `channel` | 4 | Per-channel `cost_low`/`cost_high` (preferred vs standard, retail vs mail) |
+| `benefit_phase` | 5 | `expected_benefit_phase` + `expected_effective_phase` (pre-deductible, initial, catastrophic, Bug 2 override) |
+| `copay` | 5 | `expected_plan_copay` + `expected_applied_copay` (both non-NA) |
+| `coinsurance` | 5 | `expected_plan_coinsurance_pct` + `expected_applied_coinsurance_pct` (non-NA; post-deductible januvia uses `expect_cost_na: true`) |
+| `estimated_cost_copay` | 5 | Dollar estimate for copay-type fills (non-NA `cost_low`/`cost_high`) |
+| `estimated_cost_coinsurance` | 5 | Dollar estimate for coinsurance-type fills where CMS pricing applies (pre-deductible ingredient cost, or cross-tier copay wins) |
 
-### 2. Happy-path quality baseline (budget: 10 real queries)
+Any golden `[FAIL]` is an overall **BLOCK** — fix the cost pipeline before grading LLM prose.
+
+Then spend up to 5 real queries on live oracle diffs: ask the chat/guided pipeline the same question the deterministic oracle just answered, and diff the `$` figures in the real LLM's prose against it.
+
+### 2. Happy-path quality baseline (budget: 8 real queries)
 
 Send representative "normal" questions (tier lookup, a follow-up changing YTD or days supply, a plan comparison) using **real plan/drug data from this server**, and grade each with the full [`chat-QA`](../chat-QA/SKILL.md) 7-dimension rubric. Spread these across at least two of the three catalog models (`gpt-5.4-nano`, `gpt-5.6-luna`, `claude-haiku-4-5-20251001`) so a model-specific regression doesn't hide behind the default model.
 
@@ -94,7 +114,7 @@ medicare-chat-invoke send --message "what if I've spent $800 YTD?" --session-id 
 medicare-chat-invoke send --message "Compare <real drug> across <plan A> and <plan B>" --model claude-haiku-4-5-20251001
 ```
 
-### 2b. OOP / MOOP scope (mandatory — 4 queries every run)
+### 2b. OOP / MOOP scope (mandatory — 6 queries every run)
 
 These questions are **always** part of `/quality-test`. They catch a common
 failure mode: conflating **Part D statutory annual OOP cap** (same across plans,
@@ -112,6 +132,8 @@ wording each run — the scenarios are fixed, the literal phrasing is not.
 | 2 | **Generic + UI filter** | Same as #1 with `--filters-json '{"plan_id":"<real plan_key>"}'` | Same as #1 — filter must **not** leak into the answer (no unprompted plan name) |
 | 3 | **Part D annual cap only** | "What is the CMS Part D annual out-of-pocket maximum for 2026?" | States **$2,100.00**; tool is `get_part_d_benefit_params` (or `System/OOP` early return); dim 1 = grounded |
 | 4 | **Medical MOOP with plan** | "Compare max OOP in and out of network for \<real plan_key\>" | `lookup_plan` ok; refuses medical MOOP from SPUF honestly; offers drug-cost estimate; **no** fabricated in/out-of-network dollar figures |
+| 5 | **Medical MOOP + UI filter, no plan in text** | "What's the in-network vs out-of-network MOOP for my plan?" with `--filters-json '{"plan_id":"<real plan_key>"}'` (no plan ID in message) | `filter_plan_id` fallback; names filtered plan in honest refusal; **no** fabricated MOOP dollars |
+| 6 | **Contradictory "any plan" + plan ID** | "For any plan, what's the in-network vs out-of-network max OOP for \<real plan_key\>?" | Specific-plan branch wins (names that plan); honest SPUF refusal; **no** fabricated MOOP dollars — generic "any plan" wording does not suppress the named plan |
 
 **Oracle for the Part D cap (free, no LLM):**
 
@@ -128,9 +150,44 @@ or a correct `$` estimate is acceptable.
 
 **Behavior anchor:** [`src/medicare_navigator/agent/oop_questions.py`](../../../src/medicare_navigator/agent/oop_questions.py)
 
-### 3. On-the-fly exploratory questioning (budget: 26 real queries)
+### 2c. Formulary tier lookup (mandatory — 2 queries every run)
 
-Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh questions each run across all its categories (malformed input, out-of-scope asks, meaningful vs. meaningless follow-ups, prompt injection) and grade with the same rubric plus the "did not break" check. Distribute across categories roughly evenly (e.g. ~7 malformed, ~7 out-of-scope, ~12 follow-up pairs). **OOP/MOOP scope cases are not duplicated here** — they are mandatory in [§ 2b](#2b-oop--moop-scope-mandatory--4-queries-every-run).
+Ask what **formulary tier** a drug is on for a named plan. Use **real** `plan_id` + drug from `GET /api/plans` / `GET /api/drugs` (offline fixture: metformin is Tier 1 on `S9999-001`, Tier 2 on `H8888-001`; omeprazole is Tier 3 on `S9999-001`).
+
+| # | Scenario | Example shape (rephrase each run) | Pass criteria |
+|---|----------|----------------------------------|---------------|
+| 1 | **Tier on PDP** | "What tier is \<drug\> \<dosage\> on plan \<plan_key\>?" | States correct tier number; grounded via `estimate_drug_cost` / formulary citation; dim 1 = grounded |
+| 2 | **Same drug, different plan** | Same drug on a second plan where tier differs | Correct tier for *that* plan (not the first plan's tier) |
+
+**Oracle (free):** `POST /api/estimate` → `data.tier`, or matching `golden-004` / `golden-005` / `golden-008` row in [`golden-cases.jsonl`](../numeric-accuracy/golden-cases.jsonl).
+
+### 2d. Pharmacy channels (mandatory — 2 queries every run)
+
+Verify the bot respects **per-channel** pricing (preferred vs standard, retail vs mail) — never silently averages channels.
+
+| # | Scenario | Example shape (rephrase each run) | Pass criteria |
+|---|----------|----------------------------------|---------------|
+| 1 | **Named channel** | "What's the preferred retail cost for \<drug\> on \<plan_key\>?" | `$` figure matches `channels.preferred_retail` from `/api/estimate` for that channel only |
+| 2 | **Channel contrast** | "How does mail order compare to retail for \<drug\> on \<plan_key\>?" | Cites distinct figures per populated channel; does not invent a single blended price when channels differ |
+
+**Oracle:** pinned-channel rows in `case_group: channel` (`golden-007`–`golden-011`, `golden-006` live).
+
+### 2e. Benefit phase (mandatory — 2 queries every run)
+
+Verify **benefit phase** language matches the deterministic phase engine (`pre_deductible`, `initial_coverage`, `catastrophic`) and distinguishes raw vs effective phase when Bug 2 applies.
+
+| # | Scenario | Example shape (rephrase each run) | Pass criteria |
+|---|----------|----------------------------------|---------------|
+| 1 | **YTD changes phase** | Cost question with `$0 YTD`, then follow-up "what if I've already spent $\<deductible+\>$ YTD?" | Second answer reflects `initial_coverage` (or `catastrophic` if YTD ≥ $2,100); `$` matches oracle |
+| 2 | **Catastrophic or Bug 2** | Either YTD ≥ $2,100 → $0 fill, **or** Tier 1 `DED_APPLIES_YN=N` at $0 YTD | Phase named correctly; does not claim full ingredient price when copay applies under Bug 2 |
+
+**Oracle:** `case_group: benefit_phase` (`golden-012`–`golden-016`, `golden-003` live).
+
+**Copay, coinsurance, and estimated cost** are covered deterministically by golden groups `copay`, `coinsurance`, `estimated_cost_copay`, and `estimated_cost_coinsurance` (§ 1b) — no separate LLM block unless a golden case passes but live prose disagrees (file under numeric oracle diffs).
+
+### 3. On-the-fly exploratory questioning (budget: 22 real queries)
+
+Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh questions each run across all its categories (malformed input, out-of-scope asks, meaningful vs. meaningless follow-ups, prompt injection) and grade with the same rubric plus the "did not break" check. Distribute across categories roughly evenly (e.g. ~6 malformed, ~6 out-of-scope, ~10 follow-up pairs). **OOP/MOOP, tier, channel, and benefit-phase cases are not duplicated here** — they are mandatory in § 2b–2e. For **alternatives or price-trend claims** in exploratory answers, apply [`chat-QA`](../chat-QA/SKILL.md) dimension 1 Phase 8 rules (named alternatives without `alternatives_finder` → score 0).
 
 ## One consolidated report
 
@@ -140,7 +197,18 @@ Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh 
 **Mode:** real LLM (models used: {list}) — {N}/50 real queries spent
 **Overall verdict:** BLOCK | REVISE | PASS (worst verdict across all graded turns)
 
-### Numeric accuracy
+### Deterministic golden cases (free)
+| case_group | Passed | Notes |
+|------------|--------|-------|
+| tier_lookup | N/N | |
+| channel | N/N | |
+| benefit_phase | N/N | |
+| copay | N/N | |
+| coinsurance | N/N | |
+| estimated_cost_copay | N/N | |
+| estimated_cost_coinsurance | N/N | |
+
+### Numeric accuracy (live LLM oracle diffs)
 | Case | Expected | Actual | Result |
 |------|----------|--------|--------|
 | golden-00N / live oracle diff | … | … | PASS/FAIL |
@@ -156,6 +224,20 @@ Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh 
 | Generic + UI filter | … | Same; filter ignored | … | PASS/FAIL | |
 | Part D annual cap 2026 | … | $2,100.00 grounded | … | PASS/FAIL | |
 | Medical MOOP + plan_key | … | lookup + honest refusal | … | PASS/FAIL | |
+| Medical MOOP + UI filter only | … | filter_plan_id fallback; names plan | … | PASS/FAIL | |
+| Any plan + explicit plan ID | … | specific plan branch wins | … | PASS/FAIL | |
+
+### Formulary tier lookup (mandatory)
+| Scenario | Model | Expected tier | Actual | Verdict | Notes |
+|----------|-------|---------------|--------|---------|-------|
+
+### Pharmacy channels (mandatory)
+| Scenario | Model | Expected | Actual | Verdict | Notes |
+|----------|-------|----------|--------|---------|-------|
+
+### Benefit phase (mandatory)
+| Scenario | Model | Expected phase | Actual | Verdict | Notes |
+|----------|-------|----------------|--------|---------|-------|
 
 ### Exploratory findings
 | Category | Question tried | Model | Did-not-break | Verdict | Notes |

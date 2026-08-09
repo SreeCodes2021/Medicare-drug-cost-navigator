@@ -13,7 +13,37 @@ _UNAVAILABLE_PHRASES = (
     "no matching estimate",
     "could not be computed",
     "no dollar estimate",
+    "can't calculate",
+    "cannot calculate",
+    "can't compute",
+    "cannot compute",
+    "unable to calculate",
+    "unable to compute",
+    "no cost range",
+    "no numeric estimate",
+    "no numeric cost",
+    "does not include a matching cost-share",
+    "doesn't include a matching cost-share",
+    "missing cms pricing",
+    "no dollar out-of-pocket",
+    "isn't available",
+    "is not available",
+    "isnt available",
+    "no dollar out-of-pocket estimate",
+    "no dollar cost estimate",
+    "can't produce a dollar",
+    "cannot produce a dollar",
+    "can’t produce a dollar",
+    "can't produce your",
+    "cannot produce your",
 )
+
+
+def text_claims_no_estimate(text: str) -> bool:
+    lower = text.lower()
+    if _DOLLAR_IN_WINDOW_RE.search(text):
+        return False
+    return any(phrase in lower for phrase in _UNAVAILABLE_PHRASES)
 _PLAN_KEY_RE = re.compile(r"\b[A-Za-z]\d{4}-\d{3}\b")
 _LOWEST_PHRASE_RE = re.compile(r"\b(?:lowest|cheapest)\b", re.I)
 _DOLLAR_IN_WINDOW_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
@@ -237,6 +267,80 @@ def prose_tied_lowest_warnings(
             f"{', '.join(omitted)} also estimate ${min_low:.2f} — mention the tie or list all."
         ]
     return []
+
+
+def cost_sentence_for_estimate(est: dict[str, Any]) -> str | None:
+    """Deterministic one-line cost summary from a multi-channel estimate dict."""
+    channels = est.get("channels")
+    if not isinstance(channels, dict):
+        low = est.get("cost_low")
+        high = est.get("cost_high")
+        if low is None:
+            return None
+        high = high if high is not None else low
+    else:
+        coverage = summarize_channels_dict(channels)
+        low, high = coverage["aggregate_cost_low"], coverage["aggregate_cost_high"]
+        if low is None:
+            return None
+
+    drug = est.get("drug_name") or "This drug"
+    dosage = est.get("dosage")
+    drug_label = f"{drug} {dosage}".strip() if dosage else drug
+    days = est.get("days_supply", 30)
+    plan_key = est.get("plan_key") or est.get("plan_name") or "this plan"
+    cost_text = f"${low:.2f}" if low == high else f"${low:.2f}–${high:.2f}"
+    channel_note = channel_wording_for_channels(channels) if channels else ""
+    return (
+        f"{drug_label.capitalize()} for a {days}-day supply on {plan_key} "
+        f"is estimated at {cost_text}{channel_note}."
+    )
+
+
+def deterministic_cost_explanation(channel_estimates: list[dict[str, Any]]) -> str | None:
+    parts = [cost_sentence_for_estimate(est) for est in channel_estimates if isinstance(est, dict)]
+    parts = [p for p in parts if p]
+    return "\n\n".join(parts) if parts else None
+
+
+def repair_false_unavailable_prose(
+    explanation: str,
+    channel_estimates: list[dict[str, Any]] | None,
+) -> str:
+    """Prepend grounded cost leads when prose wrongly claims no estimate exists."""
+    if not explanation or not channel_estimates:
+        return explanation
+
+    leads: list[str] = []
+    for est in channel_estimates:
+        if not isinstance(est, dict):
+            continue
+        plan_key = est.get("plan_key") or ""
+        coverage = summarize_channels_dict(est.get("channels"))
+        if not coverage["priced_channels"]:
+            continue
+        window = (
+            _plan_lead_window(explanation, plan_key)
+            if plan_key
+            else explanation.lower()
+        )
+        if not window:
+            continue
+        if not any(phrase in window for phrase in _UNAVAILABLE_PHRASES):
+            continue
+        if _window_has_dollar_for_aggregate(
+            window,
+            coverage["aggregate_cost_low"],
+            coverage["aggregate_cost_high"],
+        ):
+            continue
+        sentence = cost_sentence_for_estimate(est)
+        if sentence and sentence not in explanation:
+            leads.append(sentence)
+
+    if not leads:
+        return explanation
+    return "\n\n".join(leads + [explanation.strip()])
 
 
 def channel_wording_for_channels(channels: dict[str, Any] | None) -> str:

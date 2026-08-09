@@ -9,7 +9,10 @@ from medicare_navigator.guardrails.channel_parity import (
     prose_channel_overclaim_warnings,
     prose_false_unavailable_warnings,
     prose_tied_lowest_warnings,
+    repair_false_unavailable_prose,
     summarize_channel_coverage,
+    text_claims_no_estimate,
+    deterministic_cost_explanation,
 )
 from medicare_navigator.guardrails.source_catalog import (
     drug_name_from_artifacts,
@@ -19,7 +22,9 @@ from medicare_navigator.guardrails.source_catalog import (
 )
 from medicare_navigator.models.citation import Citation
 from medicare_navigator.models.response import DrugCostEstimate, MultiChannelDrugCostEstimate
-from medicare_navigator.tools.disclaimers import BUG2_CAVEAT
+from medicare_navigator.tools.disclaimers import BUG2_CAVEAT, NO_COST_SHARE_DATA_MESSAGE
+from medicare_navigator.tools.drug_lookup import COMMON_DRUGS_REQUIRING_DOSAGE
+from medicare_navigator.tools.normalize_drug import canonicalize_drug_name
 from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
 
 _ESTIMATE_TOOL_NAMES = ("estimate_drug_cost_all_channels", "estimate_drug_cost")
@@ -46,7 +51,8 @@ _CLINICIAN_DEFERRAL_RE = re.compile(
     re.I,
 )
 _EXAMPLE_DRUG_AFTER_ALTERNATIVES_RE = re.compile(
-    r"(?:alternativ|substitute|instead of)[\s\S]{0,120}\b(?:metformin|glipizide|glimepiride|sitagliptin)\b",
+    r"(?:alternativ|substitute|instead of|generic version of|cheaper)[\s\S]{0,400}"
+    r"\b(?:metformin|glipizide|glimepiride|sitagliptin|semaglutide|empagliflozin|dapagliflozin)\b",
     re.I,
 )
 
@@ -470,24 +476,126 @@ def _strip_card_only_caveat_paraphrases(out: str) -> str:
 def _alternatives_without_clinician_deferral(out: str) -> str | None:
     if not _ALTERNATIVES_TOPIC_RE.search(out):
         return None
-    if _CLINICIAN_DEFERRAL_RE.search(out):
-        return None
     if _EXAMPLE_DRUG_AFTER_ALTERNATIVES_RE.search(out):
         return (
-            "Listed example substitute drugs before deferring clinical judgment to a "
-            "doctor or pharmacist — lead with that deferral first."
+            "Named substitute drugs without the user naming them — do not list example "
+            "drug names when discussing alternatives; defer to a doctor or pharmacist and "
+            "offer to estimate only drugs the user names."
         )
-    return None
+    if _CLINICIAN_DEFERRAL_RE.search(out):
+        return None
+    return (
+        "Discussed alternatives without deferring clinical judgment to a doctor or "
+        "pharmacist first."
+    )
+
+
+def _drop_contradictory_unavailable_paragraphs(out: str) -> str:
+    """Remove paragraphs that deny an estimate after a repair lead stated one."""
+    paragraphs = [p.strip() for p in out.split("\n\n") if p.strip()]
+    kept: list[str] = []
+    for paragraph in paragraphs:
+        if text_claims_no_estimate(paragraph):
+            continue
+        kept.append(paragraph)
+    return "\n\n".join(kept) if kept else out
+
+
+_FALSE_NOT_COVERED_RE = re.compile(
+    r"\bnot\s+covered\b|\bnot\s+on\s+(?:the\s+)?(?:plan'?s?\s+)?formulary\b",
+    re.I,
+)
+
+
+def _estimate_calls(tool_artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if calls:
+        return [artifact for artifact in calls if isinstance(artifact, dict)]
+    primary = _primary_estimate_artifact(tool_artifacts)
+    return [primary] if primary else []
+
+
+def repair_false_not_covered_for_missing_dosage(
+    explanation: str, tool_artifacts: dict[str, dict[str, Any]]
+) -> str:
+    """Ingredient-level not_covered rows without a strength are not definitive coverage denials."""
+    if not _FALSE_NOT_COVERED_RE.search(explanation):
+        return explanation
+
+    calls = _estimate_calls(tool_artifacts)
+    if not calls:
+        return explanation
+
+    needs_dosage = any(artifact.get("status") == "needs_dosage" for artifact in calls)
+    spurious_drugs: list[str] = []
+    for artifact in calls:
+        if artifact.get("status") != "not_covered":
+            continue
+        data = artifact.get("data") or {}
+        if data.get("dosage"):
+            continue
+        drug = canonicalize_drug_name(data.get("drug_name") or "")
+        plan_key = data.get("plan_key")
+        if not drug:
+            continue
+        has_covered_variant = any(
+            other.get("status") == "ok"
+            and (other.get("data") or {}).get("covered")
+            and canonicalize_drug_name((other.get("data") or {}).get("drug_name") or "") == drug
+            and (other.get("data") or {}).get("plan_key") == plan_key
+            for other in calls
+        )
+        if has_covered_variant or drug in COMMON_DRUGS_REQUIRING_DOSAGE or needs_dosage:
+            if drug not in spurious_drugs:
+                spurious_drugs.append(drug)
+
+    if not spurious_drugs:
+        return explanation
+
+    if len(spurious_drugs) == 1:
+        drug = spurious_drugs[0]
+        return (
+            f"I need the strength (dosage) for **{drug}** before I can estimate cost or "
+            "confirm formulary coverage — missing strength is not the same as not covered."
+        )
+    drug_list = ", ".join(f"**{d}**" for d in spurious_drugs)
+    return (
+        f"I need the strength for each drug ({drug_list}) before I can compare costs — "
+        "missing strength is not the same as not covered."
+    )
 
 
 def apply_guardrails(
     explanation: str,
     tool_artifacts: dict[str, dict[str, Any]],
     citations: list[Citation] | None = None,
+    *,
+    channel_estimates: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[Citation], list[str]]:
     """Validate and fix explanation. Returns (explanation, citations, errors)."""
     errors: list[str] = []
-    out = _strip_card_only_caveat_paraphrases(explanation.strip())
+    explanation = repair_false_not_covered_for_missing_dosage(explanation, tool_artifacts)
+    channel_estimates = channel_estimates or [
+        est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
+    ]
+    channel_coverage = summarize_channel_coverage(channel_estimates)
+    priced_channels_exist = any(
+        (summary.get("priced_channels") or []) for summary in channel_coverage
+    )
+    if priced_channels_exist and text_claims_no_estimate(explanation):
+        deterministic = deterministic_cost_explanation(channel_estimates)
+        if deterministic:
+            repaired = deterministic
+            had_repair = True
+        else:
+            repaired = repair_false_unavailable_prose(explanation.strip(), channel_estimates)
+            had_repair = repaired != explanation.strip()
+    else:
+        repaired = repair_false_unavailable_prose(explanation.strip(), channel_estimates)
+        had_repair = repaired != explanation.strip()
+    out = _strip_card_only_caveat_paraphrases(repaired)
+    if had_repair:
+        out = _drop_contradictory_unavailable_paragraphs(out)
     cites = list(citations or build_citations_from_artifacts(tool_artifacts))
 
     valid_source_ids = extract_source_ids(tool_artifacts)
@@ -507,9 +615,6 @@ def apply_guardrails(
     if alternatives_error:
         errors.append(alternatives_error)
 
-    channel_estimates = [
-        est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
-    ]
     channel_coverage = summarize_channel_coverage(channel_estimates)
     for warning in prose_channel_overclaim_warnings(out, channel_coverage):
         errors.append(warning)
@@ -537,7 +642,16 @@ def apply_guardrails(
 
     # Safety-critical caveats/hard-stop messages must reach the user verbatim, not just be
     # requested via the system prompt — force-append any the LLM dropped or paraphrased away.
+    priced_channels_exist = any(
+        (summary.get("priced_channels") or []) for summary in channel_coverage
+    )
     for text in _enforced_texts(tool_artifacts):
+        if (
+            priced_channels_exist
+            and text
+            and NO_COST_SHARE_DATA_MESSAGE in text
+        ):
+            continue
         if text and text not in out:
             out = f"{out}\n\n{text}"
 

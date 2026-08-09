@@ -84,7 +84,11 @@ async def test_chat_returns_503_without_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "")
 
     client = TestClient(app)
-    response = client.post("/api/chat", json={"message": "metformin tier copay"})
+    # Plan + strength still routes through the agent loop, which requires LLM credentials.
+    response = client.post(
+        "/api/chat",
+        json={"message": "metformin 500mg tier copay plan S9999-001"},
+    )
     assert response.status_code == 503
 
 

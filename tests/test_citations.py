@@ -138,14 +138,16 @@ def _compare_partial_channels_artifacts():
 
 def test_apply_guardrails_flags_false_not_available_with_priced_channels():
     artifacts = _compare_partial_channels_artifacts()
-    _explanation, _citations, errors = apply_guardrails(
+    explanation, _citations, errors = apply_guardrails(
         (
             "H2802-063: covered but estimate not available. "
             "H5216-366: $0.00. Lowest cost is H5216-366."
         ),
         artifacts,
     )
-    assert any("H2802-063" in e and "priced" in e for e in errors)
+    assert not any("H2802-063" in e and "priced" in e for e in errors)
+    assert "H2802-063" in explanation
+    assert "$0.00" in explanation
 
 
 def test_apply_guardrails_flags_sole_lowest_when_plans_tie():
@@ -169,16 +171,52 @@ def test_apply_guardrails_flags_alternatives_without_clinician_deferral():
     assert any("doctor" in e.lower() or "pharmacist" in e.lower() for e in errors)
 
 
-def test_apply_guardrails_allows_alternatives_with_clinician_deferral():
+def test_apply_guardrails_flags_alternatives_with_unprompted_drug_names_even_with_deferral():
     artifacts = {"lookup_plan": _estimate_artifact()}
     _explanation, _citations, errors = apply_guardrails(
         (
             "Discuss any substitute with your doctor or pharmacist first. "
-            "I can estimate metformin or glipizide if you name a strength."
+            "The most common generic alternative to Januvia is sitagliptin."
+        ),
+        artifacts,
+    )
+    assert any("substitute" in e.lower() or "sitagliptin" in e.lower() for e in errors)
+
+
+def test_apply_guardrails_allows_alternatives_with_clinician_deferral_only():
+    artifacts = {"lookup_plan": _estimate_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        (
+            "Discuss any substitute with your doctor or pharmacist first. "
+            "Tell me a drug name and strength and I can estimate its cost on your plan."
         ),
         artifacts,
     )
     assert errors == []
+
+
+def test_apply_guardrails_repairs_cant_calculate_when_standard_retail_is_zero():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [
+            _all_channels_artifact(
+                plan_key="H1045-057",
+                drug_name="metformin",
+                channels={
+                    "preferred_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                    "preferred_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                },
+            ),
+        ],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "H1045-057: can't calculate a dollar out-of-pocket estimate for metformin.",
+        artifacts,
+    )
+    assert "$0.00" in explanation
+    assert "can't calculate" not in explanation.lower()
+    assert not any("priced channels" in e for e in errors)
 
 
 def test_apply_guardrails_allows_all_channel_dollar_amounts():

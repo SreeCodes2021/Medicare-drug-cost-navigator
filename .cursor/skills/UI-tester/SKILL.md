@@ -93,7 +93,9 @@ Implementation: [`src/medicare_navigator/ui_test/checks.py`](../../../src/medica
 |------|---------------------|
 | POST `/api/chat` tier lookup | Messages append, `turn_count`, results cards |
 | POST follow-up with `session_id` + filters | Session persistence, turn counter `N/5` |
-| Response envelope fields | `renderResults()` reads `status`, `formulary`, `cost_trend`, `alternatives`, `citations`, `data_as_of`, `tool_statuses`, `response_source` |
+| Response envelope fields | `renderResults()` reads `status`, `channel_estimate` / estimate cards, `citations`, `data_as_of`, `tool_statuses`, `response_source` |
+
+**Phase 6 note:** top-level `formulary`, `cost_trend`, and `alternatives` response fields were removed from the API and UI (Phase 8 roadmap). Do not expect separate trend/alternatives cards — cost/tier/phase render from `channel_estimate` / estimate data instead.
 
 Smoke messages are defined in `SMOKE_MESSAGES` inside `checks.py`.
 
@@ -110,7 +112,7 @@ Run after automated checks pass or when debugging visual/interaction bugs:
 | **Prompt chips** | Click a chip | User message sent; loading spinner; assistant reply |
 | **Chat send** | Type + Send | Empty state removed; user + assistant bubbles |
 | **Turn counter** | After send | Shows `1/5 turns` (increments each turn) |
-| **Results — ok** | Metformin + H1234-045 query | Formulary card, optional trend/alternatives/citations |
+| **Results — ok** | Metformin + H1234-045 query | Estimate / channel cost card, citations, disclaimer |
 | **Results — clarify** | "metformin copay" (no plan) | Warning in results; chat shows clarification |
 | **Results — follow-up** | Second message same session | Results merge (baseline preserved) |
 | **Error path** | Stop server, send message | "Sorry, something went wrong" in chat |

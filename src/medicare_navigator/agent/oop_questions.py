@@ -37,6 +37,10 @@ _IN_OUT_NETWORK_RE = re.compile(
     r"\b(?:in[- ]network|in\s+and\s+out\s+of\s+network).{0,40}(?:out[- ]of[- ]network|in\s+and\s+out\s+of\s+network)\b",
     re.I,
 )
+_IN_OUT_NETWORK_SINGLE_RE = re.compile(
+    r"\b(?:in\s+and\s+out\s+of\s+network|in[- ]network\s+(?:vs\.?|versus)\s+out[- ]of[- ]network)\b",
+    re.I,
+)
 _MAX_OOP_WITH_PLAN_RE = re.compile(r"\bmax(?:imum)?\s+oop\b", re.I)
 
 
@@ -56,7 +60,7 @@ def is_part_d_annual_cap_question(message: str) -> bool:
 def is_medical_moop_question(message: str) -> bool:
     if any(pattern.search(message) for pattern in _MEDICAL_MOOP_PATTERNS):
         return True
-    if _IN_OUT_NETWORK_RE.search(message):
+    if _IN_OUT_NETWORK_RE.search(message) or _IN_OUT_NETWORK_SINGLE_RE.search(message):
         return True
     if _MAX_OOP_WITH_PLAN_RE.search(message) and extract_plan_key(message):
         return True

@@ -66,9 +66,19 @@ These are **not** generic out-of-scope refusals. Grade whether the bot
   from `get_part_d_benefit_params`, not invented prose
 - **Medical MOOP + plan** — in/out-of-network MOOP for a named `plan_key` → honest
   SPUF limitation; no fabricated MOOP dollars
+- **Medical MOOP + UI filter, no plan in text** — MOOP phrasing with
+  `--filters-json '{"plan_id":"…"}'` but no plan ID in the message → uses
+  `filter_plan_id` fallback; names filtered plan; no fabricated MOOP dollars
+- **Contradictory "any plan" + plan ID** — `"for any plan"` plus explicit
+  `plan_key` and MOOP phrasing → specific-plan branch wins; documents actual
+  precedence in [`oop_questions.py`](../../../src/medicare_navigator/agent/oop_questions.py)
 
-When `/exploratory-qa` runs **standalone**, include at least cases 1 and 4 above.
+When `/exploratory-qa` runs **standalone**, include at least cases 1, 4, and 5 above.
 When invoked via `/quality-test`, skip duplication — that skill owns the full block.
+
+**Alternatives / price-trend claims:** grade per [`chat-QA`](../chat-QA/SKILL.md)
+dimension 1 — named substitute drugs or YoY price claims without shipped Phase 8
+tools (`alternatives_finder`, `cost_trend_lookup`) are **dimension 1 score 0**.
 
 ### 3. Meaningful vs. meaningless follow-ups
 Start a session with a normal cost question, then send a follow-up from each group:
