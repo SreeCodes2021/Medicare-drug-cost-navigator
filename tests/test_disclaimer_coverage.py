@@ -73,6 +73,20 @@ def test_chat_ok_explanation_contains_disclaimer_text_inline():
         assert disclaimer_text in inner["explanation"]
 
 
+def test_chat_off_topic_explanation_contains_disclaimer_text_inline():
+    """System off-topic early-return must inline the disclaimer (navigator.py), not only
+    the separate disclaimer field."""
+    disclaimer_text = _disclaimer_text_nonempty()
+    response = client.post(
+        "/api/chat",
+        json={"message": "What's the weather in Miami today?"},
+    )
+    assert response.status_code == 200
+    inner = response.json()["response"]
+    assert inner["status"] == "ok"
+    assert disclaimer_text in inner["explanation"]
+
+
 def test_limit_reached_status_still_carries_disclaimer():
     """After 5 turns in a session, status becomes limit_reached — disclaimer
     must still be present (agent/navigator.py returns it explicitly on this

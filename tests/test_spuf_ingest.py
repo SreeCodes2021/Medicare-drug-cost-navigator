@@ -1,5 +1,6 @@
 from pathlib import Path
 import zipfile
+from datetime import date
 from io import BytesIO
 
 import pytest
@@ -38,7 +39,11 @@ def _fl_filters(**overrides) -> IngestFilters:
     return IngestFilters(**defaults)
 
 
-def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
+def test_ingest_spuf_fixture_loads_fl_plans(spuf_db, monkeypatch):
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.spuf.date",
+        type("date", (), {"today": staticmethod(lambda: date(2026, 1, 15))})(),
+    )
     result = ingest_spuf(
         FIXTURE_DIR,
         filters=_fl_filters(),
@@ -51,6 +56,7 @@ def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
     assert result["stats"]["plans"] == 5
     assert result["stats"]["formulary_rows"] >= 3
     assert result["source_id"] == "cms_spuf_2026_q1"
+    assert result["manifest"]["spuf"]["quarter"] == 1
 
     repo = PlanRepository(db=spuf_db)
     fl_plans = repo.list_plans(state="FL")
@@ -58,6 +64,21 @@ def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
     assert any(p["plan_key"] == "S9999-001" for p in fl_plans)
     assert any(p["plan_key"] == "H8888-001" for p in fl_plans)
     assert any(p["plan_key"] == "S9999-003" for p in fl_plans)
+
+
+def test_ingest_spuf_uses_ingest_date_quarter(spuf_db, monkeypatch):
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.spuf.date",
+        type("date", (), {"today": staticmethod(lambda: date(2026, 5, 10))})(),
+    )
+    result = ingest_spuf(
+        FIXTURE_DIR,
+        filters=_fl_filters(),
+        db=spuf_db,
+        version="SPUF.2026.20260510",
+    )
+    assert result["source_id"] == "cms_spuf_2026_q2"
+    assert result["manifest"]["spuf"]["quarter"] == 2
 
 
 def test_suppressed_plan_is_ingested_not_filtered(spuf_db):
@@ -99,7 +120,7 @@ def test_quantity_limit_and_pa_st_columns_ingested(spuf_db):
         ).fetchone()
         pa_row = conn.execute(
             "SELECT prior_authorization_yn, step_therapy_yn "
-            "FROM basic_drugs_formulary WHERE formulary_id = 'FORM0001' AND rxcui = '7646'"
+            "FROM basic_drugs_formulary WHERE formulary_id = 'FORM0001' AND rxcui = '198051'"
         ).fetchone()
     finally:
         conn.close()

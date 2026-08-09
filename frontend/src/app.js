@@ -5,6 +5,7 @@ let resultsBaseline = null;
 let resultsBatch = null;
 let resultsComparison = null;
 let allPlans = [];
+let currentDataRelease = null;
 let sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 let cachedDisclaimerText = "";
 let cachedPrivacyText = "";
@@ -12,7 +13,7 @@ let emptyStateHtml = "";
 let guidedSessionId = null;
 let guidedTurnCount = 0;
 
-const DEFAULT_MODEL = "gpt-5.4-nano";
+const DEFAULT_MODEL = "gpt-5.6-luna";
 const MODEL_OPTIONS = [
   { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
   { id: "gpt-5.4-nano", label: "GPT-5.4 Nano" },
@@ -585,6 +586,7 @@ function resetGuidedFields() {
   showGuidedError(null);
   resetDrugRows();
   resetComparePlanRows();
+  updateGuidedSubmitButtonState();
 }
 
 function resetChat() {
@@ -664,7 +666,14 @@ function filterPlans(query) {
 // any estimate endpoint).
 let planComboboxInstances = [];
 
-function createPlanCombobox({ inputId, hiddenId, listboxId, getPlans = () => allPlans, onSelect }) {
+function createPlanCombobox({
+  inputId,
+  hiddenId,
+  listboxId,
+  getPlans = () => allPlans,
+  onSelect,
+  onChange,
+}) {
   let highlight = -1;
   const inputEl = () => el(inputId);
   const hiddenEl = () => el(hiddenId);
@@ -678,8 +687,10 @@ function createPlanCombobox({ inputId, hiddenId, listboxId, getPlans = () => all
   }
 
   function clear() {
+    const hadValue = Boolean(hiddenEl().value || inputEl().value);
     hiddenEl().value = "";
     inputEl().value = "";
+    if (hadValue && onChange) onChange();
   }
 
   function setDisabled(disabled, placeholder) {
@@ -711,10 +722,12 @@ function createPlanCombobox({ inputId, hiddenId, listboxId, getPlans = () => all
   }
 
   function selectPlan(plan) {
+    const changed = hiddenEl().value !== plan.plan_key;
     hiddenEl().value = plan.plan_key;
     inputEl().value = formatPlanLabel(plan);
     close();
     if (onSelect) onSelect(plan);
+    if (onChange && changed) onChange();
   }
 
   function render(plans) {
@@ -763,10 +776,12 @@ function createPlanCombobox({ inputId, hiddenId, listboxId, getPlans = () => all
       open();
     });
     inputEl().addEventListener("input", () => {
+      const hadValue = Boolean(hiddenEl().value);
       hiddenEl().value = "";
       render(localFilterPlans(inputEl().value));
       highlight = -1;
       open();
+      if (hadValue && onChange) onChange();
     });
     inputEl().addEventListener("blur", () => {
       setTimeout(() => {
@@ -827,6 +842,7 @@ function unregisterPlanCombobox(instance) {
 // three submodes to `allPlans.filter(p => p.state === guidedState)` — no separate
 // /api/plans?state= round trip needed since allPlans is already loaded in full.
 let guidedState = "";
+let guidedEstimateInFlight = false;
 
 function guidedScopedPlans() {
   return guidedState ? allPlans.filter((p) => p.state === guidedState) : [];
@@ -845,6 +861,7 @@ function onGuidedStateChanged(state) {
     );
     inst.onPlansRescoped();
   });
+  updateGuidedSubmitButtonState();
 }
 
 function refreshSingleDrugPickers() {
@@ -855,12 +872,45 @@ function refreshMultiDrugPickers() {
   drugRows.forEach(({ picker }) => void picker.refreshForPlanChange?.());
 }
 
+function isGuidedSingleValid() {
+  return Boolean(
+    guidedState &&
+      el("filter-drug").value.trim() &&
+      el("filter-dosage").value.trim() &&
+      el("filter-plan").value
+  );
+}
+
+function isGuidedMultiDrugValid() {
+  if (!guidedState || !el("md-plan").value) return false;
+  const items = getDrugRowValues();
+  if (!items.length) return false;
+  return items.every((item) => item.dosage);
+}
+
+function isGuidedComparePlansValid() {
+  return Boolean(
+    guidedState &&
+      el("cp-drug").value.trim() &&
+      el("cp-dosage").value.trim() &&
+      getComparePlanValues().length >= 2
+  );
+}
+
+function updateGuidedSubmitButtonState() {
+  const lock = guidedEstimateInFlight;
+  el("guided-submit").disabled = lock || !isGuidedSingleValid();
+  el("multidrug-submit").disabled = lock || !isGuidedMultiDrugValid();
+  el("compareplans-submit").disabled = lock || !isGuidedComparePlansValid();
+}
+
 const primaryPlanCombobox = createPlanCombobox({
   inputId: "filter-plan-input",
   hiddenId: "filter-plan",
   listboxId: "filter-plan-listbox",
   getPlans: guidedScopedPlans,
   onSelect: () => refreshSingleDrugPickers(),
+  onChange: updateGuidedSubmitButtonState,
 });
 
 const mdPlanCombobox = createPlanCombobox({
@@ -869,6 +919,7 @@ const mdPlanCombobox = createPlanCombobox({
   listboxId: "md-plan-listbox",
   getPlans: guidedScopedPlans,
   onSelect: () => refreshMultiDrugPickers(),
+  onChange: updateGuidedSubmitButtonState,
 });
 
 function clearPlanSelection() {
@@ -890,8 +941,10 @@ function initPlanCombobox() {
   onGuidedStateChanged("");
 }
 
-async function loadPlans() {
-  const res = await fetch(`${API}/api/plans`);
+async function loadPlans(contractYear = null) {
+  const year = contractYear ?? currentDataRelease?.contract_year ?? null;
+  const url = year ? `${API}/api/plans?year=${year}` : `${API}/api/plans`;
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`plans API ${res.status}`);
   }
@@ -902,6 +955,25 @@ async function loadPlans() {
   populatePlanSelect(plans);
   updatePlanLoadHint(plans.length);
   return plans.length;
+}
+
+async function loadDataRelease() {
+  const label = el("data-release-label");
+  try {
+    const res = await fetch(`${API}/api/data-release`);
+    if (!res.ok) throw new Error(`data-release API ${res.status}`);
+    const body = await res.json();
+    currentDataRelease = body.release && typeof body.release === "object" ? body.release : null;
+  } catch (e) {
+    console.warn("Could not load data release", e);
+    currentDataRelease = null;
+  }
+
+  if (!currentDataRelease) {
+    label.textContent = "No data loaded";
+    return;
+  }
+  label.textContent = currentDataRelease.label || currentDataRelease.id || "—";
 }
 
 async function pollPlansUntilLoaded() {
@@ -1295,6 +1367,7 @@ function createOptionCombobox({
   filterInputId = null,
   getOptions,
   onSelect,
+  onChange,
   onSearch,
   onOpen,
   ariaLabel,
@@ -1367,9 +1440,11 @@ function createOptionCombobox({
   }
 
   function clear() {
+    const hadValue = Boolean(hiddenEl().value || inputEl().value);
     hiddenEl().value = "";
     inputEl().value = "";
     if (filterEl()) filterEl().value = "";
+    if (hadValue && onChange) onChange();
   }
 
   function setDisabled(disabled, placeholder) {
@@ -1389,6 +1464,7 @@ function createOptionCombobox({
     if (filterEl()) filterEl().value = "";
     close();
     if (!silent && changed && onSelect) onSelect(normalized.value);
+    if (onChange && changed) onChange();
   }
 
   function render(options) {
@@ -1457,6 +1533,7 @@ function createOptionCombobox({
         void openDropdown(inputEl().value);
       });
       inputEl().addEventListener("input", () => {
+        const hadValue = Boolean(hiddenEl().value);
         hiddenEl().value = "";
         highlight = -1;
         clearTimeout(searchTimer);
@@ -1468,6 +1545,7 @@ function createOptionCombobox({
           render(matchingOptions(query));
           open();
         }
+        if (hadValue && onChange) onChange();
       });
     }
 
@@ -1589,6 +1667,7 @@ function createDrugDosagePicker({
   dosageHiddenId,
   dosageListboxId,
   getPlanId = () => "",
+  onChange,
 }) {
   let pickerDrugs = [];
   let availableDosages = [];
@@ -1598,6 +1677,7 @@ function createDrugDosagePicker({
     hiddenId: dosageHiddenId,
     listboxId: dosageListboxId,
     getOptions: () => availableDosages,
+    onChange,
     ariaLabel: "Dosages",
     selectionOnly: true,
     openOn: "click",
@@ -1636,6 +1716,7 @@ function createDrugDosagePicker({
       dosageCombobox.clear();
       void loadDosagesForDrug(drug);
     },
+    onChange,
     ariaLabel: "Drugs",
     selectionOnly: true,
     openOn: "click",
@@ -1647,6 +1728,7 @@ function createDrugDosagePicker({
     drugCombobox.clear();
     dosageCombobox.clear();
     dosageCombobox.setDisabled(true, "Select a drug first");
+    if (onChange) onChange();
   }
 
   async function selectDrug(drug, dosage, { silent = false } = {}) {
@@ -1711,6 +1793,7 @@ const singleDrugPicker = createDrugDosagePicker({
   dosageHiddenId: "filter-dosage",
   dosageListboxId: "filter-dosage-listbox",
   getPlanId: () => el("filter-plan").value,
+  onChange: updateGuidedSubmitButtonState,
 });
 
 const compareDrugPicker = createDrugDosagePicker({
@@ -1722,6 +1805,7 @@ const compareDrugPicker = createDrugDosagePicker({
   dosageInputId: "cp-dosage-input",
   dosageHiddenId: "cp-dosage",
   dosageListboxId: "cp-dosage-listbox",
+  onChange: updateGuidedSubmitButtonState,
 });
 
 function initDrugPickers() {
@@ -1800,6 +1884,7 @@ function createDrugRowElement() {
     dosageHiddenId: `md-dosage-${idx}`,
     dosageListboxId: `md-dosage-listbox-${idx}`,
     getPlanId: () => el("md-plan").value,
+    onChange: updateGuidedSubmitButtonState,
   });
   picker.init();
   const entry = { row, picker };
@@ -1818,6 +1903,7 @@ function addDrugRow() {
   if (drugRows.length >= MAX_BATCH_DRUGS) return;
   drugRows.push(createDrugRowElement());
   updateDrugRowControls();
+  updateGuidedSubmitButtonState();
 }
 
 function removeDrugRow(entry) {
@@ -1825,6 +1911,7 @@ function removeDrugRow(entry) {
   drugRows = drugRows.filter((r) => r !== entry);
   entry.row.remove();
   updateDrugRowControls();
+  updateGuidedSubmitButtonState();
 }
 
 function resetDrugRows() {
@@ -1878,6 +1965,7 @@ function createComparePlanRowEntry() {
     hiddenId: `cp-plan-${idx}`,
     listboxId: `cp-plan-listbox-${idx}`,
     getPlans: guidedScopedPlans,
+    onChange: updateGuidedSubmitButtonState,
   });
   combobox.init();
   combobox.setDisabled(!guidedState, guidedState ? "Type or scroll to select a plan" : "Select a state above first");
@@ -1899,6 +1987,7 @@ function addComparePlanRow() {
   if (comparePlanRows.length >= MAX_COMPARE_PLANS) return;
   comparePlanRows.push(createComparePlanRowEntry());
   updateComparePlanRowControls();
+  updateGuidedSubmitButtonState();
 }
 
 function removeComparePlanRow(entry) {
@@ -1907,6 +1996,7 @@ function removeComparePlanRow(entry) {
   unregisterPlanCombobox(entry.combobox);
   entry.row.remove();
   updateComparePlanRowControls();
+  updateGuidedSubmitButtonState();
 }
 
 function resetComparePlanRows() {
@@ -1939,6 +2029,7 @@ function switchGuidedSubmode(mode) {
     if (submitBtn) submitBtn.classList.toggle("hidden", !isActive);
   });
   showGuidedError("");
+  updateGuidedSubmitButtonState();
 }
 
 // ── Render + submit: multi-drug basket and plan comparison ──
@@ -2077,13 +2168,12 @@ function getFilters() {
   // plan field is empty (e.g. sending from the plain Chat tab) — plan_id is the only
   // field the chat picker ever contributes; state/zip themselves are never sent here.
   const plan = el("filter-plan").value || chatPlanCombobox.getValue();
-  const year = el("filter-year").value;
   const daysSupply = el("filter-days-supply").value;
   const ytd = el("filter-ytd").value;
   if (drug) filters.drug = drug;
   if (dosage) filters.dosage = dosage;
   if (plan) filters.plan_id = plan;
-  if (year) filters.contract_year = parseInt(year, 10);
+  if (currentDataRelease?.contract_year) filters.contract_year = currentDataRelease.contract_year;
   if (daysSupply) filters.days_supply = parseInt(daysSupply, 10);
   const ytdNum = parseFloat(ytd);
   if (ytd && !Number.isNaN(ytdNum) && ytdNum > 0) filters.ytd_oop_spend = ytdNum;
@@ -2645,6 +2735,34 @@ function showGuidedError(message) {
   err.classList.remove("hidden");
 }
 
+function promptGuidedMandatoryFields() {
+  showGuidedError("Please fill in all required fields above.");
+}
+
+function initGuidedSubmitWraps() {
+  const row = document.querySelector(".guided-action-row");
+  if (!row) return;
+  row.addEventListener("click", (e) => {
+    for (const id of ["guided-submit", "multidrug-submit", "compareplans-submit"]) {
+      const btn = el(id);
+      if (!btn || btn.classList.contains("hidden")) continue;
+      const rect = btn.getBoundingClientRect();
+      if (
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+      ) {
+        continue;
+      }
+      if (btn.disabled && !guidedEstimateInFlight) {
+        promptGuidedMandatoryFields();
+      }
+      break;
+    }
+  });
+}
+
 function chatErrorMessage(res, data) {
   if (typeof data === "string" && data.trim()) {
     return data.trim();
@@ -2667,6 +2785,8 @@ async function sendMessage(message, { switchToChat = false } = {}) {
   el("chat-input").value = "";
   el("send-btn").disabled = true;
   el("guided-submit").disabled = true;
+  el("multidrug-submit").disabled = true;
+  el("compareplans-submit").disabled = true;
   showLoading("Estimating cost…");
   if (!resultsBaseline) renderResultsSkeleton();
 
@@ -2746,7 +2866,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
     hideLoading();
     resetResultsPlaceholderIfEmpty();
     el("send-btn").disabled = false;
-    el("guided-submit").disabled = false;
+    updateGuidedSubmitButtonState();
   }
 }
 
@@ -2768,12 +2888,6 @@ function submitGuidedEstimate() {
     return;
   }
   void sendGuidedInitial(composeGuidedMessage(), getFilters());
-}
-
-function setGuidedEstimateButtonsDisabled(disabled) {
-  el("guided-submit").disabled = disabled;
-  el("multidrug-submit").disabled = disabled;
-  el("compareplans-submit").disabled = disabled;
 }
 
 function resetGuidedConversation() {
@@ -2835,7 +2949,8 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
   if (!message.trim()) return;
   appendMessage("user", message, null, null, null, "guided-chat-messages");
   el("guided-chat-input").value = "";
-  setGuidedEstimateButtonsDisabled(true);
+  guidedEstimateInFlight = true;
+  updateGuidedSubmitButtonState();
   el("guided-send-btn").disabled = true;
   el("guided-loading-text").textContent = guidedSessionId
     ? "Preparing follow-up…"
@@ -2895,7 +3010,8 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
     console.error(err);
   } finally {
     el("guided-loading").classList.add("hidden");
-    setGuidedEstimateButtonsDisabled(false);
+    guidedEstimateInFlight = false;
+    updateGuidedSubmitButtonState();
     updateGuidedFollowupAvailability();
   }
 }
@@ -2967,7 +3083,7 @@ el("refresh-plans").addEventListener("click", async () => {
   btn.disabled = true;
   updatePlanLoadHint(0, "Loading plans…");
   try {
-    await loadPlans();
+    await loadPlans(currentDataRelease?.contract_year ?? null);
   } catch (e) {
     console.warn("Could not load plans", e);
     updatePlanLoadHint(0, "Could not load plans — try again shortly");
@@ -3017,11 +3133,17 @@ initLocationPickers();
 initDrugPickers();
 resetDrugRows();
 resetComparePlanRows();
+initGuidedSubmitWraps();
 populateModelSelect();
 populateModelSelect("guided-model-select");
 updateSessionUsageDisplay();
+updateGuidedSubmitButtonState();
 loadStates();
-pollPlansUntilLoaded();
+async function initDataAndPlans() {
+  await loadDataRelease();
+  await pollPlansUntilLoaded();
+}
+void initDataAndPlans();
 resetGuidedConversation();
 switchMode("chat");
 switchGuidedSubmode("single");

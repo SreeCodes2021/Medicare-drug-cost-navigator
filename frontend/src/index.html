@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Drug Cost Navigator" />
-  <link rel="stylesheet" href="/styles.css?v=35" />
+  <link rel="stylesheet" href="/styles.css?v=37" />
 </head>
 <body>
   <header class="topbar">
@@ -274,11 +274,8 @@
               <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
             </label>
             <div class="guided-fill-options guided-field-full">
-              <label>Contract year
-                <select id="filter-year">
-                  <option value="2026">2026</option>
-                  <option value="2025">2025</option>
-                </select>
+              <label>Data release
+                <span id="data-release-label" class="data-release-label">Loading…</span>
               </label>
               <label>Days supply
                 <select id="filter-days-supply">
@@ -384,9 +381,9 @@
           </div>
 
           <div class="guided-action-row guided-field-full">
-            <button type="button" id="guided-submit" class="btn-primary">Get estimate</button>
-            <button type="button" id="multidrug-submit" class="btn-primary hidden">Get combined estimate</button>
-            <button type="button" id="compareplans-submit" class="btn-primary hidden">Compare plans</button>
+            <button type="button" id="guided-submit" class="btn-primary" disabled>Get estimate</button>
+            <button type="button" id="multidrug-submit" class="btn-primary hidden" disabled>Get combined estimate</button>
+            <button type="button" id="compareplans-submit" class="btn-primary hidden" disabled>Compare plans</button>
             <select id="guided-model-select" class="model-select" aria-label="LLM model"></select>
           </div>
 
@@ -440,6 +437,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=33"></script>
+  <script src="/app.js?v=35"></script>
 </body>
 </html>

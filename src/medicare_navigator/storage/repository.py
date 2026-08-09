@@ -86,6 +86,14 @@ class PlanRepository:
         )
         return [r[0] for r in rows]
 
+    def list_contract_years(self) -> list[int]:
+        """Distinct contract years present in ingested plan data."""
+        rows = self.db.fetchall(
+            "SELECT DISTINCT contract_year FROM plans "
+            "WHERE contract_year IS NOT NULL ORDER BY contract_year DESC"
+        )
+        return [int(r[0]) for r in rows]
+
     def get_plan(self, plan_key: str) -> dict | None:
         row = self.db.fetchone(
             f"SELECT {self._COLUMNS} FROM plans WHERE plan_key = ?",

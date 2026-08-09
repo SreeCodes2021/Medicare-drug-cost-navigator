@@ -466,6 +466,14 @@ body.modal-open {
   gap: 0.75rem;
 }
 
+.data-release-label {
+  display: block;
+  font-size: 1rem;
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 .guided-action-row {
   display: flex;
   align-items: stretch;
@@ -850,6 +858,14 @@ body.modal-open {
 
 .btn-primary:disabled {
   opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-primary:disabled:hover,
+.btn-primary:disabled:active,
+.btn-primary:disabled:focus {
+  background: var(--accent);
   cursor: not-allowed;
 }
 

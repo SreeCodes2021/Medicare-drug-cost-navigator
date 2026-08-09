@@ -73,7 +73,10 @@ def test_estimate_batch_partial_failure_excludes_uncovered_from_total(client):
         "/api/estimate-batch",
         json={
             "plan_id": PLAN_FL_MAPD,
-            "items": [{"drug": "metformin"}, {"drug": "omeprazole"}],
+            "items": [
+                {"drug": "metformin", "dosage": "500mg"},
+                {"drug": "omeprazole", "dosage": "20mg"},
+            ],
         },
     )
     assert resp.status_code == 200

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import re
 
@@ -10,6 +11,35 @@ from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 
 SOURCE_ID = "rxnorm_api"
 AS_OF_FALLBACK = "2026-01-15"
+
+# Non-English / alternate spellings → canonical English ingredient (COMMON_DRUGS keys).
+DRUG_NAME_ALIASES: dict[str, str] = {
+    "metformina": "metformin",
+    "lisinoprilo": "lisinopril",
+    "atorvastatina": "atorvastatin",
+    "losartán": "losartan",
+    "omeprazol": "omeprazole",
+    "simvastatina": "simvastatin",
+    "lovastatina": "lovastatin",
+    "gabapentina": "gabapentin",
+}
+
+
+def canonicalize_drug_name(name: str) -> str:
+    """Map aliases and close typos to a canonical English ingredient before RxNorm lookup."""
+    from medicare_navigator.tools.drug_lookup import COMMON_DRUGS
+
+    key = name.strip().lower()
+    if not key:
+        return name.strip()
+    if key in DRUG_NAME_ALIASES:
+        return DRUG_NAME_ALIASES[key]
+    if key in COMMON_DRUGS:
+        return key
+    close = difflib.get_close_matches(key, COMMON_DRUGS, n=1, cutoff=0.82)
+    if close:
+        return close[0]
+    return name.strip()
 
 
 class NormalizeDrugData(dict):
@@ -189,6 +219,45 @@ def _dosage_from_concept(concept_name: str) -> str | None:
     return None
 
 
+async def dosage_candidates_for_drug(drug_name: str, *, limit: int = 8) -> list[str]:
+    """Strength options for clarification when the user omits dosage."""
+    from medicare_navigator.tools.drug_lookup import COMMON_DEFAULT_STRENGTHS
+
+    canonical = canonicalize_drug_name(drug_name)
+    dosages: list[str] = []
+    seen: set[str] = set()
+    for concept in await list_strength_concepts(canonical):
+        strength = _dosage_from_concept(concept.get("concept_name") or "")
+        if strength and strength not in seen:
+            seen.add(strength)
+            dosages.append(strength)
+    default = COMMON_DEFAULT_STRENGTHS.get(canonical)
+    if default and default in dosages:
+        dosages.remove(default)
+        dosages.insert(0, default)
+    return dosages[:limit]
+
+
+def _needs_dosage_result(
+    drug_name: str,
+    candidates: list[str],
+    *,
+    as_of: str,
+) -> ToolResult[dict]:
+    canonical = canonicalize_drug_name(drug_name)
+    strengths = ", ".join(candidates)
+    return ToolResult.failure(
+        ToolStatus.needs_dosage,
+        source_id=SOURCE_ID,
+        as_of_date=as_of,
+        message=(
+            f"Strength (dosage) is required to estimate '{canonical}'. "
+            f"Common strengths: {strengths}. Please specify one before estimating."
+        ),
+        data={"drug_name": canonical, "dosage_candidates": candidates, "query": drug_name},
+    )
+
+
 def _split_strength_from_drug_name(drug_name: str, dosage: str | None) -> tuple[str, str | None]:
     if dosage:
         return drug_name.strip(), dosage
@@ -203,6 +272,7 @@ def _split_strength_from_drug_name(drug_name: str, dosage: str | None) -> tuple[
 async def normalize_drug(drug_name: str, dosage: str | None = None) -> ToolResult[dict]:
     as_of = _manifest_as_of()
     drug_name, dosage = _split_strength_from_drug_name(drug_name, dosage)
+    drug_name = canonicalize_drug_name(drug_name)
     candidates = await _rxnorm_lookup(drug_name, dosage)
 
     if not candidates:

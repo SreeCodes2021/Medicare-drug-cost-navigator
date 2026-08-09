@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from medicare_navigator.config import settings
 
-DEFAULT_LLM_MODEL = "gpt-5.4-nano"
+DEFAULT_LLM_MODEL = "gpt-5.6-luna"
 
 
 @dataclass(frozen=True)

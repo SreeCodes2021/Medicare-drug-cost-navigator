@@ -88,6 +88,7 @@ def test_navigator_prompt_describes_scope():
     assert "never ask" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "what today's date is" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "remaining_year_budget_cost_low" in NAVIGATOR_SYSTEM_PROMPT
+    assert "do not append the general disclaimer" in NAVIGATOR_SYSTEM_PROMPT.lower()
 
 
 def test_navigator_system_prompt_includes_runtime_datetime():
@@ -158,6 +159,7 @@ def test_format_last_tool_calls_single_call_uses_singular_phrasing():
     context = _format_last_tool_calls(calls)
     assert context.startswith("Last cost estimate call:")
     assert "metformin" in context
+    assert "days_supply you used" in context
 
 
 def test_format_last_tool_calls_multiple_calls_lists_every_drug():
@@ -280,3 +282,19 @@ def test_llm_requires_configuration(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "")
     with pytest.raises(LLMNotConfiguredError):
         llm_client.require_available()
+
+
+@pytest.mark.asyncio
+async def test_navigator_declines_pure_off_topic_joke_request():
+    response = await navigator.run("tell me a joke")
+    assert "joke" not in response.explanation.lower() or "medicare" in response.explanation.lower()
+    assert "medicare" in response.explanation.lower()
+    assert response.response_source == "System"
+    assert settings.disclaimer_text in response.explanation
+
+
+@pytest.mark.asyncio
+async def test_navigator_off_topic_weather_includes_disclaimer_inline():
+    response = await navigator.run("What's the weather in Miami today?")
+    assert response.response_source == "System"
+    assert settings.disclaimer_text in response.explanation

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_model: str = "gpt-5.4-nano"
+    llm_model: str = "gpt-5.6-luna"
 
     data_dir: Path = Path("./data")
     duckdb_path: Path = Path("./data/navigator.duckdb")

@@ -162,6 +162,24 @@ def test_guided_drug_and_dosage_fields_reset_per_submode_not_shared():
     assert "picker" in js[js.index("drugRows") : js.index("drugRows") + 4000]
 
 
+def test_guided_submit_buttons_start_disabled_until_required_fields_filled():
+    html = (frontend_dist_dir() / "index.html").read_text(encoding="utf-8")
+    js = (frontend_dist_dir() / "app.js").read_text(encoding="utf-8")
+    for button_id in ("guided-submit", "multidrug-submit", "compareplans-submit"):
+        tag = html.split(f'id="{button_id}"', 1)[1].split(">", 1)[0]
+        assert " disabled" in tag, f"{button_id} must include disabled in HTML"
+    for fn in (
+        "isGuidedSingleValid",
+        "isGuidedMultiDrugValid",
+        "isGuidedComparePlansValid",
+        "updateGuidedSubmitButtonState",
+    ):
+        assert f"function {fn}" in js, f"{fn} must be defined in app.js"
+    assert "guidedEstimateInFlight" in js
+    assert "onChange: updateGuidedSubmitButtonState" in js
+    assert "promptGuidedMandatoryFields" in js
+
+
 def test_fastapi_mounts_frontend_dist():
     dist = settings.project_root / "frontend" / "dist"
     assert dist.is_dir()

@@ -35,7 +35,7 @@ async def test_mcp_lookup_plan_exact():
 async def test_mcp_estimate_drug_cost_ok():
     result = await call_tool(
         "estimate_drug_cost",
-        {"plan_key": PLAN_FL_MAPD, "drug_name": "metformin", "ytd_oop_spend": 0},
+        {"plan_key": PLAN_FL_MAPD, "drug_name": "metformin", "dosage": "500mg", "ytd_oop_spend": 0},
     )
     assert result["status"] == "ok"
     assert result["data"]["tiers_matched"] == [2]

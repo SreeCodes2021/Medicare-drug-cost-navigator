@@ -4,6 +4,8 @@ from medicare_navigator.guardrails.channel_parity import (
     channel_coverage_note,
     channel_wording_for_channels,
     prose_channel_overclaim_warnings,
+    prose_false_unavailable_warnings,
+    prose_tied_lowest_warnings,
     summarize_channel_coverage,
     summarize_channels_dict,
 )
@@ -72,3 +74,77 @@ def test_prose_channel_overclaim_warnings():
         coverage,
     )
     assert warnings
+
+
+def test_prose_false_unavailable_warnings_when_priced_channels_exist():
+    coverage = summarize_channel_coverage(
+        [
+            {
+                "plan_key": "H2802-063",
+                "channels": {
+                    "preferred_retail": {"cost_low": None},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "preferred_mail": {"cost_low": None},
+                    "standard_mail": {"cost_low": None},
+                },
+            }
+        ]
+    )
+    warnings = prose_false_unavailable_warnings(
+        "H2802-063: metformin is covered but the estimate is not available on the pricing table.",
+        coverage,
+    )
+    assert warnings
+    assert "H2802-063" in warnings[0]
+
+
+def test_prose_false_unavailable_skips_when_dollar_in_lead():
+    coverage = summarize_channel_coverage(
+        [
+            {
+                "plan_key": "H2802-063",
+                "channels": {
+                    "preferred_retail": {"cost_low": None},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "preferred_mail": {"cost_low": None},
+                    "standard_mail": {"cost_low": None},
+                },
+            }
+        ]
+    )
+    warnings = prose_false_unavailable_warnings(
+        "H2802-063: metformin is $0.00 at standard retail only.",
+        coverage,
+    )
+    assert warnings == []
+
+
+def test_prose_tied_lowest_warnings_when_only_one_plan_named():
+    coverage = summarize_channel_coverage(
+        [
+            {
+                "plan_key": "H2802-063",
+                "channels": {
+                    "preferred_retail": {"cost_low": None},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "preferred_mail": {"cost_low": None},
+                    "standard_mail": {"cost_low": None},
+                },
+            },
+            {
+                "plan_key": "H5216-366",
+                "channels": {
+                    "preferred_retail": {"cost_low": None},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "preferred_mail": {"cost_low": 0.0, "cost_high": 0.0},
+                    "standard_mail": {"cost_low": 0.0, "cost_high": 0.0},
+                },
+            },
+        ]
+    )
+    warnings = prose_tied_lowest_warnings(
+        "The lowest estimated cost is $0.00 on H5216-366.",
+        coverage,
+    )
+    assert warnings
+    assert "H2802-063" in warnings[0]

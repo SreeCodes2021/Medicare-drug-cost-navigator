@@ -1,7 +1,15 @@
 import pytest
 
 from medicare_navigator.models.tool_result import ToolStatus
-from medicare_navigator.tools.normalize_drug import normalize_drug
+from medicare_navigator.tools.normalize_drug import canonicalize_drug_name, normalize_drug
+
+
+def test_canonicalize_drug_name_spanish_alias():
+    assert canonicalize_drug_name("metformina") == "metformin"
+
+
+def test_canonicalize_drug_name_fuzzy_typo():
+    assert canonicalize_drug_name("metfomrin") == "metformin"
 
 
 @pytest.mark.integration
@@ -25,3 +33,26 @@ async def test_dosage_qualified_lookup_resolves_strength_specific_rxcui():
     result = await normalize_drug("lovastatin", "40mg")
     assert result.status == ToolStatus.ok
     assert result.data["selected"]["rxcui"] == "197905"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_spanish_metformina_resolves_strength_specific_rxcui():
+    result = await normalize_drug("metformina", "500mg")
+    assert result.status == ToolStatus.ok
+    assert result.data["selected"]["rxcui"] == "861007"
+
+
+@pytest.mark.asyncio
+async def test_normalize_drug_without_dosage_still_resolves_ingredient():
+    result = await normalize_drug("metformin")
+    assert result.status == ToolStatus.ok
+    assert result.data["selected"]["drug_name"] == "metformin"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_typo_metfomrin_resolves_with_dosage():
+    result = await normalize_drug("metfomrin", "500mg")
+    assert result.status == ToolStatus.ok
+    assert result.data["selected"]["rxcui"] == "861007"

@@ -189,6 +189,22 @@ async def meta_as_of():
     return {"note": "No manifest found. Run medicare-ingest to seed data."}
 
 
+@app.get("/api/data-releases")
+async def list_data_releases():
+    """CMS SPUF data releases available locally (YYYY-Qn), for guided-form picker."""
+    from medicare_navigator.ingestion.manifest import list_data_releases as releases
+
+    return {"releases": releases()}
+
+
+@app.get("/api/data-release")
+async def get_data_release():
+    """Active CMS SPUF data release (YYYY-Qn from ingest date)."""
+    from medicare_navigator.ingestion.manifest import get_data_release as release
+
+    return {"release": release()}
+
+
 @app.get("/api/plans")
 async def list_plans(plan_type: str | None = None, state: str | None = None, year: int | None = None):
     repo = PlanRepository()

@@ -36,7 +36,13 @@ from medicare_navigator.tools.disclaimers import (
     unmapped_days_supply_caveat,
 )
 from medicare_navigator.tools.insulin import is_insulin
-from medicare_navigator.tools.normalize_drug import compute_benefit_phase, normalize_drug
+from medicare_navigator.tools.drug_lookup import COMMON_DRUGS_REQUIRING_DOSAGE
+from medicare_navigator.tools.normalize_drug import (
+    canonicalize_drug_name,
+    compute_benefit_phase,
+    dosage_candidates_for_drug,
+    normalize_drug,
+)
 from medicare_navigator.tools.part_d_benefit_params import (
     cap_fill_copay,
     project_annual_budget,
@@ -78,6 +84,7 @@ class _EstimateContext:
     as_of: str
     source_id: str
     quantity_limit_blocked: bool = False
+    extra_caveats: tuple[str, ...] = ()
 
 
 @dataclass
@@ -274,6 +281,7 @@ def _build_caveats(
         )
     if ctx.pa_flag or ctx.st_flag:
         caveats.append(pa_st_caveat(prior_authorization=ctx.pa_flag, step_therapy=ctx.st_flag))
+    caveats.extend(ctx.extra_caveats)
     return caveats
 
 
@@ -307,6 +315,31 @@ async def _resolve_estimate_context(
             as_of_date=as_of,
             message=BUG6_MESSAGE,
         )
+
+    canonical_name = canonicalize_drug_name(drug_name)
+    if is_insulin(canonical_name, canonical_name):
+        return ToolResult.failure(
+            ToolStatus.insulin_out_of_scope,
+            source_id=source_id,
+            as_of_date=as_of,
+            message=INSULIN_OUT_OF_SCOPE_MESSAGE,
+        )
+
+    if not dosage or not str(dosage).strip():
+        if canonical_name in COMMON_DRUGS_REQUIRING_DOSAGE:
+            strength_options = await dosage_candidates_for_drug(drug_name)
+            if strength_options:
+                strengths = ", ".join(strength_options)
+                return ToolResult.failure(
+                    ToolStatus.needs_dosage,
+                    source_id=source_id,
+                    as_of_date=as_of,
+                    message=(
+                        f"Strength (dosage) is required to estimate '{canonical_name}'. "
+                        f"Common strengths: {strengths}. Please specify one before estimating."
+                    ),
+                    data={"drug_name": canonical_name, "dosage_candidates": strength_options},
+                )
 
     norm = await normalize_drug(drug_name, dosage)
     if norm.status != ToolStatus.ok or not norm.data:

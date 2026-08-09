@@ -36,7 +36,7 @@ REQUIRED_ELEMENT_IDS = [
     "filter-plan-listbox",
     "refresh-plans",
     "plan-load-hint",
-    "filter-year",
+    "data-release-label",
     "filter-ytd",
     "filter-days-supply",
     "turn-counter",
@@ -230,7 +230,6 @@ SMOKE_TEXT_INPUT_IDS = [
 SMOKE_SELECT_IDS = [
     "model-select",
     "guided-model-select",
-    "filter-year",
     "filter-days-supply",
     "md-days-supply",
     "cp-days-supply",
@@ -400,6 +399,10 @@ def check_guided_ui_contract(html: str, js: str, css: str) -> CheckReport:
         "resetGuidedConversation",
         "sendGuidedInitial",
         "sendGuidedMessage",
+        "isGuidedSingleValid",
+        "isGuidedMultiDrugValid",
+        "isGuidedComparePlansValid",
+        "updateGuidedSubmitButtonState",
     ):
         found = f"function {fn}" in js or f"async function {fn}" in js
         report.add(
@@ -431,6 +434,21 @@ def check_guided_ui_contract(html: str, js: str, css: str) -> CheckReport:
         "guided:js:five-turn-limit",
         "guidedTurnCount < 5" in js and "guidedTurnCount >= 5" in js,
         detail="guided conversation must stop after five total turns",
+        group="guided",
+    )
+    for button_id in ("guided-submit", "multidrug-submit", "compareplans-submit"):
+        report.add(
+            f"guided:html:submit-disabled:{button_id}",
+            f'id="{button_id}"' in html and " disabled" in html.split(f'id="{button_id}"', 1)[1].split(">", 1)[0],
+            detail=f"{button_id} must start disabled until required fields are filled",
+            group="guided",
+        )
+    report.add(
+        "guided:js:submit-validation",
+        "guidedEstimateInFlight" in js
+        and "updateGuidedSubmitButtonState()" in js
+        and "promptGuidedMandatoryFields" in js,
+        detail="guided submit buttons must reflect form validity and in-flight state",
         group="guided",
     )
     return report
@@ -667,7 +685,7 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
 
     status, estimate_body = getter.post_json(
         "/api/estimate",
-        {"plan_id": "S9999-001", "drug": "metformin", "days_supply": 30, "ytd_oop_spend": 0},
+        {"plan_id": "S9999-001", "drug": "metformin", "dosage": "500mg", "days_supply": 30, "ytd_oop_spend": 0},
     )
     report.add(
         "api:estimate:post",

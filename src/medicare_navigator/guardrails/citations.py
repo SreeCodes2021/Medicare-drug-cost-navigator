@@ -7,6 +7,8 @@ from medicare_navigator.config import settings
 from medicare_navigator.guardrails.channel_parity import (
     channel_coverage_note,
     prose_channel_overclaim_warnings,
+    prose_false_unavailable_warnings,
+    prose_tied_lowest_warnings,
     summarize_channel_coverage,
 )
 from medicare_navigator.guardrails.source_catalog import (
@@ -17,13 +19,34 @@ from medicare_navigator.guardrails.source_catalog import (
 )
 from medicare_navigator.models.citation import Citation
 from medicare_navigator.models.response import DrugCostEstimate, MultiChannelDrugCostEstimate
+from medicare_navigator.tools.disclaimers import BUG2_CAVEAT
 from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
 
 _ESTIMATE_TOOL_NAMES = ("estimate_drug_cost_all_channels", "estimate_drug_cost")
 
 _DOLLAR_RE = re.compile(r"\$\s*\d+(?:\.\d{1,2})?")
+_LLM_DISCLAIMER_TAIL_RE = re.compile(
+    r"\n+(?:---\s*)?\n*(?:\*\*)?(?:General disclaimer|Disclaimer|Descargo de responsabilidad)"
+    r"[\s\S]*$",
+    re.I,
+)
+# Routine estimate caveats shown in the structured estimate card — not duplicated in chat prose.
+_CARD_ONLY_CAVEATS = frozenset({BUG2_CAVEAT})
+_BUG2_PARAPHRASE_RE = re.compile(
+    r"(?:\n\n|\n)?This estimate assumes the deductible[\s\S]*?Confirm with your plan\.\s*",
+    re.I,
+)
 _TIER_COPAY_RE = re.compile(
     r"\b(tier\s*\d|copay|coinsurance|formulary|cost[- ]sharing|benefit phase|deductible phase)\b",
+    re.I,
+)
+_ALTERNATIVES_TOPIC_RE = re.compile(r"\balternativ|substitute", re.I)
+_CLINICIAN_DEFERRAL_RE = re.compile(
+    r"\b(?:doctor|pharmacist|prescriber|clinician|physician)\b",
+    re.I,
+)
+_EXAMPLE_DRUG_AFTER_ALTERNATIVES_RE = re.compile(
+    r"(?:alternativ|substitute|instead of)[\s\S]{0,120}\b(?:metformin|glipizide|glimepiride|sitagliptin)\b",
     re.I,
 )
 
@@ -340,6 +363,8 @@ def _enforced_texts(tool_artifacts: dict[str, dict[str, Any]]) -> list[str]:
         data = artifact.get("data")
         if isinstance(data, dict):
             for caveat in data.get("caveats") or []:
+                if caveat in _CARD_ONLY_CAVEATS:
+                    continue
                 if caveat not in seen:
                     texts.append(caveat)
                     seen.add(caveat)
@@ -399,6 +424,35 @@ def _stated_phase_mismatch(out: str, tool_artifacts: dict[str, dict[str, Any]]) 
     return None
 
 
+def _prose_covers_channel_gaps(out: str) -> bool:
+    lower = out.lower()
+    if "depending on pharmacy channel" in lower:
+        return True
+    if "preferred retail" in lower and "standard retail" in lower:
+        return True
+    if "no matching" in lower and ("mail" in lower or "channel" in lower):
+        return True
+    return False
+
+
+def _strip_card_only_caveat_paraphrases(out: str) -> str:
+    """Remove LLM paraphrases of caveats that already appear on the estimate card."""
+    return _BUG2_PARAPHRASE_RE.sub("\n", out).strip()
+
+
+def _alternatives_without_clinician_deferral(out: str) -> str | None:
+    if not _ALTERNATIVES_TOPIC_RE.search(out):
+        return None
+    if _CLINICIAN_DEFERRAL_RE.search(out):
+        return None
+    if _EXAMPLE_DRUG_AFTER_ALTERNATIVES_RE.search(out):
+        return (
+            "Listed example substitute drugs before deferring clinical judgment to a "
+            "doctor or pharmacist — lead with that deferral first."
+        )
+    return None
+
+
 def apply_guardrails(
     explanation: str,
     tool_artifacts: dict[str, dict[str, Any]],
@@ -406,7 +460,7 @@ def apply_guardrails(
 ) -> tuple[str, list[Citation], list[str]]:
     """Validate and fix explanation. Returns (explanation, citations, errors)."""
     errors: list[str] = []
-    out = explanation.strip()
+    out = _strip_card_only_caveat_paraphrases(explanation.strip())
     cites = list(citations or build_citations_from_artifacts(tool_artifacts))
 
     valid_source_ids = extract_source_ids(tool_artifacts)
@@ -422,14 +476,22 @@ def apply_guardrails(
     if phase_error:
         errors.append(phase_error)
 
+    alternatives_error = _alternatives_without_clinician_deferral(out)
+    if alternatives_error:
+        errors.append(alternatives_error)
+
     channel_estimates = [
         est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
     ]
     channel_coverage = summarize_channel_coverage(channel_estimates)
     for warning in prose_channel_overclaim_warnings(out, channel_coverage):
         errors.append(warning)
+    for warning in prose_false_unavailable_warnings(out, channel_coverage):
+        errors.append(warning)
+    for warning in prose_tied_lowest_warnings(out, channel_coverage):
+        errors.append(warning)
     coverage_note = channel_coverage_note(channel_coverage)
-    if coverage_note and coverage_note not in out:
+    if coverage_note and coverage_note not in out and not _prose_covers_channel_gaps(out):
         out = f"{out}\n\n{coverage_note}"
 
     # Hard-stop messages (e.g. insulin's statutory $35/month cap) are pre-approved verbatim
@@ -452,6 +514,7 @@ def apply_guardrails(
         if text and text not in out:
             out = f"{out}\n\n{text}"
 
+    out = _LLM_DISCLAIMER_TAIL_RE.sub("", out).rstrip()
     if settings.disclaimer_text and settings.disclaimer_text not in out:
         out = f"{out}\n\n{settings.disclaimer_text}"
 

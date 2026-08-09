@@ -20,6 +20,17 @@ from medicare_navigator.tools.normalize_drug import (
 )
 
 # Curated starter list for empty-query browsing (common oral Part D drugs in demos/tests).
+# Typical demo strengths — used to sort dosage clarification lists, not to auto-price.
+COMMON_DEFAULT_STRENGTHS: dict[str, str] = {
+    "amlodipine": "5mg",
+    "atorvastatin": "20mg",
+    "lisinopril": "10mg",
+    "lovastatin": "40mg",
+    "metformin": "500mg",
+    "omeprazole": "20mg",
+    "simvastatin": "20mg",
+}
+
 COMMON_DRUGS: tuple[str, ...] = (
     "amlodipine",
     "atorvastatin",
@@ -38,6 +49,11 @@ COMMON_DRUGS: tuple[str, ...] = (
     "rosuvastatin",
     "sertraline",
     "simvastatin",
+)
+
+# Oral generics in COMMON_DRUGS where estimate must not auto-pick a strength.
+COMMON_DRUGS_REQUIRING_DOSAGE: frozenset[str] = frozenset(
+    drug for drug in COMMON_DRUGS if drug != "januvia"
 )
 
 _STRENGTH_CONCEPTS_CACHE: OrderedDict[str, list[dict]] = OrderedDict()

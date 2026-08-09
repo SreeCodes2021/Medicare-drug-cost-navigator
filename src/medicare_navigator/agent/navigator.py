@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -27,6 +28,40 @@ from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_c
 
 
 _ESTIMATE_TOOL_NAMES = ("estimate_drug_cost", "estimate_drug_cost_all_channels")
+
+_OFF_TOPIC_PATTERNS = (
+    re.compile(r"\btell me a joke\b", re.I),
+    re.compile(r"\bjoke\b", re.I),
+    re.compile(r"\bwhat(?:'s| is) the weather\b", re.I),
+    re.compile(r"\bweather (?:in|for|today)\b", re.I),
+    re.compile(r"\bwho won (?:the )?(?:super bowl|world series)\b", re.I),
+)
+
+_MEDICARE_SIGNAL_RE = re.compile(
+    r"\b(?:mg|mcg|plan|tier|copay|coinsurance|medicare|formulary|deductible|"
+    r"prescription|pharmacy|ytd|days[\s-]?supply)\b|[A-Za-z]\d{4}-\d{3}",
+    re.I,
+)
+
+_OOS_TOPIC_RE = re.compile(
+    r"\b(?:weather|joke|super bowl|enroll me|sign me up|medical advice)\b",
+    re.I,
+)
+
+_OFF_TOPIC_REDIRECT = (
+    "I can only help with Medicare prescription drug costs and plan lookups. "
+    "Please ask about a specific drug, strength, and plan — for example, "
+    "'metformin 500 mg on plan S5921-400'."
+)
+
+
+def _explanation_with_disclaimer(explanation: str) -> str:
+    """Inline disclaimer for System early-return paths (off-topic, limit_reached)."""
+    text = explanation.strip()
+    disclaimer = settings.disclaimer_text
+    if disclaimer and disclaimer not in text:
+        return f"{text}\n\n{disclaimer}"
+    return text
 
 # Stable key under which every estimate_drug_cost_all_channels call this turn is appended (as a
 # list), so a second call in the same turn doesn't overwrite the first the way
@@ -107,9 +142,25 @@ async def ensure_channel_estimate(
 
 
 def _parsed_plan_in_message(message: str) -> bool:
-    import re
-
     return bool(re.search(r"\b[A-Za-z]\d{4}-\d{3}\b", message))
+
+
+def _is_pure_off_topic(message: str) -> bool:
+    if _MEDICARE_SIGNAL_RE.search(message):
+        return False
+    return any(pattern.search(message) for pattern in _OFF_TOPIC_PATTERNS)
+
+
+def _mixed_intent_note(message: str) -> str | None:
+    if not _OOS_TOPIC_RE.search(message):
+        return None
+    if not _MEDICARE_SIGNAL_RE.search(message):
+        return None
+    return (
+        "Mixed-intent message: refuse weather, jokes, enrollment, or other out-of-scope parts "
+        "first in one brief sentence. Do not call estimate tools until each named drug has an "
+        "explicit strength (dosage) and a plan_key is known."
+    )
 
 
 def _format_filters_context(filters: QuerySlots | None) -> str:
@@ -122,6 +173,8 @@ def _format_filters_context(filters: QuerySlots | None) -> str:
         parts.append(f"dosage={filters.dosage}")
     if filters.plan_id:
         parts.append(f"plan_id={filters.plan_id}")
+    if filters.contract_year is not None:
+        parts.append(f"contract_year={filters.contract_year}")
     if filters.days_supply is not None:
         parts.append(f"days_supply={filters.days_supply}")
     if filters.ytd_oop_spend is not None:
@@ -162,7 +215,10 @@ def _format_last_tool_calls(last_tool_calls: list[dict] | None) -> str:
             "the cost inputs (e.g. deductible met/not met, different days supply, different "
             "pharmacy channel), you MUST re-call this tool with the same plan_key/drug_name/"
             "dosage/days_supply and an updated ytd_oop_spend (or other changed argument) — do "
-            "not reuse the previous answer's dollar figures without a new tool call."
+            "not reuse the previous answer's dollar figures without a new tool call. When the "
+            "user changes only YTD out-of-pocket spend, keep the same days_supply from this "
+            "call unless they explicitly ask for a different supply length, and state which "
+            "days_supply you used in your answer (e.g. 'for a 90-day supply')."
         )
     lines = ["Last cost estimate calls (multiple drugs from the prior turn — all of them, not just one):"]
     for call in calls:
@@ -173,7 +229,9 @@ def _format_last_tool_calls(last_tool_calls: list[dict] | None) -> str:
         "about the prior calculation (e.g. days supply used, which channel), answer for EVERY "
         "drug listed above, not just one. Re-call the relevant tool(s) with the same plan_key/"
         "drug_name/dosage/days_supply and updated arguments where inputs changed — do not reuse "
-        "previous dollar figures without a new tool call."
+        "previous dollar figures without a new tool call. When the user changes only YTD "
+        "out-of-pocket spend, keep the same days_supply from the prior call unless they "
+        "explicitly ask for a different supply length, and state which days_supply you used."
     )
     return "\n".join(lines)
 
@@ -194,6 +252,9 @@ def _build_initial_messages(
     last_call_ctx = _format_last_tool_calls(last_tool_calls)
     if last_call_ctx:
         blocks.append(last_call_ctx)
+    mixed = _mixed_intent_note(message)
+    if mixed:
+        blocks.append(mixed)
     blocks.append(f"Current user message: {message}")
     return [{"role": "user", "content": "\n\n".join(blocks)}]
 
@@ -312,7 +373,7 @@ class Navigator:
         chat_history = session.get("chat_history", [])
 
         if not session_manager.can_continue(session):
-            explanation = (
+            explanation = _explanation_with_disclaimer(
                 "This session has reached the maximum number of follow-up turns. "
                 "Please start a new session."
             )
@@ -327,6 +388,18 @@ class Navigator:
 
         session_manager.increment_turn(session)
         last_tool_calls = session.get("last_tool_calls") or []
+
+        if _is_pure_off_topic(message):
+            explanation = _explanation_with_disclaimer(_OFF_TOPIC_REDIRECT)
+            session_manager.append_turn(session, message, explanation)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                response_source="System",
+            )
 
         from medicare_navigator.agent.request_context import set_request_timezone
 
@@ -390,7 +463,17 @@ class Navigator:
 
         status = "ok"
         lower_explanation = explanation.lower()
-        if "which drug" in lower_explanation:
+        if any(
+            artifact.get("status") == "needs_dosage"
+            for artifact in tool_artifacts.values()
+            if isinstance(artifact, dict)
+        ):
+            status = "needs_clarification"
+        elif "strength" in lower_explanation and (
+            "specify" in lower_explanation or "required" in lower_explanation
+        ):
+            status = "needs_clarification"
+        elif "which drug" in lower_explanation:
             status = "needs_clarification"
         elif "which medicare plan" in lower_explanation or (
             "which plan" in lower_explanation and "plan" in message.lower()

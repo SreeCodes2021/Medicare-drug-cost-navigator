@@ -16,7 +16,9 @@ def _spuf(spuf_db):
 
 @pytest.mark.asyncio
 async def test_bug6_suppressed_plan_is_hard_stop():
-    result = await estimate_drug_cost(plan_key=PLAN_FL_SUPPRESSED, drug_name="metformin")
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_SUPPRESSED, drug_name="metformin", dosage="500mg"
+    )
     assert result.status == ToolStatus.suppressed
     assert result.data is None
     assert "suppress" in result.message.lower()
@@ -44,7 +46,11 @@ async def test_bug3_unit_cost_to_fill_cost_conversion():
     """Omeprazole is tier 3 (deductible applies, no Bug 2 exemption) so pre-deductible cost
     is unit_cost * fill_quantity, not the bare per-unit price: 0.35 * 90 = 31.50."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="omeprazole", days_supply=90, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="omeprazole",
+        dosage="20mg",
+        days_supply=90,
+        ytd_oop_spend=0,
     )
     assert result.status == ToolStatus.ok
     assert result.data.benefit_phase == "pre_deductible"
@@ -58,7 +64,11 @@ async def test_bug2_per_tier_deductible_exemption_overrides_phase():
     initial-coverage copay, not full price. Tier 3 (omeprazole) has DED_APPLIES_YN=Y -> stays
     at full price pre-deductible. The Bug 2 disclaimer is present in both cases."""
     exempt = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=30, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=30,
+        ytd_oop_spend=0,
     )
     assert exempt.status == ToolStatus.ok
     assert exempt.data.benefit_phase == "pre_deductible"
@@ -67,7 +77,11 @@ async def test_bug2_per_tier_deductible_exemption_overrides_phase():
     assert BUG2_CAVEAT in exempt.data.caveats
 
     not_exempt = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="omeprazole", days_supply=30, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="omeprazole",
+        dosage="20mg",
+        days_supply=30,
+        ytd_oop_spend=0,
     )
     assert not_exempt.status == ToolStatus.ok
     assert not_exempt.data.benefit_phase == "pre_deductible"
@@ -81,7 +95,10 @@ async def test_bug4_coinsurance_excluded_from_cost_range():
     """Tier 2 (januvia) is coinsurance-typed. Past the deductible, coinsurance must not
     produce a dollar figure — only the verbatim Bug 4 disclaimer."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="januvia", days_supply=30, ytd_oop_spend=700
+        plan_key=PLAN_FL_PDP,
+        drug_name="januvia",
+        days_supply=30,
+        ytd_oop_spend=700,
     )
     assert result.status == ToolStatus.ok
     assert result.data.benefit_phase == "initial_coverage"
@@ -95,7 +112,11 @@ async def test_bug5_multiple_ndcs_same_tier_produce_a_range():
     """Metformin matches 2 NDCs, both tier 1, with different unit costs -> range, not a
     single figure; same_tier flag set; stale FORMULARY_VERSION 00000 row (tier 9) excluded."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=90, ytd_oop_spend=700
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=90,
+        ytd_oop_spend=700,
     )
     assert result.status == ToolStatus.ok
     assert result.data.matched_ndc_count == 2
@@ -141,6 +162,28 @@ async def test_catastrophic_phase_unmapped_days_supply_does_not_fabricate_zero_c
 
 
 @pytest.mark.asyncio
+async def test_common_drug_without_dosage_requires_strength_via_estimate(spuf_db):
+    from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels
+
+    result = await estimate_drug_cost_all_channels(
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        days_supply=30,
+        ytd_oop_spend=0,
+    )
+    assert result.status == ToolStatus.needs_dosage
+    assert "500mg" in result.message
+
+
+@pytest.mark.asyncio
+async def test_januvia_without_dosage_still_estimates_brand_rxcui():
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_PDP, drug_name="januvia", days_supply=30, ytd_oop_spend=700
+    )
+    assert result.status == ToolStatus.ok
+
+
+@pytest.mark.asyncio
 async def test_bug5_multiple_ndcs_cross_tier_flagged_more_severely():
     """Lisinopril matches NDCs at tier 1 and tier 2 -> same_tier False, stronger caveat."""
     result = await estimate_drug_cost(
@@ -178,7 +221,11 @@ async def test_prior_authorization_and_step_therapy_caveat_not_hard_stop():
     """Omeprazole (tier 3) requires PA + ST — a cost is still returned, with a caveat,
     per the spec's contrast with Bug 6's true hard stop."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="omeprazole", days_supply=30, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="omeprazole",
+        dosage="20mg",
+        days_supply=30,
+        ytd_oop_spend=0,
     )
     assert result.status == ToolStatus.ok
     assert result.data.cost_low is not None
@@ -190,10 +237,18 @@ async def test_bug1_days_supply_code_mapping_not_conflated_with_raw_count():
     """60-day pricing must resolve via days_supply_code=4 (beneficiary_cost), not be
     confused with the raw day count. Tier-1 60-day copay is $10.00 vs 30-day's $5.00."""
     result_30 = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=30, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=30,
+        ytd_oop_spend=0,
     )
     result_60 = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=60, ytd_oop_spend=0
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=60,
+        ytd_oop_spend=0,
     )
     assert result_30.data.cost_low == pytest.approx(5.00)
     assert result_60.data.cost_low == pytest.approx(10.00)
@@ -201,19 +256,23 @@ async def test_bug1_days_supply_code_mapping_not_conflated_with_raw_count():
 
 @pytest.mark.asyncio
 async def test_plan_not_found():
-    result = await estimate_drug_cost(plan_key="ZZZZ-999", drug_name="metformin")
+    result = await estimate_drug_cost(plan_key="ZZZZ-999", drug_name="metformin", dosage="500mg")
     assert result.status == ToolStatus.not_found
 
 
 @pytest.mark.asyncio
 async def test_drug_not_on_formulary():
-    result = await estimate_drug_cost(plan_key=PLAN_FL_MAPD, drug_name="omeprazole")
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_MAPD, drug_name="omeprazole", dosage="20mg"
+    )
     assert result.status == ToolStatus.not_covered
 
 
 @pytest.mark.asyncio
 async def test_ma_pd_zero_deductible_plan_always_initial_coverage():
-    result = await estimate_drug_cost(plan_key=PLAN_FL_MAPD, drug_name="metformin", ytd_oop_spend=0)
+    result = await estimate_drug_cost(
+        plan_key=PLAN_FL_MAPD, drug_name="metformin", dosage="500mg", ytd_oop_spend=0
+    )
     assert result.status == ToolStatus.ok
     assert result.data.benefit_phase == "initial_coverage"
     assert result.data.cost_low == pytest.approx(8.00)
@@ -227,7 +286,11 @@ async def test_missing_cost_share_row_is_flagged_not_silently_empty():
     it must carry NO_COST_SHARE_DATA_MESSAGE, and must NOT claim a (nonexistent) multi-NDC
     price range via the Bug 5 caveat."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=90, ytd_oop_spend=700
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=90,
+        ytd_oop_spend=700,
     )
     assert result.status == ToolStatus.ok
     assert result.data.cost_low is None
@@ -243,7 +306,11 @@ async def test_unmapped_days_supply_without_cost_does_not_claim_ingredient_cost(
     computed either — the caveat must not falsely claim "the estimate below reflects ingredient
     cost only" when cost_low/cost_high are both None."""
     result = await estimate_drug_cost(
-        plan_key=PLAN_FL_PDP, drug_name="metformin", days_supply=45, ytd_oop_spend=700
+        plan_key=PLAN_FL_PDP,
+        drug_name="metformin",
+        dosage="500mg",
+        days_supply=45,
+        ytd_oop_spend=700,
     )
     assert result.status == ToolStatus.ok
     assert result.data.cost_low is None
