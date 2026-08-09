@@ -4,6 +4,11 @@ import re
 from typing import Any
 
 from medicare_navigator.config import settings
+from medicare_navigator.guardrails.channel_parity import (
+    channel_coverage_note,
+    prose_channel_overclaim_warnings,
+    summarize_channel_coverage,
+)
 from medicare_navigator.guardrails.source_catalog import (
     drug_name_from_artifacts,
     formulary_citation_claim,
@@ -416,6 +421,16 @@ def apply_guardrails(
     phase_error = _stated_phase_mismatch(out, tool_artifacts)
     if phase_error:
         errors.append(phase_error)
+
+    channel_estimates = [
+        est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
+    ]
+    channel_coverage = summarize_channel_coverage(channel_estimates)
+    for warning in prose_channel_overclaim_warnings(out, channel_coverage):
+        errors.append(warning)
+    coverage_note = channel_coverage_note(channel_coverage)
+    if coverage_note and coverage_note not in out:
+        out = f"{out}\n\n{coverage_note}"
 
     # Hard-stop messages (e.g. insulin's statutory $35/month cap) are pre-approved verbatim
     # text, not LLM-invented figures — don't run the dollar-traceability check against them.

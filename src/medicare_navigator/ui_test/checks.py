@@ -56,10 +56,42 @@ JS_REFERENCED_ELEMENT_IDS = [
 ]
 
 REQUIRED_STATIC_PATHS = ["/", "/app.js", "/styles.css"]
+GUIDED_ELEMENT_IDS = [
+    "guided-mode-single",
+    "guided-mode-multidrug",
+    "guided-mode-compareplans",
+    "guided-single",
+    "guided-multidrug",
+    "guided-compareplans",
+    "md-plan-input",
+    "md-plan",
+    "md-plan-listbox",
+    "multidrug-rows",
+    "multidrug-add-row",
+    "multidrug-submit",
+    "md-days-supply",
+    "md-ytd",
+    "compareplans-rows",
+    "compareplans-add-row",
+    "compareplans-submit",
+    "cp-drug",
+    "cp-dosage",
+    "cp-days-supply",
+    "cp-ytd",
+    "guided-conversation",
+    "guided-chat-messages",
+    "guided-chat-form",
+    "guided-chat-input",
+    "guided-send-btn",
+    "guided-turn-counter",
+    "guided-results-panel",
+    "guided-results-content",
+]
 
 REQUIRED_API_PATHS = [
     "/api/health",
     "/api/disclaimer",
+    "/api/privacy",
     "/api/plans",
     "/api/models",
     "/api/meta/as-of",
@@ -86,7 +118,7 @@ SMOKE_MESSAGES = [
     {
         "name": "tier_lookup",
         "message": "What's the cost for metformin 500mg on plan H8888-001?",
-        "expect_statuses": {"ok", "needs_clarification"},
+        "expect_statuses": {"ok", "needs_clarification", "not_found"},
     },
     {
         "name": "quantity_limit_prompt",
@@ -94,6 +126,49 @@ SMOKE_MESSAGES = [
         "expect_statuses": {"ok", "needs_clarification", "not_found"},
     },
 ]
+
+# Payloads mirroring guided form submission in frontend/src/app.js.
+GUIDED_SMOKE_FLOWS = [
+    {
+        "name": "guided_single",
+        "message": "What's the cost for metformin 500mg on plan S9999-001?",
+        "filters": {
+            "drug": "metformin",
+            "dosage": "500mg",
+            "plan_id": "S9999-001",
+            "days_supply": 30,
+        },
+        "expect_statuses": {"ok", "needs_clarification", "not_found"},
+    },
+    {
+        "name": "guided_multi",
+        "message": (
+            "Estimate costs for metformin 500mg, januvia 100mg on plan S9999-001. "
+            "Use a 30-day supply and $0 year-to-date out-of-pocket spending. "
+            "Summarize each drug and the combined cost."
+        ),
+        "filters": None,
+        "expect_statuses": {"ok", "needs_clarification", "not_found"},
+    },
+    {
+        "name": "guided_compare",
+        "message": (
+            "Compare the cost of metformin 500mg across these Medicare plans: "
+            "S9999-001, H8888-001. Use a 30-day supply and $0 year-to-date "
+            "out-of-pocket spending. Summarize the differences and identify "
+            "the lowest estimated cost."
+        ),
+        "filters": {
+            "drug": "metformin",
+            "dosage": "500mg",
+            "days_supply": 30,
+            "ytd_oop_spend": 0,
+        },
+        "expect_statuses": {"ok", "needs_clarification", "not_found"},
+    },
+]
+
+BROWSER_FLOW_NAMES = ("chat", "guided-single", "guided-multi", "guided-compare-plan")
 
 
 class HttpGetter(Protocol):
@@ -215,6 +290,63 @@ def check_html_element_contract(html: str) -> CheckReport:
     return report
 
 
+def check_guided_ui_contract(html: str, js: str, css: str) -> CheckReport:
+    """Check the guided estimate's controls and interaction guardrails."""
+    report = CheckReport()
+    for element_id in GUIDED_ELEMENT_IDS:
+        found = f'id="{element_id}"' in html or f"id='{element_id}'" in html
+        report.add(
+            f"guided:html:id:{element_id}",
+            found,
+            detail="missing from guided estimate UI" if not found else "",
+            group="guided",
+        )
+
+    for fn in (
+        "switchGuidedSubmode",
+        "submitMultiDrugEstimate",
+        "submitComparePlans",
+        "createPlanCombobox",
+        "resetGuidedFields",
+        "resetGuidedConversation",
+        "sendGuidedInitial",
+        "sendGuidedMessage",
+    ):
+        found = f"function {fn}" in js or f"async function {fn}" in js
+        report.add(
+            f"guided:js:function:{fn}",
+            found,
+            detail="guided interaction function missing" if not found else "",
+            group="guided",
+        )
+
+    report.add(
+        "guided:css:top-level-tabs",
+        ".primary-mode-tabs" in css and ".primary-mode-tab.active" in css,
+        detail="top-level Chat and Guided form tab styles are required",
+        group="guided",
+    )
+    report.add(
+        "guided:css:no-overlay-sheet",
+        ".guided-sheet-backdrop" not in css and ".guided-sheet {" not in css,
+        detail="guided form must be a normal page, not an overlay sheet",
+        group="guided",
+    )
+    report.add(
+        "guided:js:fresh-session",
+        "guidedSessionId = null" in js and "resetGuidedConversation();" in js,
+        detail="each guided estimate must start a fresh session",
+        group="guided",
+    )
+    report.add(
+        "guided:js:five-turn-limit",
+        "guidedTurnCount < 5" in js and "guidedTurnCount >= 5" in js,
+        detail="guided conversation must stop after five total turns",
+        group="guided",
+    )
+    return report
+
+
 def check_app_js_contract(js: str) -> CheckReport:
     report = CheckReport()
     for element_id in JS_REFERENCED_ELEMENT_IDS:
@@ -297,6 +429,19 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
             group="api",
         )
 
+    status, privacy_body = getter.get("/api/privacy")
+    if status == 200:
+        import json
+
+        data = json.loads(privacy_body)
+        text = data.get("text", "")
+        report.add(
+            "api:privacy:text",
+            bool(text.strip()),
+            detail="empty privacy policy text",
+            group="api",
+        )
+
     status, plans_body = getter.get("/api/plans")
     if status == 200:
         import json
@@ -324,7 +469,8 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
     )
     report.add(
         "api:estimate:post",
-        status == 200 and estimate_body.get("status") == "ok",
+        status == 200
+        and estimate_body.get("status") in {"ok", "needs_clarification", "not_found"},
         detail=f"status={status}, body_status={estimate_body.get('status')}",
         group="api",
     )
@@ -406,6 +552,76 @@ def check_chat_smoke(getter: HttpGetter, *, timeout_note: str = "") -> CheckRepo
     return report
 
 
+def check_guided_smoke(getter: HttpGetter, *, timeout_note: str = "") -> CheckReport:
+    """POST /api/chat with guided-form message templates (API parity with UI)."""
+    report = CheckReport()
+
+    for case in GUIDED_SMOKE_FLOWS:
+        payload: dict[str, Any] = {"message": case["message"]}
+        if case.get("filters"):
+            payload["filters"] = case["filters"]
+
+        status, data = getter.post_json("/api/chat", payload)
+        ok_status = status == 200
+        report.add(
+            f"guided:{case['name']}:http",
+            ok_status,
+            detail=f"status={status}{timeout_note}",
+            group="guided",
+        )
+        if not ok_status:
+            continue
+
+        for key in ("session_id", "turn_count", "response"):
+            report.add(
+                f"guided:{case['name']}:envelope:{key}",
+                key in data,
+                detail=f"missing {key}",
+                group="guided",
+            )
+
+        inner = data.get("response") or {}
+        resp_status = inner.get("status")
+        report.add(
+            f"guided:{case['name']}:status",
+            resp_status in case["expect_statuses"],
+            detail=f"got {resp_status!r}",
+            group="guided",
+        )
+
+        shown = inner.get("explanation") or inner.get("clarification_message") or ""
+        report.add(
+            f"guided:{case['name']}:visible_text",
+            bool(str(shown).strip()),
+            detail="no explanation or clarification_message for UI",
+            group="guided",
+        )
+
+        for field_name in CHAT_RESPONSE_UI_FIELDS:
+            report.add(
+                f"guided:{case['name']}:field:{field_name}",
+                field_name in inner,
+                detail="missing key (UI may break)",
+                group="guided",
+            )
+
+    return report
+
+
+def check_frontend_dist_fresh() -> tuple[bool, str]:
+    """Return (ok, detail) — warn when frontend/dist is missing or older than src."""
+    dist = frontend_dist_dir()
+    src = settings.project_root / "frontend" / "src"
+    for name in ("index.html", "app.js", "styles.css"):
+        src_path = src / name
+        dist_path = dist / name
+        if not dist_path.is_file():
+            return False, f"missing {dist_path}; run scripts/build-frontend.sh"
+        if src_path.is_file() and src_path.stat().st_mtime > dist_path.stat().st_mtime:
+            return False, f"{name} in dist is older than src; run scripts/build-frontend.sh"
+    return True, ""
+
+
 def _ensure_mock_llm() -> None:
     """Match tests/conftest.py so offline UI checks use the mock LLM layer."""
     settings.llm_mock_mode = True
@@ -418,7 +634,7 @@ def run_checks(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = 120.0,
 ) -> CheckReport:
-    """Run selected UI check groups: static, api, chat."""
+    """Run selected UI check groups: static, api, chat, guided."""
     if offline:
         _ensure_mock_llm()
     selected = groups or {"static", "api", "chat"}
@@ -436,13 +652,24 @@ def run_checks(
         finally:
             getter.close()
 
-    if "api" in selected or "chat" in selected:
+    needs_getter = "api" in selected or "chat" in selected or "guided" in selected
+    if needs_getter:
         getter = InProcessGetter() if offline else HttpxGetter(base_url, timeout=timeout)
         try:
             if "api" in selected:
                 report.merge(check_api_contract(getter))
             if "chat" in selected:
                 report.merge(check_chat_smoke(getter))
+            if "guided" in selected:
+                dist = frontend_dist_dir()
+                report.merge(
+                    check_guided_ui_contract(
+                        (dist / "index.html").read_text(encoding="utf-8"),
+                        (dist / "app.js").read_text(encoding="utf-8"),
+                        (dist / "styles.css").read_text(encoding="utf-8"),
+                    )
+                )
+                report.merge(check_guided_smoke(getter))
         finally:
             getter.close()
 

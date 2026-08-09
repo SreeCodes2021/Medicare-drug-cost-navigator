@@ -200,6 +200,11 @@ async def get_disclaimer():
     return {"text": settings.disclaimer_text}
 
 
+@app.get("/api/privacy")
+async def get_privacy_policy():
+    return {"text": settings.privacy_policy_text}
+
+
 @app.post("/api/estimate", response_model=EstimateApiResponse)
 async def estimate_costs(req: EstimateRequest):
     from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels
@@ -401,7 +406,42 @@ def _build_message_from_fields(req: QueryRequest) -> str:
     return " ".join(parts)
 
 
-_frontend = settings.project_root / "frontend" / "dist"
+def _sync_frontend_dist() -> Path:
+    """Copy frontend/src → dist when sources are newer (local dev convenience)."""
+    import shutil
+
+    src = settings.project_root / "frontend" / "src"
+    dist = settings.project_root / "frontend" / "dist"
+    if not src.is_dir():
+        return dist
+
+    assets = ("index.html", "app.js", "styles.css", "manifest.json")
+    stale = not dist.is_dir()
+    if not stale:
+        for name in assets:
+            src_path = src / name
+            dist_path = dist / name
+            if src_path.is_file() and (
+                not dist_path.is_file() or src_path.stat().st_mtime > dist_path.stat().st_mtime
+            ):
+                stale = True
+                break
+
+    if stale:
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "icons").mkdir(parents=True, exist_ok=True)
+        for name in assets:
+            if (src / name).is_file():
+                shutil.copy2(src / name, dist / name)
+        icons_src = src / "icons"
+        if icons_src.is_dir():
+            for icon in icons_src.glob("*.png"):
+                shutil.copy2(icon, dist / "icons" / icon.name)
+
+    return dist
+
+
+_frontend = _sync_frontend_dist()
 if _frontend.exists():
     _no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
 

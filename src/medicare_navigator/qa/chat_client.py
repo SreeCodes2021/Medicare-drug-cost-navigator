@@ -5,6 +5,11 @@ from typing import Any
 
 import httpx
 
+from medicare_navigator.guardrails.channel_parity import (
+    prose_channel_overclaim_warnings,
+    summarize_channel_coverage,
+)
+
 DEFAULT_BASE_URL = "http://localhost:8000"
 
 
@@ -44,6 +49,12 @@ def build_grading_bundle(user_message: str, chat_response: dict[str, Any]) -> di
     inner = chat_response.get("response") or {}
     shown_text = inner.get("explanation") or inner.get("clarification_message") or ""
 
+    channel_estimates = inner.get("channel_estimates") or []
+    if not channel_estimates and inner.get("channel_estimate"):
+        channel_estimates = [inner["channel_estimate"]]
+    channel_coverage = summarize_channel_coverage(channel_estimates)
+    channel_warnings = prose_channel_overclaim_warnings(shown_text, channel_coverage)
+
     return {
         "user_message": user_message,
         "session_id": chat_response.get("session_id"),
@@ -54,6 +65,9 @@ def build_grading_bundle(user_message: str, chat_response: dict[str, Any]) -> di
             "clarification_message": inner.get("clarification_message"),
             "citations": inner.get("citations") or [],
             "estimate": inner.get("estimate"),
+            "channel_estimates": channel_estimates,
+            "channel_coverage": channel_coverage,
+            "channel_warnings": channel_warnings,
             "data_as_of": inner.get("data_as_of") or {},
             "tool_statuses": inner.get("tool_statuses") or {},
             "tools_invoked": inner.get("tools_invoked") or [],

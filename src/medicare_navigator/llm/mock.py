@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from medicare_navigator.llm.types import ChatWithToolsResult, ToolCallSpec
+from medicare_navigator.guardrails.channel_parity import channel_wording_for_channels
 from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
 
 T = TypeVar("T", bound=BaseModel)
@@ -86,6 +87,10 @@ _QUESTION_WORDS = frozenset(
         "oop",
         "compare",
         "between",
+        "across",
+        "these",
+        "out-of-pocket",
+        "year-to-date",
         "would",
         "will",
         "much",
@@ -405,7 +410,7 @@ def _build_final_explanation(estimate: dict[str, Any] | None) -> str:
         cost_text = (
             f"${cost_low:.2f}" if cost_low == cost_high else f"${cost_low:.2f}–${cost_high:.2f}"
         )
-        channel_note = " depending on pharmacy channel" if channels else ""
+        channel_note = channel_wording_for_channels(channels) if channels else ""
         parts.append(
             f"{drug_name.capitalize()} for a {days_supply}-day supply on {plan_name} is "
             f"estimated at {cost_text}{channel_note} ({phase} phase)."

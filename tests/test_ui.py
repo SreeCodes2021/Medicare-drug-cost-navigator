@@ -11,6 +11,7 @@ from medicare_navigator.ui_test.checks import (
     check_api_contract,
     check_app_js_contract,
     check_chat_smoke,
+    check_guided_ui_contract,
     check_html_element_contract,
     check_static_files_on_disk,
     check_static_served,
@@ -45,6 +46,37 @@ def test_app_js_references_required_elements():
     assert report.passed, [r.__dict__ for r in report.failed]
 
 
+def test_guided_estimate_ui_contract():
+    dist = frontend_dist_dir()
+    report = check_guided_ui_contract(
+        (dist / "index.html").read_text(encoding="utf-8"),
+        (dist / "app.js").read_text(encoding="utf-8"),
+        (dist / "styles.css").read_text(encoding="utf-8"),
+    )
+    assert report.passed, [r.__dict__ for r in report.failed]
+
+
+def test_guided_form_is_independent_top_level_tab_with_own_chat():
+    html = (frontend_dist_dir() / "index.html").read_text(encoding="utf-8")
+    top_tabs = html.index('class="primary-mode-tabs"')
+    chat_form = html.index('id="chat-form"')
+    guided_panel = html.index('id="mode-guided"')
+    guided_chat = html.index('id="guided-chat-messages"')
+    assert top_tabs < chat_form
+    assert guided_panel < guided_chat
+    assert "guided-sheet-backdrop" not in html
+    assert "guided-sheet-close" not in html
+
+
+def test_guided_chat_uses_separate_session_and_five_turn_limit():
+    js = (frontend_dist_dir() / "app.js").read_text(encoding="utf-8")
+    assert "let guidedSessionId = null" in js
+    assert "guidedTurnCount < 5" in js
+    assert "guidedTurnCount >= 5" in js
+    assert "resetGuidedConversation();" in js
+    assert "session_id: guidedSessionId" in js
+
+
 def test_static_assets_served(offline_getter):
     report = check_static_served(offline_getter)
     assert report.passed, [r.__dict__ for r in report.failed]
@@ -57,6 +89,13 @@ def test_ui_api_endpoints(offline_getter):
 
 def test_chat_smoke_offline(offline_getter):
     report = check_chat_smoke(offline_getter)
+    assert report.passed, [r.__dict__ for r in report.failed]
+
+
+def test_guided_smoke_offline(offline_getter):
+    from medicare_navigator.ui_test.checks import check_guided_smoke
+
+    report = check_guided_smoke(offline_getter)
     assert report.passed, [r.__dict__ for r in report.failed]
 
 

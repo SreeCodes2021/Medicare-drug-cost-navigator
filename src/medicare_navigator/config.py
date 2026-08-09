@@ -79,6 +79,11 @@ class Settings(BaseSettings):
         return path.read_text(encoding="utf-8").strip()
 
     @property
+    def privacy_policy_text(self) -> str:
+        path = self.config_dir / "privacy_policy.txt"
+        return path.read_text(encoding="utf-8").strip()
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 

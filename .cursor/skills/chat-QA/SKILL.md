@@ -60,6 +60,9 @@ Re-run health after they confirm. Do not grade fabricated output — only grade 
 | `user_message` | Original question (dimension 6 — leads with answer?) |
 | `grading.explanation` | Text shown to beneficiary (or `clarification_message` when clarifying) |
 | `grading.citations` | Citation-groundedness (dimension 1) |
+| `grading.channel_estimates` | Per-plan, per-channel tool output (dimension 1 channel parity) |
+| `grading.channel_coverage` | Which channels have numeric estimates vs `null` (auto-computed) |
+| `grading.channel_warnings` | Auto-flag when prose claims "all channels" but data has gaps |
 | `grading.formulary`, `cost_trend`, `alternatives` | Structured lookups for dimension 1 |
 | `grading.data_as_of` | Disclaimer & data-currency (dimension 4) |
 | `session_id` | Pass to next `send` for multi-turn QA |
@@ -89,6 +92,7 @@ Map bundle fields to rubric inputs — **all context is present** after a succes
 |-------|--------------------------|
 | Generated explanation | `grading.explanation` |
 | Citations | `grading.citations` |
+| Channel tool output | `grading.channel_estimates`, `grading.channel_coverage`, `grading.channel_warnings` |
 | Structured lookups | `grading.formulary`, `cost_trend`, `alternatives` |
 | Original question | `user_message` |
 
@@ -146,6 +150,57 @@ provided source or structured lookup output.
 Check specifically for the failure mode where the model fills a gap with a *plausible* number
 (e.g., inventing a "typical" copay) instead of saying the data wasn't available. This is the
 single most important check in the rubric — flag it even if everything else is well-written.
+
+#### Channel parity sub-check (within dimension 1)
+
+When `grading.channel_estimates` or `grading.channel_coverage` is present (any cost or
+plan-comparison answer), also verify **tool-vs-prose parity** for pharmacy channels:
+
+1. Read `grading.channel_coverage` first. If `grading.channel_warnings` is non-empty, treat
+   that as a **dimension 1 score of 0** unless the explanation explicitly says pricing is
+   only known for specific channels and names which ones are missing.
+2. **Overclaim patterns** (score 0 if any apply without qualification):
+   - "all CMS pharmacy channels", "all four channels", "every channel", or similar when
+     `missing_channels` is non-empty for that plan.
+   - Stating one aggregate dollar amount as if it applies uniformly to all channels when
+     `priced_channels` differs between plans in a comparison (e.g., plan A has 1 priced
+     channel, plan B has 3 — call that out).
+3. **Aggregate range** — prose `$` figures must match `aggregate_cost_low` / `aggregate_cost_high`
+   in `channel_coverage` (min/max across channels **with** numeric estimates only). A correct
+   aggregate with silent channel gaps is **score 1**, not 2.
+4. **Null channels are not $0** — `cost_low: null` means "no CMS match for this channel at this
+   coverage level," not free. Do not treat missing channels as zero.
+
+**Regression scenario** (requires AR ingested data, not offline fixtures):
+
+```bash
+medicare-chat-invoke send --message "Compare the cost of metformin 500mg across these Medicare plans: H2802-063, H5216-366. Use a 30-day supply and \$0 year-to-date out-of-pocket spending. Summarize the differences and identify the lowest estimated cost." \
+  --filters-json '{"drug":"metformin","dosage":"500mg","days_supply":30,"ytd_oop_spend":0}'
+```
+
+Expected tool truth: both plans aggregate to `$0.00–$0.00`, but **preferred retail is missing
+for both**; H2802-063 has only `standard_retail` priced. Any answer claiming "all channels"
+should score 0 on dimension 1.
+
+Cross-check with deterministic API (no LLM):
+
+```bash
+curl -s -X POST http://localhost:8000/api/compare-plans \
+  -H 'Content-Type: application/json' \
+  -d '{"drug":"metformin","dosage":"500mg","plan_ids":["H2802-063","H5216-366"],"days_supply":30,"ytd_oop_spend":0}'
+```
+
+#### Plan-comparison sub-check (within dimensions 1 and 2)
+
+For compare-plans answers, also verify:
+
+- Prose mentions **plan premiums are not included** (fill cost-share only), or the UI
+  comparison disclaimer is clearly in scope — absence is **dimension 4 score 1** when costs
+  are compared across plans.
+- Tier, deductible, and **channel-coverage differences** between plans are stated when they
+  exist in tool output — silence when plans differ structurally is **dimension 1 score 1**.
+- "Lowest estimated cost" is allowed when the user asked, but must not add "best plan" /
+  switching language (dimension 2).
 
 ### 2. Regulatory/marketing-boundary compliance (0–2) — maps to FR6, §4.4, §9
 - **0 (violation):** Recommends, suggests, or implies the beneficiary should switch plans,

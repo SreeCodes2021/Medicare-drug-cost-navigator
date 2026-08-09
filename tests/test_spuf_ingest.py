@@ -46,14 +46,15 @@ def test_ingest_spuf_fixture_loads_fl_plans(spuf_db):
         version="SPUF.2026.20260115",
     )
 
-    # 4 plans total: S9999-001 (FL), H8888-001 (FL), H5427-060 (FL), S9999-003 (FL, suppressed)
-    assert result["stats"]["plans"] == 4
+    # 5 plans total: S9999-001 (FL), H8888-001 (FL), H5427-060 (FL), S9999-003 (FL, suppressed),
+    # S9999-004 (FL, partial pharmacy-channel coverage)
+    assert result["stats"]["plans"] == 5
     assert result["stats"]["formulary_rows"] >= 3
     assert result["source_id"] == "cms_spuf_2026_q1"
 
     repo = PlanRepository(db=spuf_db)
     fl_plans = repo.list_plans(state="FL")
-    assert len(fl_plans) == 4
+    assert len(fl_plans) == 5
     assert any(p["plan_key"] == "S9999-001" for p in fl_plans)
     assert any(p["plan_key"] == "H8888-001" for p in fl_plans)
     assert any(p["plan_key"] == "S9999-003" for p in fl_plans)
@@ -175,7 +176,7 @@ def test_ingest_spuf_from_zip_archive(spuf_db, tmp_path):
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 4
+    assert result["stats"]["plans"] == 5
 
 
 def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
@@ -197,7 +198,7 @@ def test_ingest_spuf_from_nested_zip_members(spuf_db, tmp_path):
         db=spuf_db,
         version="SPUF.2026.20260115",
     )
-    assert result["stats"]["plans"] == 4
+    assert result["stats"]["plans"] == 5
 
 
 def test_ingest_spuf_merge_states_fl_only(spuf_db):
@@ -209,12 +210,12 @@ def test_ingest_spuf_merge_states_fl_only(spuf_db):
         version="SPUF.2026.20260115",
         merge_states=True,
     )
-    assert result_fl["stats"]["plans"] == 4
-    assert result_fl["stats"]["total_plans"] == 4
+    assert result_fl["stats"]["plans"] == 5
+    assert result_fl["stats"]["total_plans"] == 5
     assert result_fl["manifest"]["spuf"]["states"] == ["FL"]
 
     repo = PlanRepository(db=spuf_db)
-    assert len(repo.list_plans(state="FL")) == 4
+    assert len(repo.list_plans(state="FL")) == 5
 
 
 def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
@@ -267,10 +268,10 @@ def test_ingest_spuf_merge_states_replaces_same_state(spuf_db):
         version="SPUF.2026.20260115",
         merge_states=True,
     )
-    assert second["stats"]["plans_purged"] == 4
-    assert second["stats"]["total_plans"] == 4
+    assert second["stats"]["plans_purged"] == 5
+    assert second["stats"]["total_plans"] == 5
     repo = PlanRepository(db=spuf_db)
-    assert len(repo.list_plans(state="FL")) == 4
+    assert len(repo.list_plans(state="FL")) == 5
 
 
 def test_pricing_insert_row_preserves_literal_zero_days_supply():

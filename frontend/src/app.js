@@ -6,6 +6,11 @@ let resultsBatch = null;
 let resultsComparison = null;
 let allPlans = [];
 let sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+let cachedDisclaimerText = "";
+let cachedPrivacyText = "";
+let emptyStateHtml = "";
+let guidedSessionId = null;
+let guidedTurnCount = 0;
 
 const DEFAULT_MODEL = "gpt-5.4-nano";
 const MODEL_OPTIONS = [
@@ -480,26 +485,125 @@ async function loadDisclaimer() {
   try {
     const res = await fetch(`${API}/api/disclaimer`);
     const data = await res.json();
+    cachedDisclaimerText = data.text;
     el("disclaimer-text").textContent = data.text;
   } catch {
-    el("disclaimer-text").textContent =
+    cachedDisclaimerText =
       "Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice.";
+    el("disclaimer-text").textContent = cachedDisclaimerText;
   }
 }
 
 function initDisclaimerCollapse() {
   const banner = el("disclaimer-banner");
   if (!banner) return;
-  const mobile = window.matchMedia("(max-width: 639px)");
-  const setCollapsed = () => {
-    if (mobile.matches) {
-      banner.removeAttribute("open");
-    } else {
-      banner.setAttribute("open", "");
+  banner.removeAttribute("open");
+}
+
+// ---- App menu (New chat / About / Disclaimer / Privacy) ----
+
+function openMenu() {
+  el("app-menu").classList.remove("hidden");
+  el("menu-btn").setAttribute("aria-expanded", "true");
+}
+
+function closeMenu() {
+  el("app-menu").classList.add("hidden");
+  el("menu-btn").setAttribute("aria-expanded", "false");
+}
+
+function toggleMenu() {
+  if (el("app-menu").classList.contains("hidden")) openMenu();
+  else closeMenu();
+}
+
+// ---- Generic info modal (About / Disclaimer / Privacy content) ----
+
+function openInfoModal(title, bodyHtml) {
+  el("info-modal-title").textContent = title;
+  el("info-modal-body").innerHTML = bodyHtml;
+  el("info-modal").classList.remove("hidden");
+  document.documentElement.classList.add("modal-open");
+  document.body.classList.add("modal-open");
+}
+
+function closeInfoModal() {
+  el("info-modal").classList.add("hidden");
+  document.documentElement.classList.remove("modal-open");
+  document.body.classList.remove("modal-open");
+}
+
+const ABOUT_APP_HTML = `
+  <p>Estimates what a specific prescription drug will cost on a specific Medicare Part D or Medicare Advantage-with-Part-D plan, using CMS's own published formulary and pricing data — before you go to the pharmacy.</p>
+  <p>Every dollar figure traces back to a specific CMS record; it isn't guessed by the AI model.</p>
+  <p>Currently covers Arkansas and Texas plans, for a single drug on a plan's standard formulary (non-insulin, non-low-income-subsidy, pre-deductible/initial-coverage/catastrophic phase), across all four standard pharmacy channels. Other states, insulin, and coinsurance-based plans aren't supported yet.</p>
+  <p>This is not medical advice, financial advice, or Medicare enrollment guidance — confirm with your doctor, pharmacist, or plan before making decisions.</p>
+  <p><em>Data source: CMS's public SPUF program.</em></p>
+`;
+
+function showAboutModal() {
+  closeMenu();
+  openInfoModal("About this app", ABOUT_APP_HTML);
+}
+
+function showDisclaimerModal() {
+  closeMenu();
+  const text = cachedDisclaimerText || el("disclaimer-text").textContent || "";
+  openInfoModal("Disclaimer", `<p>${escapeHtml(text)}</p>`);
+}
+
+async function showPrivacyModal() {
+  closeMenu();
+  if (!cachedPrivacyText) {
+    try {
+      const res = await fetch(`${API}/api/privacy`);
+      const data = await res.json();
+      cachedPrivacyText = data.text;
+    } catch {
+      cachedPrivacyText = "Privacy policy could not be loaded right now. Please try again shortly.";
     }
-  };
-  setCollapsed();
-  mobile.addEventListener("change", setCollapsed);
+  }
+  openInfoModal("Privacy policy", `<p>${escapeHtml(cachedPrivacyText)}</p>`);
+}
+
+// ---- New chat ----
+
+function resetGuidedFields() {
+  el("filter-drug").value = "";
+  el("filter-dosage").value = "";
+  el("filter-plan").value = "";
+  el("filter-plan-input").value = "";
+  el("filter-ytd").value = "";
+  mdPlanCombobox.clear();
+  showGuidedError(null);
+  resetDrugRows();
+  resetComparePlanRows();
+}
+
+function resetChat() {
+  closeMenu();
+  switchMode("chat");
+
+  sessionId = null;
+  turnCount = 0;
+  resultsBaseline = null;
+  resultsBatch = null;
+  resultsComparison = null;
+  sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+
+  el("turn-counter").textContent = "0/5 turns";
+  updateSessionUsageDisplay();
+
+  const messages = el("chat-messages");
+  if (emptyStateHtml) messages.innerHTML = emptyStateHtml;
+  messages.classList.remove("is-thread");
+
+  el("results-content").innerHTML =
+    `<p class="placeholder">Your cost estimate and sources will appear here after you get an estimate.</p>`;
+  el("data-as-of").classList.add("hidden");
+
+  el("chat-input").value = "";
+  el("chat-input").focus();
 }
 
 function updatePlanLoadHint(count, message) {
@@ -634,12 +738,16 @@ function createPlanCombobox({ inputId, hiddenId, listboxId }) {
           render(filterPlans(inputEl().value));
           open();
         }
-        highlight = Math.min(highlight + 1, options.length - 1);
-        highlightOption(options);
+        const visibleOptions = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visibleOptions.length) return;
+        highlight = Math.min(highlight + 1, visibleOptions.length - 1);
+        highlightOption(visibleOptions);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        const visibleOptions = [...listboxEl().querySelectorAll(".plan-option")];
+        if (!visibleOptions.length) return;
         highlight = Math.max(highlight - 1, 0);
-        highlightOption(options);
+        highlightOption(visibleOptions);
       } else if (e.key === "Enter" && highlight >= 0) {
         e.preventDefault();
         const opt = options[highlight];
@@ -943,35 +1051,15 @@ async function submitMultiDrugEstimate() {
   const daysSupply = parseInt(el("md-days-supply").value, 10) || 30;
   const ytdRaw = el("md-ytd").value;
   const ytdNum = parseFloat(ytdRaw);
-  const payload = {
-    plan_id: planId,
-    items,
-    days_supply: daysSupply,
-    ytd_oop_spend: ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0,
-  };
-
-  el("multidrug-submit").disabled = true;
-  showLoading("Computing combined cost…");
-  if (!resultsBaseline) renderResultsSkeleton();
-  try {
-    const res = await fetch(`${API}/api/estimate-batch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const body = await res.json();
-    if (!res.ok) {
-      showGuidedError(chatErrorMessage(res, body));
-      return;
-    }
-    renderBatchEstimateResults(body);
-  } catch (err) {
-    showGuidedError("Could not load combined estimate. Please try again.");
-    console.error(err);
-  } finally {
-    hideLoading();
-    el("multidrug-submit").disabled = false;
-  }
+  const drugList = items
+    .map((item) => (item.dosage ? `${item.drug} ${item.dosage}` : item.drug))
+    .join(", ");
+  const ytd = ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0;
+  const message =
+    `Estimate costs for ${drugList} on plan ${planId}. ` +
+    `Use a ${daysSupply}-day supply and $${ytd} year-to-date out-of-pocket spending. ` +
+    "Summarize each drug and the combined cost.";
+  await sendGuidedInitial(message);
 }
 
 async function submitComparePlans() {
@@ -990,36 +1078,18 @@ async function submitComparePlans() {
   const daysSupply = parseInt(el("cp-days-supply").value, 10) || 30;
   const ytdRaw = el("cp-ytd").value;
   const ytdNum = parseFloat(ytdRaw);
-  const payload = {
+  const ytd = ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0;
+  const drugLabel = dosage ? `${drug} ${dosage}` : drug;
+  const message =
+    `Compare the cost of ${drugLabel} across these Medicare plans: ${planIds.join(", ")}. ` +
+    `Use a ${daysSupply}-day supply and $${ytd} year-to-date out-of-pocket spending. ` +
+    "Summarize the differences and identify the lowest estimated cost.";
+  await sendGuidedInitial(message, {
     drug,
-    plan_ids: planIds,
+    dosage: dosage || undefined,
     days_supply: daysSupply,
-    ytd_oop_spend: ytdRaw && !Number.isNaN(ytdNum) && ytdNum >= 0 ? ytdNum : 0,
-  };
-  if (dosage) payload.dosage = dosage;
-
-  el("compareplans-submit").disabled = true;
-  showLoading("Comparing plans…");
-  if (!resultsBaseline) renderResultsSkeleton();
-  try {
-    const res = await fetch(`${API}/api/compare-plans`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const body = await res.json();
-    if (!res.ok) {
-      showGuidedError(chatErrorMessage(res, body));
-      return;
-    }
-    renderPlanComparisonResults(body);
-  } catch (err) {
-    showGuidedError("Could not load plan comparison. Please try again.");
-    console.error(err);
-  } finally {
-    hideLoading();
-    el("compareplans-submit").disabled = false;
-  }
+    ytd_oop_spend: ytd,
+  });
 }
 
 function getUserTimezone() {
@@ -1332,9 +1402,15 @@ function formatMultiChannelSummary(data) {
 const COPY_ICON_SVG = `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="7" y="7" width="9.5" height="9.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v6A1.5 1.5 0 0 0 5.5 12H7" stroke="currentColor" stroke-width="1.4"/></svg>`;
 const CHECK_ICON_SVG = `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.5l3.2 3.2L15 6.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-function appendMessage(role, text, source, citations, usage) {
-  const empty = el("empty-state");
-  if (empty) empty.remove();
+function appendMessage(role, text, source, citations, usage, containerId = "chat-messages") {
+  const container = el(containerId);
+  if (containerId === "chat-messages") {
+    const empty = el("empty-state");
+    if (empty) empty.remove();
+    container.classList.add("is-thread");
+  } else {
+    el("guided-chat-placeholder")?.remove();
+  }
   const div = document.createElement("div");
   div.className = `message ${role}`;
   div.dataset.copyText = text;
@@ -1372,8 +1448,8 @@ function appendMessage(role, text, source, citations, usage) {
   footer.appendChild(copyBtn);
   div.appendChild(footer);
 
-  el("chat-messages").appendChild(div);
-  el("chat-messages").scrollTop = el("chat-messages").scrollHeight;
+  container.appendChild(div);
+  div.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function showLoading(text) {
@@ -1550,8 +1626,12 @@ function switchMode(mode) {
   el("mode-guided").hidden = isChat;
   el("mode-tab-chat").classList.toggle("active", isChat);
   el("mode-tab-chat").setAttribute("aria-selected", String(isChat));
+  el("mode-tab-chat").tabIndex = isChat ? 0 : -1;
   el("mode-tab-guided").classList.toggle("active", !isChat);
   el("mode-tab-guided").setAttribute("aria-selected", String(!isChat));
+  el("mode-tab-guided").tabIndex = isChat ? -1 : 0;
+  el("turn-counter").classList.toggle("hidden", !isChat);
+  (isChat ? el("chat-input") : el("filter-drug"))?.focus();
 }
 
 function composeGuidedMessage() {
@@ -1697,48 +1777,136 @@ function submitGuidedEstimate() {
     showGuidedError("Please enter a drug name and select a plan.");
     return;
   }
-  void runDeterministicEstimate({ switchToChat: true });
+  void sendGuidedInitial(composeGuidedMessage(), getFilters());
 }
 
-async function runDeterministicEstimate({ switchToChat = false } = {}) {
-  const message = composeGuidedMessage();
-  el("guided-submit").disabled = true;
-  el("send-btn").disabled = true;
-  showLoading("Computing costs…");
+function setGuidedEstimateButtonsDisabled(disabled) {
+  el("guided-submit").disabled = disabled;
+  el("multidrug-submit").disabled = disabled;
+  el("compareplans-submit").disabled = disabled;
+}
+
+function resetGuidedConversation() {
+  guidedSessionId = null;
+  guidedTurnCount = 0;
+  el("guided-turn-counter").textContent = "0/5 turns";
+  el("guided-chat-messages").innerHTML =
+    `<p id="guided-chat-placeholder" class="placeholder">Your LLM summary and follow-up conversation will appear here.</p>`;
+  el("guided-results-content").innerHTML =
+    `<p class="placeholder">Detailed costs and sources will appear after you get an estimate.</p>`;
+  el("guided-data-as-of").classList.add("hidden");
+  el("guided-chat-input").value = "";
+  el("guided-chat-input").disabled = true;
+  el("guided-send-btn").disabled = true;
+}
+
+function renderGuidedResponse(resp) {
+  const hasStructuredResult =
+    resp.channel_estimates?.length || resp.channel_estimate || resp.estimate;
+  if (!hasStructuredResult) return;
+
+  const dates = Object.values(resp.data_as_of || {}).filter(Boolean);
+  const badge = el("guided-data-as-of");
+  if (dates.length) {
+    badge.textContent = `Data as of ${dates[0]}`;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+
+  let resultHtml = "";
+  if (resp.channel_estimates?.length > 1) {
+    resultHtml = renderMultiEstimatesStackHtml(resp.channel_estimates);
+  } else if (resp.channel_estimate) {
+    resultHtml = renderMultiChannelEstimateCardHtml(resp.channel_estimate, { compact: true });
+  } else if (resp.estimate) {
+    resultHtml = renderEstimateCardHtml(resp.estimate, { compact: true });
+  }
+  el("guided-results-content").innerHTML = resultHtml + renderCitationsCard(resp.citations);
+}
+
+function updateGuidedFollowupAvailability() {
+  const available = Boolean(guidedSessionId) && guidedTurnCount < 5;
+  el("guided-chat-input").disabled = !available;
+  el("guided-send-btn").disabled = !available;
+  el("guided-chat-input").placeholder = available
+    ? `Ask a follow-up about this estimate (${5 - guidedTurnCount} remaining)`
+    : guidedTurnCount >= 5
+      ? "This guided conversation has reached 5 turns"
+      : "Ask a follow-up about this estimate";
+}
+
+async function sendGuidedInitial(message, filters = null) {
+  resetGuidedConversation();
+  await sendGuidedMessage(message, { filters });
+}
+
+async function sendGuidedMessage(message, { filters = null } = {}) {
+  if (!message.trim()) return;
+  appendMessage("user", message, null, null, null, "guided-chat-messages");
+  el("guided-chat-input").value = "";
+  setGuidedEstimateButtonsDisabled(true);
+  el("guided-send-btn").disabled = true;
+  el("guided-loading-text").textContent = guidedSessionId
+    ? "Preparing follow-up…"
+    : "Summarizing estimate…";
+  el("guided-loading").classList.remove("hidden");
   showGuidedError("");
-  if (!resultsBaseline) renderResultsSkeleton();
 
   try {
-    const res = await fetch(`${API}/api/estimate`, {
+    const res = await fetch(`${API}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildEstimatePayload()),
+      body: JSON.stringify({
+        message,
+        session_id: guidedSessionId,
+        filters,
+        model: getSelectedModel(),
+        timezone: getUserTimezone(),
+      }),
     });
-    const body = await res.json();
+    const contentType = res.headers.get("content-type") || "";
+    const body = contentType.includes("application/json") ? await res.json() : await res.text();
     if (!res.ok) {
-      showGuidedError(chatErrorMessage(res, body));
-      resetResultsPlaceholderIfEmpty();
+      appendMessage(
+        "assistant",
+        `Sorry — ${chatErrorMessage(res, body)} Please try again.`,
+        null,
+        null,
+        null,
+        "guided-chat-messages"
+      );
+      return;
+    }
+    if (!body?.response) {
+      appendMessage("assistant", "Sorry, something went wrong. Please try again.", null, null, null, "guided-chat-messages");
       return;
     }
 
-    appendMessage("user", message);
-    if (switchToChat) {
-      switchMode("chat");
-    }
+    guidedSessionId = body.session_id;
+    guidedTurnCount = body.turn_count;
+    el("guided-turn-counter").textContent = `${guidedTurnCount}/5 turns`;
+    const resp = body.response;
+    const explanation = resp.explanation || resp.clarification_message || "No response.";
     appendMessage(
       "assistant",
-      body.data ? formatMultiChannelSummary(body.data) : body.message || "No estimate could be computed.",
-      "CMS data"
+      explanation,
+      resp.channel_estimate || resp.channel_estimates?.length
+        ? resp.response_source || "CMS data"
+        : resp.response_source,
+      resp.citations,
+      resp.llm_usage,
+      "guided-chat-messages"
     );
-    renderDeterministicEstimate(body);
+    renderGuidedResponse(resp);
+    accumulateSessionUsage(resp.llm_usage);
   } catch (err) {
-    showGuidedError("Could not load estimate. Please try again.");
-    resetResultsPlaceholderIfEmpty();
+    appendMessage("assistant", "Sorry, something went wrong. Please try again.", null, null, null, "guided-chat-messages");
     console.error(err);
   } finally {
-    hideLoading();
-    el("guided-submit").disabled = false;
-    el("send-btn").disabled = false;
+    el("guided-loading").classList.add("hidden");
+    setGuidedEstimateButtonsDisabled(false);
+    updateGuidedFollowupAvailability();
   }
 }
 
@@ -1747,12 +1915,27 @@ el("chat-form").addEventListener("submit", (e) => {
   sendMessage(el("chat-input").value);
 });
 
-document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", () => sendMessage(chip.textContent.trim()));
+el("guided-chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (guidedTurnCount >= 5) return;
+  sendGuidedMessage(el("guided-chat-input").value);
+});
+
+document.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  sendMessage(chip.textContent.trim());
 });
 
 el("mode-tab-chat").addEventListener("click", () => switchMode("chat"));
 el("mode-tab-guided").addEventListener("click", () => switchMode("guided"));
+document.querySelector(".primary-mode-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const mode = event.key === "ArrowLeft" || event.key === "Home" ? "chat" : "guided";
+  switchMode(mode);
+  el(`mode-tab-${mode}`).focus();
+});
 el("guided-submit").addEventListener("click", submitGuidedEstimate);
 
 el("guided-mode-single").addEventListener("click", () => switchGuidedSubmode("single"));
@@ -1803,6 +1986,38 @@ el("refresh-plans").addEventListener("click", async () => {
   }
 });
 
+el("menu-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleMenu();
+});
+el("menu-new-chat").addEventListener("click", resetChat);
+el("menu-about").addEventListener("click", showAboutModal);
+el("menu-disclaimer").addEventListener("click", showDisclaimerModal);
+el("menu-privacy").addEventListener("click", showPrivacyModal);
+el("info-modal-close").addEventListener("click", closeInfoModal);
+el("info-modal").addEventListener("click", (event) => {
+  if (event.target.dataset.action === "close-info-modal") closeInfoModal();
+});
+
+document.addEventListener("click", (event) => {
+  const menu = el("app-menu");
+  if (menu.classList.contains("hidden")) return;
+  if (menu.contains(event.target) || event.target.closest("#menu-btn")) return;
+  closeMenu();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!el("info-modal").classList.contains("hidden")) {
+    closeInfoModal();
+    return;
+  }
+  if (!el("app-menu").classList.contains("hidden")) {
+    closeMenu();
+  }
+});
+
+emptyStateHtml = el("empty-state").outerHTML;
 loadDisclaimer();
 initDisclaimerCollapse();
 initFieldInfoTooltips();
@@ -1812,5 +2027,6 @@ resetComparePlanRows();
 populateModelSelect();
 updateSessionUsageDisplay();
 pollPlansUntilLoaded();
+resetGuidedConversation();
 switchMode("chat");
 switchGuidedSubmode("single");

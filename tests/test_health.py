@@ -55,3 +55,15 @@ async def test_chat_returns_503_without_llm(tmp_path, monkeypatch):
     client = TestClient(app)
     response = client.post("/api/chat", json={"message": "metformin tier copay"})
     assert response.status_code == 503
+
+
+def test_disclaimer_and_privacy_endpoints_return_nonempty_text():
+    client = TestClient(app)
+
+    disclaimer_response = client.get("/api/disclaimer")
+    assert disclaimer_response.status_code == 200
+    assert disclaimer_response.json()["text"].strip()
+
+    privacy_response = client.get("/api/privacy")
+    assert privacy_response.status_code == 200
+    assert privacy_response.json()["text"].strip()

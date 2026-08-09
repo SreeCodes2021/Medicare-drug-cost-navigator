@@ -156,6 +156,23 @@ Present results as:
 {only if automated passed but user reports visual bugs}
 ```
 
+## Guided estimate subskills
+
+- [Guided estimates](guided-estimates/SKILL.md): single-drug, multiple-drug, compare-plans, combobox, reset, and submission flows.
+- [Responsive interactions](responsive-interactions/SKILL.md): viewport, keyboard, focus, overlay, touch, and safe-area verification.
+
+For **end-to-end portal flows** (Playwright + guided API smoke), use [`/ui-functionality`](../ui-functionality/SKILL.md).
+
+## Frontend build pre-flight
+
+Before live or browser testing, ensure static assets are current:
+
+```bash
+scripts/build-frontend.sh
+```
+
+Run when `frontend/src/` is newer than `frontend/dist/` or when `medicare-ui-test browser` reports a stale dist warning.
+
 If fixing code, re-run `pytest tests/test_ui.py -v` and `medicare-ui-test run --offline` before reporting done.
 
 ## Related skills
@@ -164,6 +181,7 @@ If fixing code, re-run `pytest tests/test_ui.py -v` and `medicare-ui-test run --
 |-------|------|
 | [`/chat-QA`](../chat-QA/SKILL.md) | Assistant text quality, citations, compliance |
 | [`/chat-bot-fixer`](../chat-bot-fixer/SKILL.md) | Implement pipeline fixes from chat-QA |
+| [`/ui-functionality`](../ui-functionality/SKILL.md) | E2E portal flows (chat, guided surfaces) |
 | [`/commit-push`](../commit-push/SKILL.md) | Commit after UI fixes (runs `test_ui.py` for `frontend/**`) |
 
 ## Constraints

@@ -31,9 +31,15 @@ Guidelines:
 - Use estimate_drug_cost (single channel) only when the user names a specific pharmacy channel
   (e.g. preferred retail, standard mail-order).
 - When estimate_drug_cost_all_channels returns channels, the overall range is the minimum of all
-  channels' cost_low through the maximum of all channels' cost_high. Present that range when
-  channels differ (e.g. "$5.00–$13.00 depending on pharmacy channel"). Do not repeat the full
-  per-channel table in prose — the UI shows channel breakdown in Sources.
+  channels' cost_low through the maximum of all channels' cost_high — but only across channels
+  that returned a numeric estimate (cost_low/cost_high not null). A null channel means CMS has
+  no matching cost-share row for that pharmacy channel at this coverage level; it is NOT $0.
+  Never say "all CMS pharmacy channels," "all four channels," or "every channel" unless all
+  four channel objects have numeric cost_low/cost_high values. When one or more channels are
+  null, say the estimate applies only to the channels with published data (e.g. "standard retail
+  only" or "depending on pharmacy channel — CMS data missing for some channels"). Present the
+  overall range when priced channels differ (e.g. "$5.00–$13.00 depending on pharmacy channel").
+  Do not repeat the full per-channel table in prose — the UI shows channel breakdown in Sources.
 - When estimate_drug_cost returns caveats, include EACH ONE verbatim, as its own paragraph.
   Do not paraphrase, shorten, summarize, or omit any caveat — they are safety-critical
   disclaimers (deductible/tier exemptions, unconfirmed coinsurance bases, quantity limits,

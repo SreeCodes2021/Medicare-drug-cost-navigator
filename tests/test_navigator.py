@@ -10,7 +10,13 @@ from medicare_navigator.config import settings
 from medicare_navigator.llm.client import llm_client
 from medicare_navigator.llm.errors import LLMNotConfiguredError
 from medicare_navigator.session.manager import session_manager
-from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_MAPD_MOOP, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
+from tests.spuf_fixture import (
+    PLAN_FL_MAPD,
+    PLAN_FL_MAPD_MOOP,
+    PLAN_FL_PARTIAL_CHANNELS,
+    PLAN_FL_PDP,
+    PLAN_FL_SUPPRESSED,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +82,8 @@ async def test_navigator_insulin_out_of_scope():
 def test_navigator_prompt_describes_scope():
     assert "insulin" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "estimate_drug_cost_all_channels" in NAVIGATOR_SYSTEM_PROMPT
+    assert "null channel" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "all cms pharmacy channels" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "moop" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "never ask" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "what today's date is" in NAVIGATOR_SYSTEM_PROMPT.lower()
@@ -222,6 +230,47 @@ async def test_navigator_plan_comparison_produces_two_entries_no_recommendation_
     lower = response.explanation.lower()
     for banned in ("best plan", "cheapest overall", "you should switch", "recommend switching"):
         assert banned not in lower
+    assert "not a recommendation to switch plans" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_partial_channel_plan_explanation_qualifies_missing_channels():
+    message = f"What's the cost for metformin 500mg on plan {PLAN_FL_PARTIAL_CHANNELS}?"
+    response = await navigator.run(message)
+    assert response.status == "ok"
+    assert response.channel_estimates or response.channel_estimate
+    estimates = response.channel_estimates or (
+        [response.channel_estimate] if response.channel_estimate else []
+    )
+    est = estimates[0]
+    missing = [name for name, ch in est.channels.items() if ch.cost_low is None]
+    assert missing, "fixture plan should have partial channel coverage"
+
+    lower = response.explanation.lower()
+    for phrase in (
+        "all cms pharmacy channel",
+        "all four channel",
+        "all pharmacy channel",
+        "every channel",
+        "all channels",
+    ):
+        assert phrase not in lower
+    assert "standard retail" in lower or "no matching estimate" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_plan_comparison_partial_vs_full_channels_no_overclaim():
+    message = (
+        f"Compare metformin 500mg cost between plan {PLAN_FL_PARTIAL_CHANNELS} "
+        f"and plan {PLAN_FL_PDP}."
+    )
+    response = await navigator.run(message)
+    assert response.status == "ok"
+    assert len(response.channel_estimates) == 2
+
+    lower = response.explanation.lower()
+    for phrase in ("all cms pharmacy channel", "all four channel", "all channels"):
+        assert phrase not in lower
     assert "not a recommendation to switch plans" in lower
 
 

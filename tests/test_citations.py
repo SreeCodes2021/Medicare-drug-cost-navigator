@@ -69,6 +69,30 @@ def test_build_citations_all_channels_cost_range():
     assert "13.00" in citations[0].claim
 
 
+def test_apply_guardrails_flags_all_channels_overclaim():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is $5.00 across all CMS pharmacy channels.",
+        artifacts,
+    )
+    assert any("all pharmacy channels" in e.lower() for e in errors)
+    assert "Standard retail" in explanation or "no matching estimate" in explanation
+
+
+def test_apply_guardrails_appends_channel_coverage_note_for_partial_data():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is estimated at $5.00–$13.00 depending on pharmacy channel.",
+        artifacts,
+    )
+    assert not any("all pharmacy channels" in e.lower() for e in errors)
+    assert "no matching estimate" in explanation.lower()
+
+
 def test_apply_guardrails_allows_all_channel_dollar_amounts():
     artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
     _explanation, _citations, errors = apply_guardrails(
