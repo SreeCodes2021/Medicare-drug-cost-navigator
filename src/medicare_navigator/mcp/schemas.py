@@ -100,6 +100,23 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "name": "get_part_d_benefit_params",
+        "description": (
+            "Return the CMS statutory Part D annual out-of-pocket maximum for a contract year. "
+            "Use when the user asks about the Part D drug-benefit OOP cap — not Medicare "
+            "Advantage medical-network MOOP limits."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contract_year": {
+                    "type": "integer",
+                    "description": "Medicare contract year (default: current data year, e.g. 2026)",
+                },
+            },
+        },
+    },
 ]
 
 

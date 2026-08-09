@@ -11,6 +11,7 @@ from medicare_navigator.models.tool_result import ToolResult
 from medicare_navigator.storage.repository import PlanRepository
 from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost, estimate_drug_cost_all_channels
 from medicare_navigator.tools.lookup_plan import lookup_plan
+from medicare_navigator.tools.part_d_benefit_lookup import get_part_d_benefit_params
 
 SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 AS_OF_FALLBACK = "2026-01-15"
@@ -77,6 +78,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             contract_year=args.get("contract_year"),
         )
         result = ToolResult.ok(plans, source_id=_spuf_source_id(), as_of_date=_spuf_as_of())
+    elif name == "get_part_d_benefit_params":
+        year = args.get("contract_year")
+        result = get_part_d_benefit_params(int(year) if year is not None else None)
     else:
         return {
             "status": "not_found",

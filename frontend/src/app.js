@@ -1817,6 +1817,8 @@ function initDrugPickers() {
 
 const MAX_BATCH_DRUGS = 5;
 const MAX_COMPARE_PLANS = 4;
+const MAX_BATCH_DRUGS_LIMIT_MSG = `You can add up to ${MAX_BATCH_DRUGS} drugs per estimate.`;
+const MAX_COMPARE_PLANS_LIMIT_MSG = `You can compare up to ${MAX_COMPARE_PLANS} plans at a time.`;
 
 let drugRowCount = 0;
 let drugRows = [];
@@ -1912,6 +1914,7 @@ function removeDrugRow(entry) {
   entry.row.remove();
   updateDrugRowControls();
   updateGuidedSubmitButtonState();
+  showGuidedError("");
 }
 
 function resetDrugRows() {
@@ -1997,6 +2000,7 @@ function removeComparePlanRow(entry) {
   entry.row.remove();
   updateComparePlanRowControls();
   updateGuidedSubmitButtonState();
+  showGuidedError("");
 }
 
 function resetComparePlanRows() {
@@ -2763,6 +2767,42 @@ function initGuidedSubmitWraps() {
   });
 }
 
+function initGuidedAddRowButtons() {
+  const configs = [
+    {
+      btnId: "multidrug-add-row",
+      isAtLimit: () => drugRows.length >= MAX_BATCH_DRUGS,
+      message: MAX_BATCH_DRUGS_LIMIT_MSG,
+    },
+    {
+      btnId: "compareplans-add-row",
+      isAtLimit: () => comparePlanRows.length >= MAX_COMPARE_PLANS,
+      message: MAX_COMPARE_PLANS_LIMIT_MSG,
+    },
+  ];
+
+  for (const { btnId, isAtLimit, message } of configs) {
+    const btn = el(btnId);
+    if (!btn) continue;
+    const parent = btn.parentElement;
+    if (!parent) continue;
+    parent.addEventListener("click", (e) => {
+      const rect = btn.getBoundingClientRect();
+      if (
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+      ) {
+        return;
+      }
+      if (btn.disabled && isAtLimit()) {
+        showGuidedError(message);
+      }
+    });
+  }
+}
+
 function chatErrorMessage(res, data) {
   if (typeof data === "string" && data.trim()) {
     return data.trim();
@@ -3134,6 +3174,7 @@ initDrugPickers();
 resetDrugRows();
 resetComparePlanRows();
 initGuidedSubmitWraps();
+initGuidedAddRowButtons();
 populateModelSelect();
 populateModelSelect("guided-model-select");
 updateSessionUsageDisplay();

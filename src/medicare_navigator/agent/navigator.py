@@ -402,8 +402,37 @@ class Navigator:
             )
 
         from medicare_navigator.agent.request_context import set_request_timezone
+        from medicare_navigator.agent.oop_questions import resolve_oop_question
+        from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
 
         set_request_timezone(timezone)
+
+        filter_plan_id = filter_slots.plan_id if filter_slots else None
+        oop_result = resolve_oop_question(message, filter_plan_id=filter_plan_id)
+        if oop_result:
+            explanation, tool_artifacts, tools_invoked = oop_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                response_source="System/OOP",
+            )
 
         explanation, tool_artifacts, tools_invoked, response_source, token_usage, new_last_tool_calls = (
             await self._run_agent_loop(

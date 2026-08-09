@@ -15,7 +15,7 @@ def test_tool_names():
     assert "estimate_drug_cost" in names
     assert "lookup_plan" in names
     assert "list_plans" in names
-    assert len(names) == 4
+    assert len(names) == 5
 
 
 def test_openai_tool_schemas():
@@ -66,6 +66,13 @@ async def test_mcp_list_plans():
     result = await call_tool("list_plans", {"state": "FL"})
     assert result["status"] == "ok"
     assert any(p["plan_key"] == PLAN_FL_PDP for p in result["data"])
+
+
+@pytest.mark.asyncio
+async def test_mcp_get_part_d_benefit_params():
+    result = await call_tool("get_part_d_benefit_params", {"contract_year": 2026})
+    assert result["status"] == "ok"
+    assert result["data"]["annual_oop_cap"] == 2100.0
 
 
 @pytest.mark.asyncio

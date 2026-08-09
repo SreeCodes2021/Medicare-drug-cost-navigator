@@ -53,6 +53,23 @@ Default to **~30 real queries per run** when invoked standalone (matches the exp
 - Enrollment help ("sign me up for plan H8888-001")
 - Questions entirely unrelated to Medicare drug cost (weather, sports, general trivia)
 
+### 2b. OOP / MOOP scope ambiguity (required when `/quality-test` runs — see that skill § 2b)
+
+These are **not** generic out-of-scope refusals. Grade whether the bot
+**correctly distinguishes** Part D statutory drug OOP cap vs medical-network MOOP:
+
+- **Generic OOP** — "for any plan, what is my max OOP according to CMS?" → both
+  concepts explained; Part D cap dollar figure grounded; no spurious `lookup_plan`
+- **Generic OOP + UI filter** — same question with `--filters-json '{"plan_id":"…"}'`;
+  filtered plan must not appear unprompted
+- **Part D cap only** — "CMS Part D annual out-of-pocket maximum for 2026" → `$2,100`
+  from `get_part_d_benefit_params`, not invented prose
+- **Medical MOOP + plan** — in/out-of-network MOOP for a named `plan_key` → honest
+  SPUF limitation; no fabricated MOOP dollars
+
+When `/exploratory-qa` runs **standalone**, include at least cases 1 and 4 above.
+When invoked via `/quality-test`, skip duplication — that skill owns the full block.
+
 ### 3. Meaningful vs. meaningless follow-ups
 Start a session with a normal cost question, then send a follow-up from each group:
 - **Meaningful** — changes a real input ("what if I'd already spent $2,000 YTD?", "what about a 90-day supply instead?", "what about a different plan, H8888-001?")
@@ -90,6 +107,7 @@ For every case, record two things:
 |----------|-----------------|----------------|------------------|
 | Off-script/malformed | "..." | PASS/FAIL | BLOCK/REVISE/PASS |
 | Out-of-scope | "..." | PASS/FAIL | BLOCK/REVISE/PASS |
+| OOP/MOOP scope | "..." | PASS/FAIL | BLOCK/REVISE/PASS |
 | Meaningful follow-up | "..." | PASS/FAIL | BLOCK/REVISE/PASS |
 | Meaningless follow-up | "..." | PASS/FAIL | BLOCK/REVISE/PASS |
 

@@ -217,6 +217,27 @@ def build_citations_from_artifacts(
     if citations:
         return citations
 
+    benefit = tool_artifacts.get("get_part_d_benefit_params")
+    if benefit and benefit.get("status") == "ok":
+        data = benefit.get("data") or {}
+        cap = data.get("annual_oop_cap")
+        year = data.get("contract_year")
+        if cap is not None:
+            source_id = benefit["source_id"]
+            citations.append(
+                Citation(
+                    claim=(
+                        f"CMS Part D annual out-of-pocket maximum for {year}: "
+                        f"${float(cap):,.2f}"
+                    ),
+                    source_id=source_id,
+                    as_of_date=benefit.get("as_of_date", ""),
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
+                )
+            )
+        return citations
+
     lookup = tool_artifacts.get("lookup_plan")
     if lookup and lookup.get("source_id"):
         if lookup.get("status") == "not_found":
@@ -335,6 +356,12 @@ def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[fl
         deductible = plan.get("deductible")
         if deductible is not None:
             amounts.add(round(float(deductible), 2))
+
+    benefit = tool_artifacts.get("get_part_d_benefit_params")
+    if benefit and benefit.get("status") == "ok":
+        cap = (benefit.get("data") or {}).get("annual_oop_cap")
+        if cap is not None:
+            amounts.add(round(float(cap), 2))
 
     return amounts
 

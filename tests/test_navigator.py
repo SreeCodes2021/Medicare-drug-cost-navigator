@@ -116,6 +116,27 @@ async def test_navigator_moop_question_scope_refusal():
 
 
 @pytest.mark.asyncio
+async def test_navigator_generic_any_plan_oop_question():
+    response = await navigator.run("for any plan, what is my max oop according to the cms?")
+    lower = response.explanation.lower()
+    assert response.status == "ok"
+    assert "lookup_plan" not in response.tools_invoked
+    assert "get_part_d_benefit_params" in response.tools_invoked
+    assert "2,100" in response.explanation or "2100" in response.explanation
+    assert "h1889" not in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_part_d_annual_cap_question():
+    response = await navigator.run(
+        "what is the CMS Part D annual out-of-pocket maximum for 2026?"
+    )
+    assert response.status == "ok"
+    assert "get_part_d_benefit_params" in response.tools_invoked
+    assert "2,100" in response.explanation or "2100" in response.explanation
+
+
+@pytest.mark.asyncio
 async def test_navigator_multi_drug_basket_produces_two_channel_estimates():
     message = f"What's the cost for metformin 500mg and lisinopril 10mg on plan {PLAN_FL_PDP}?"
     response = await navigator.run(message)

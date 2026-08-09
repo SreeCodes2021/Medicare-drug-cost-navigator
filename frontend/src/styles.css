@@ -839,6 +839,20 @@ body.modal-open {
   color: var(--accent);
 }
 
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-secondary:disabled:hover,
+.btn-secondary:disabled:active,
+.btn-secondary:disabled:focus {
+  border-color: var(--border);
+  color: var(--text);
+  cursor: not-allowed;
+}
+
 .btn-primary {
   margin-top: 0.25rem;
   background: var(--accent);
@@ -1858,13 +1872,7 @@ body.modal-open {
     padding-top: 0.75rem;
   }
 
-  .guided-submode-tabs {
-    overflow-x: auto;
-    padding-bottom: 0.15rem;
-  }
-
   .guided-submode-tabs .mode-tab {
-    flex: 1 0 auto;
     padding-inline: 0.55rem;
   }
 
@@ -1913,7 +1921,16 @@ body.modal-open {
 /* ── Guided sub-modes: multi-drug basket / compare plans ── */
 
 .guided-submode-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 100%;
+  gap: 0.25rem;
   margin-bottom: 0.25rem;
+}
+
+.guided-submode-tabs .mode-tab {
+  width: 100%;
+  text-align: center;
 }
 
 .repeatable-rows {

@@ -20,6 +20,11 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/RxNormAPIs.html",
         "scope": "Drug name normalization",
     },
+    "cms_part_d_benefit_params": {
+        "label": "CMS Part D benefit parameters",
+        "url": "https://www.cms.gov/newsroom/fact-sheets/inflation-reduction-act-medicare-drug-price-negotiation-program-initial-price-applicability-year-2026",
+        "scope": "Statutory Part D annual out-of-pocket maximum by contract year",
+    },
 }
 
 

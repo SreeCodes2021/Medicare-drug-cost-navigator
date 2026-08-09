@@ -29,17 +29,27 @@ def canonicalize_drug_name(name: str) -> str:
     """Map aliases and close typos to a canonical English ingredient before RxNorm lookup."""
     from medicare_navigator.tools.drug_lookup import COMMON_DRUGS
 
-    key = name.strip().lower()
-    if not key:
+    collapsed = re.sub(r"\s+", " ", name.strip())
+    if not collapsed:
         return name.strip()
+    key = collapsed.lower()
     if key in DRUG_NAME_ALIASES:
         return DRUG_NAME_ALIASES[key]
     if key in COMMON_DRUGS:
         return key
+    for token in re.findall(r"[a-zA-Z]+", key):
+        if token in DRUG_NAME_ALIASES:
+            return DRUG_NAME_ALIASES[token]
+        if token in COMMON_DRUGS:
+            return token
+    for token in re.findall(r"[a-zA-Z]+", key):
+        close = difflib.get_close_matches(token, COMMON_DRUGS, n=1, cutoff=0.82)
+        if close:
+            return close[0]
     close = difflib.get_close_matches(key, COMMON_DRUGS, n=1, cutoff=0.82)
     if close:
         return close[0]
-    return name.strip()
+    return collapsed
 
 
 class NormalizeDrugData(dict):

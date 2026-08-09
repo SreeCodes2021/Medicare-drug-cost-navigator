@@ -12,6 +12,11 @@ def test_canonicalize_drug_name_fuzzy_typo():
     assert canonicalize_drug_name("metfomrin") == "metformin"
 
 
+def test_canonicalize_drug_name_repeated_tokens():
+    repeated = " ".join(["metformin"] * 200)
+    assert canonicalize_drug_name(repeated) == "metformin"
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_dosage_qualified_lookup_resolves_strength_specific_rxcui_lisinopril():
