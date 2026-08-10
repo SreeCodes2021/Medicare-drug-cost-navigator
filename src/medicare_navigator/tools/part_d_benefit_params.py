@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,30 @@ def remaining_oop_headroom(ytd_oop_spend: float, contract_year: int) -> float:
     return max(0.0, annual_oop_cap(contract_year) - ytd_oop_spend)
 
 
+def project_period_budget(
+    *,
+    ytd_oop_spend: float,
+    days_supply: int,
+    cost_low: float | None,
+    cost_high: float | None,
+    contract_year: int,
+    period_days: float,
+) -> tuple[float, float, float | None, float | None, int]:
+    """Project OOP over `period_days` at the same fill cadence (simplified; same phase/copay).
+
+    Returns (annual_oop_cap, remaining_headroom, budget_cost_low, budget_cost_high, fills).
+    """
+    cap = annual_oop_cap(contract_year)
+    headroom = remaining_oop_headroom(ytd_oop_spend, contract_year)
+    if cost_low is None or period_days <= 0:
+        return cap, headroom, None, None, 0
+    fills = max(0, math.ceil(period_days / max(days_supply, 1)))
+    high = cost_high if cost_high is not None else cost_low
+    raw_low = ytd_oop_spend + fills * cost_low
+    raw_high = ytd_oop_spend + fills * high
+    return cap, headroom, min(cap, raw_low), min(cap, raw_high), fills
+
+
 def project_annual_budget(
     *,
     ytd_oop_spend: float,
@@ -85,3 +110,35 @@ def project_annual_budget(
     raw_low = ytd_oop_spend + fills_per_year * cost_low
     raw_high = ytd_oop_spend + fills_per_year * high
     return cap, headroom, min(cap, raw_low), min(cap, raw_high)
+
+
+def project_remaining_year_budget(
+    *,
+    ytd_oop_spend: float,
+    days_supply: int,
+    cost_low: float | None,
+    cost_high: float | None,
+    contract_year: int,
+    days_remaining: int,
+) -> tuple[float, float, float | None, float | None, int, int]:
+    """Project OOP for fills from today through the contract year end.
+
+    Returns (annual_oop_cap, remaining_headroom, budget_cost_low, budget_cost_high,
+    days_remaining, fills). Budget costs are future fills only, capped by remaining headroom.
+    """
+    cap = annual_oop_cap(contract_year)
+    headroom = remaining_oop_headroom(ytd_oop_spend, contract_year)
+    if cost_low is None or days_remaining <= 0:
+        return cap, headroom, None, None, max(days_remaining, 0), 0
+    fills = max(0, math.ceil(days_remaining / max(days_supply, 1)))
+    high = cost_high if cost_high is not None else cost_low
+    raw_low = fills * cost_low
+    raw_high = fills * high
+    return (
+        cap,
+        headroom,
+        min(headroom, raw_low),
+        min(headroom, raw_high),
+        days_remaining,
+        fills,
+    )

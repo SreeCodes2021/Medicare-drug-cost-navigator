@@ -28,6 +28,9 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
 ]
+browser = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 medicare-ingest = "medicare_navigator.ingestion.cli:main"
@@ -44,6 +47,7 @@ testpaths = ["tests"]
 addopts = "-m 'not integration'"
 markers = [
     "integration: tests that call live external APIs (deselect with -m 'not integration')",
+    "browser: Playwright portal flows (run with RUN_BROWSER_TESTS=1)",
 ]
 
 [tool.ruff]

@@ -93,7 +93,9 @@ Implementation: [`src/medicare_navigator/ui_test/checks.py`](../../../src/medica
 |------|---------------------|
 | POST `/api/chat` tier lookup | Messages append, `turn_count`, results cards |
 | POST follow-up with `session_id` + filters | Session persistence, turn counter `N/5` |
-| Response envelope fields | `renderResults()` reads `status`, `formulary`, `cost_trend`, `alternatives`, `citations`, `data_as_of`, `tool_statuses`, `response_source` |
+| Response envelope fields | `renderResults()` reads `status`, `channel_estimate` / estimate cards, `citations`, `data_as_of`, `tool_statuses`, `response_source` |
+
+**Phase 6 note:** top-level `formulary`, `cost_trend`, and `alternatives` response fields were removed from the API and UI (Phase 8 roadmap). Do not expect separate trend/alternatives cards — cost/tier/phase render from `channel_estimate` / estimate data instead.
 
 Smoke messages are defined in `SMOKE_MESSAGES` inside `checks.py`.
 
@@ -110,7 +112,7 @@ Run after automated checks pass or when debugging visual/interaction bugs:
 | **Prompt chips** | Click a chip | User message sent; loading spinner; assistant reply |
 | **Chat send** | Type + Send | Empty state removed; user + assistant bubbles |
 | **Turn counter** | After send | Shows `1/5 turns` (increments each turn) |
-| **Results — ok** | Metformin + H1234-045 query | Formulary card, optional trend/alternatives/citations |
+| **Results — ok** | Metformin + H1234-045 query | Estimate / channel cost card, citations, disclaimer |
 | **Results — clarify** | "metformin copay" (no plan) | Warning in results; chat shows clarification |
 | **Results — follow-up** | Second message same session | Results merge (baseline preserved) |
 | **Error path** | Stop server, send message | "Sorry, something went wrong" in chat |
@@ -156,6 +158,25 @@ Present results as:
 {only if automated passed but user reports visual bugs}
 ```
 
+## Guided estimate subskills
+
+- [Guided estimates](guided-estimates/SKILL.md): single-drug, multiple-drug, compare-plans, combobox, reset, and submission flows.
+- [Responsive interactions](responsive-interactions/SKILL.md): viewport, keyboard, focus, overlay, touch, and safe-area verification.
+
+For **end-to-end portal flows** (Playwright + guided API smoke), use [`/ui-functionality`](../ui-functionality/SKILL.md).
+
+For a single call that runs this skill plus the field/keyboard sweep and responsive checklist together, use [`/smoke-test`](../smoke-test/SKILL.md).
+
+## Frontend build pre-flight
+
+Before live or browser testing, ensure static assets are current:
+
+```bash
+scripts/build-frontend.sh
+```
+
+Run when `frontend/src/` is newer than `frontend/dist/` or when `medicare-ui-test browser` reports a stale dist warning.
+
 If fixing code, re-run `pytest tests/test_ui.py -v` and `medicare-ui-test run --offline` before reporting done.
 
 ## Related skills
@@ -164,6 +185,7 @@ If fixing code, re-run `pytest tests/test_ui.py -v` and `medicare-ui-test run --
 |-------|------|
 | [`/chat-QA`](../chat-QA/SKILL.md) | Assistant text quality, citations, compliance |
 | [`/chat-bot-fixer`](../chat-bot-fixer/SKILL.md) | Implement pipeline fixes from chat-QA |
+| [`/ui-functionality`](../ui-functionality/SKILL.md) | E2E portal flows (chat, guided surfaces) |
 | [`/commit-push`](../commit-push/SKILL.md) | Commit after UI fixes (runs `test_ui.py` for `frontend/**`) |
 
 ## Constraints

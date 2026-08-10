@@ -8,6 +8,7 @@ T = TypeVar("T")
 
 class ToolStatus(str, Enum):
     ok = "ok"
+    needs_dosage = "needs_dosage"
     not_found = "not_found"
     not_covered = "not_covered"
     stale = "stale"

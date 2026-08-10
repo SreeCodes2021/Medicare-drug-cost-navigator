@@ -22,6 +22,22 @@ def _cmd_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_models(args: argparse.Namespace) -> int:
+    """List the model catalog and which providers have credentials configured."""
+    import httpx
+
+    try:
+        with httpx.Client(base_url=args.base_url.rstrip("/"), timeout=args.timeout) as client:
+            response = client.get("/api/models")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc), "base_url": args.base_url}), file=sys.stderr)
+        return 1
+    print(json.dumps({"ok": True, "base_url": args.base_url, **data}, indent=2))
+    return 0
+
+
 def _cmd_send(args: argparse.Namespace) -> int:
     filters = None
     if args.filters_json:
@@ -32,6 +48,7 @@ def _cmd_send(args: argparse.Namespace) -> int:
             args.message,
             session_id=args.session_id,
             filters=filters,
+            model=args.model,
             base_url=args.base_url,
             timeout=args.timeout,
         )
@@ -85,10 +102,18 @@ def main(argv: list[str] | None = None) -> int:
     health = sub.add_parser("health", help="Check /api/health")
     health.set_defaults(func=_cmd_health)
 
+    models = sub.add_parser("models", help="List /api/models catalog with configured-provider status")
+    models.set_defaults(func=_cmd_models)
+
     send = sub.add_parser("send", help="Send a chat message and return grading bundle JSON")
     send.add_argument("--message", "-m", required=True, help="User message to send")
     send.add_argument("--session-id", help="Continue an existing session")
     send.add_argument("--filters-json", help='Optional filters JSON, e.g. \'{"plan_id":"H1234-045"}\'')
+    send.add_argument(
+        "--model",
+        help="Model id from GET /api/models (e.g. gpt-5.4-nano, gpt-5.6-luna, "
+        "claude-haiku-4-5-20251001). Defaults to server default model when omitted.",
+    )
     send.set_defaults(func=_cmd_send)
 
     grade_input = sub.add_parser(

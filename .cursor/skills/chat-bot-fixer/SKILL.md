@@ -54,7 +54,7 @@ Work dimensions in the priority order listed in the grade's "What would need to 
 
 | Dim | Issue type | Primary fix locations |
 |-----|------------|----------------------|
-| **1** Citation-groundedness | Invented numbers, claims without source | [`synthesis.py`](../../../src/medicare_navigator/agents/synthesis.py) (`SYNTHESIS_SYSTEM_PROMPT`, `_deterministic_explanation`, citation validation in `run_synthesis_agent`); upstream tool artifacts in [`orchestrator/pipeline.py`](../../../src/medicare_navigator/orchestrator/pipeline.py) |
+| **1** Citation-groundedness | Invented numbers, claims without source; **channel overclaim** ("all channels" with `missing_channels`); aggregate `$` mismatch vs `channel_coverage` | [`agent/prompts.py`](../../../src/medicare_navigator/agent/prompts.py); [`guardrails/citations.py`](../../../src/medicare_navigator/guardrails/citations.py); [`guardrails/channel_parity.py`](../../../src/medicare_navigator/guardrails/channel_parity.py) |
 | **2** Marketing boundary | Plan-switch nudges, enrollment steering | `SYNTHESIS_SYSTEM_PROMPT`; deterministic strings in `synthesis.py`; [`policy.py`](../../../src/medicare_navigator/agents/policy.py) |
 | **3** Medical advice | Start/stop/change drug, clinical judgment | Same as D2; alternatives phrasing in `_deterministic_explanation` and `_follow_up_alternatives_answer` |
 | **4** Disclaimer & data-currency | Missing disclaimer or "as of" date | [`config/disclaimer.txt`](../../../config/disclaimer.txt); disclaimer append in `run_synthesis_agent`; citation `as_of_date` fields |
@@ -63,10 +63,10 @@ Work dimensions in the priority order listed in the grade's "What would need to 
 | **7** Tone | Alarmist or falsely reassuring | Same as D6 |
 
 **Canonical anchors** (read before editing):
-- Synthesis agent: [`src/medicare_navigator/agents/synthesis.py`](../../../src/medicare_navigator/agents/synthesis.py)
-- Policy agent: [`src/medicare_navigator/agents/policy.py`](../../../src/medicare_navigator/agents/policy.py)
+- Navigator agent + prompts: [`src/medicare_navigator/agent/prompts.py`](../../../src/medicare_navigator/agent/prompts.py), [`navigator.py`](../../../src/medicare_navigator/agent/navigator.py)
+- Citation / dollar guardrails: [`src/medicare_navigator/guardrails/citations.py`](../../../src/medicare_navigator/guardrails/citations.py)
+- Channel parity helpers for QA: [`src/medicare_navigator/qa/chat_client.py`](../../../src/medicare_navigator/qa/chat_client.py)
 - Disclaimer: [`config/disclaimer.txt`](../../../config/disclaimer.txt)
-- Intake (clarification messages): [`src/medicare_navigator/intake/agent.py`](../../../src/medicare_navigator/intake/agent.py)
 
 ### Step 3 — Implement
 
@@ -77,11 +77,10 @@ Work dimensions in the priority order listed in the grade's "What would need to 
 
 | Changed path | Command |
 |--------------|---------|
-| `agents/synthesis.py` | `pytest tests/test_synthesis.py tests/test_explain_cost_change.py -v` |
-| `agents/policy.py` | `pytest tests/test_follow_up.py -v` |
-| `intake/agent.py` | `pytest tests/test_intake.py -v` |
-| `orchestrator/**` | `pytest tests/test_follow_up.py -v` |
-| `config/disclaimer.txt` | `pytest tests/test_synthesis.py -v` |
+| `agent/prompts.py`, `agent/navigator.py` | `pytest tests/test_navigator.py tests/test_citations.py -v` |
+| `guardrails/citations.py` | `pytest tests/test_citations.py tests/test_navigator.py -v` |
+| `qa/chat_client.py` | `pytest tests/test_chat_qa.py -v` |
+| `config/disclaimer.txt` | `pytest tests/test_health.py -v` |
 
 Add or update a test when the fix is behavioral and testable offline.
 

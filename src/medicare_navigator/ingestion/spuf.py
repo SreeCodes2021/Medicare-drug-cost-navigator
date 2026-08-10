@@ -15,7 +15,7 @@ from typing import Any, Iterator
 import yaml
 
 from medicare_navigator.config import settings
-from medicare_navigator.ingestion.manifest import load_manifest, merge_manifest
+from medicare_navigator.ingestion.manifest import calendar_quarter_from_date, load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
 from medicare_navigator.storage.connection import DuckDBConnection
@@ -527,7 +527,8 @@ def ingest_spuf(
 
     version = version or source.stem
     as_of = _parse_as_of_from_version(version)
-    source_id = f"cms_spuf_{filters.contract_year}_q1"
+    ingest_quarter = calendar_quarter_from_date(date.today())
+    source_id = f"cms_spuf_{filters.contract_year}_q{ingest_quarter}"
 
     db = db or DuckDBConnection()
     conn = db.connect()
@@ -767,6 +768,7 @@ def ingest_spuf(
                 "as_of": as_of,
                 "source_id": source_id,
                 "contract_year": filters.contract_year,
+                "quarter": ingest_quarter,
                 "states": manifest_states,
             },
             "benefit_params": {

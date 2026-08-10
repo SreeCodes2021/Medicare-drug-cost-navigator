@@ -69,6 +69,156 @@ def test_build_citations_all_channels_cost_range():
     assert "13.00" in citations[0].claim
 
 
+def test_apply_guardrails_flags_all_channels_overclaim():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is $5.00 across all CMS pharmacy channels.",
+        artifacts,
+    )
+    assert any("all pharmacy channels" in e.lower() for e in errors)
+    assert "Standard retail" in explanation or "no matching estimate" in explanation
+
+
+def test_apply_guardrails_appends_channel_coverage_note_for_partial_data():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is estimated at $5.00–$13.00 depending on pharmacy channel.",
+        artifacts,
+    )
+    assert not any("all pharmacy channels" in e.lower() for e in errors)
+    assert "no matching estimate" not in explanation.lower()
+
+
+def test_apply_guardrails_skips_duplicate_channel_note_when_prose_covers_gaps():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        (
+            "Lovastatin is $5.00 at preferred retail and $13.00 at standard retail; "
+            "CMS has no matching estimate for mail-order channels."
+        ),
+        artifacts,
+    )
+    assert errors == []
+    assert explanation.count("no matching estimate") == 1
+
+
+def _compare_partial_channels_artifacts():
+    return {
+        "estimate_drug_cost_all_channels__calls": [
+            _all_channels_artifact(
+                plan_key="H2802-063",
+                plan_name="Giveback AR-3",
+                channels={
+                    "preferred_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                    "preferred_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                },
+            ),
+            _all_channels_artifact(
+                plan_key="H5216-366",
+                plan_name="HumanaChoice C-SNP",
+                drug_name="metformin",
+                channels={
+                    "preferred_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                    "preferred_mail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                    "standard_mail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                },
+            ),
+        ],
+    }
+
+
+def test_apply_guardrails_flags_false_not_available_with_priced_channels():
+    artifacts = _compare_partial_channels_artifacts()
+    explanation, _citations, errors = apply_guardrails(
+        (
+            "H2802-063: covered but estimate not available. "
+            "H5216-366: $0.00. Lowest cost is H5216-366."
+        ),
+        artifacts,
+    )
+    assert not any("H2802-063" in e and "priced" in e for e in errors)
+    assert "H2802-063" in explanation
+    assert "$0.00" in explanation
+
+
+def test_apply_guardrails_flags_sole_lowest_when_plans_tie():
+    artifacts = _compare_partial_channels_artifacts()
+    _explanation, _citations, errors = apply_guardrails(
+        "The lowest estimated cost is $0.00 on H5216-366.",
+        artifacts,
+    )
+    assert any("tie" in e.lower() or "H2802-063" in e for e in errors)
+
+
+def test_apply_guardrails_flags_alternatives_without_clinician_deferral():
+    artifacts = {"lookup_plan": _estimate_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        (
+            "Yes, lower-cost alternatives to Januvia include metformin and glipizide "
+            "on this plan."
+        ),
+        artifacts,
+    )
+    assert any("doctor" in e.lower() or "pharmacist" in e.lower() for e in errors)
+
+
+def test_apply_guardrails_flags_alternatives_with_unprompted_drug_names_even_with_deferral():
+    artifacts = {"lookup_plan": _estimate_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        (
+            "Discuss any substitute with your doctor or pharmacist first. "
+            "The most common generic alternative to Januvia is sitagliptin."
+        ),
+        artifacts,
+    )
+    assert any("substitute" in e.lower() or "sitagliptin" in e.lower() for e in errors)
+
+
+def test_apply_guardrails_allows_alternatives_with_clinician_deferral_only():
+    artifacts = {"lookup_plan": _estimate_artifact()}
+    _explanation, _citations, errors = apply_guardrails(
+        (
+            "Discuss any substitute with your doctor or pharmacist first. "
+            "Tell me a drug name and strength and I can estimate its cost on your plan."
+        ),
+        artifacts,
+    )
+    assert errors == []
+
+
+def test_apply_guardrails_repairs_cant_calculate_when_standard_retail_is_zero():
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [
+            _all_channels_artifact(
+                plan_key="H1045-057",
+                drug_name="metformin",
+                channels={
+                    "preferred_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_retail": {"cost_low": 0.0, "cost_high": 0.0, "coinsurance": False},
+                    "preferred_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                },
+            ),
+        ],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        "H1045-057: can't calculate a dollar out-of-pocket estimate for metformin.",
+        artifacts,
+    )
+    assert "$0.00" in explanation
+    assert "can't calculate" not in explanation.lower()
+    assert not any("priced channels" in e for e in errors)
+
+
 def test_apply_guardrails_allows_all_channel_dollar_amounts():
     artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
     _explanation, _citations, errors = apply_guardrails(
@@ -148,6 +298,35 @@ def test_apply_guardrails_force_appends_caveats():
         "Metformin costs $15.00 on this plan.", artifacts
     )
     assert "COINSURANCE NOT CALCULATED" in explanation
+
+
+def test_apply_guardrails_skips_bug2_caveat_in_explanation_prose():
+    from medicare_navigator.tools.disclaimers import BUG2_CAVEAT
+
+    artifacts = {
+        "estimate_drug_cost_all_channels": _all_channels_artifact(caveats=[BUG2_CAVEAT]),
+    }
+    explanation, _citations, errors = apply_guardrails(
+        (
+            "Lovastatin is $5.00 at preferred retail and $13.00 at standard retail for a 30-day fill."
+            f"\n\n{BUG2_CAVEAT}"
+        ),
+        artifacts,
+    )
+    assert errors == []
+    assert BUG2_CAVEAT not in explanation
+    assert "$5.00" in explanation
+
+
+def test_apply_guardrails_strips_llm_disclaimer_before_appending_canonical():
+    artifacts = {"estimate_drug_cost": _estimate_artifact()}
+    paraphrased = (
+        "Metformin costs $15.00 on this plan.\n\n"
+        "General disclaimer: Figures are government reference data for the current quarter."
+    )
+    explanation, _citations, _errors = apply_guardrails(paraphrased, artifacts)
+    assert explanation.count("Disclaimer:") == 1
+    assert "General disclaimer:" not in explanation
 
 
 def test_build_citations_for_plan_not_found():

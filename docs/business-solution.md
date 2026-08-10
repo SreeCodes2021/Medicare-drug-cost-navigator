@@ -84,7 +84,7 @@ Without accessible tools, beneficiaries face surprise costs at the pharmacy, can
 
 **Output:** $5.00 copay. Tier 1 drug exempt from deductible (`DED_APPLIES_YN=N`) despite beneficiary being in pre-deductible phase overall ($130 plan deductible, $0 spent). System attaches a per-tier deductible exemption caveat and cites CMS SPUF as the source.
 
-**Verification methodology:** re-run directly against a fresh, isolated ingest of CMS's real, unmodified 2026 SPUF data for Arkansas (not the offline test fixture) immediately before this revision. The pipeline resolved plan `S5921-400` to "AARP Medicare Rx Preferred from UHC (PDP)" with `deductible=$130.00`, resolved "lovastatin 40mg" to RxCUI `197905` via the live RxNorm API, matched it to a single Tier-1 formulary NDC, and returned `cost_low=cost_high=$5.00` with the Bug 2 caveat attached — reproducing this example's figures exactly, field for field. Additional checks against the same plan: $15.00 for a 90-day supply, $5.00 at $800 YTD spend (still initial coverage).
+**Verification methodology:** re-run directly against a fresh, isolated ingest of CMS's real, unmodified 2026 SPUF data for Arkansas (not the offline test fixture) immediately before this revision. The pipeline resolved plan `S5921-400` to "AARP Medicare Rx Preferred from UHC (PDP)" with `deductible=$130.00`, resolved "lovastatin 40mg" to RxCUI `197905` via the live RxNorm API, matched it to a single Tier-1 formulary NDC, and returned `cost_low=cost_high=$5.00` with the Bug 2 caveat attached — reproducing this example's figures exactly, field for field. Additional checks against the same plan: **$13.00 on `standard_retail`** (same drug/fill; pins per-channel pricing — see golden-006), $15.00 for a 90-day supply, $5.00 at $800 YTD spend (still initial coverage).
 
 This re-verification pass also caught and fixed a real bug: CMS's beneficiary-cost file fills `COST_MAX_AMT_*` with a literal `"0"` placeholder on flat-copay rows (it's only a meaningful dollar ceiling for coinsurance rows), and the pipeline was treating that placeholder as an actual $0 payment cap — silently zeroing out ~1,300 of the 9,164 real Arkansas copay rows. Fixed in `ingestion/spuf.py` (`cost_max` is now only parsed for coinsurance-type rows) and covered by a new regression test.
 
@@ -389,7 +389,7 @@ Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and dr
 | **Status** | Implemented; no longer future work. Landed after the Phase 6 release outside a numbered phase — see `config/benefit_params.yaml` and `tools/part_d_benefit_params.py`. |
 | **What shipped** | `estimate_drug_cost` compares reported YTD OOP spend to the statutory annual Part D out-of-pocket maximum (`annual_oop_cap()`, sourced from `config/benefit_params.yaml` per contract year); once met or exceeded, the fill is priced from `COVERAGE_LEVEL=3` cost-share rows with the catastrophic-phase caveat attached verbatim. The same annual maximum also caps any tier's published `COST_MAX` ceiling (`cap_fill_copay`). |
 | **Remaining gap** | The statutory annual OOP cap is used as a proxy for the beneficiary's true TrOOP (True Out-of-Pocket) accumulator; CMS's own TrOOP tracking — which differs from raw YTD spend for LIS beneficiaries and manufacturer-discount treatment — is still not modeled. The caveat directs the user to confirm with their plan. |
-| **Tests** | Fixtures cover beneficiary at $0, mid-year, and post-catastrophic YTD levels. |
+| **Tests** | Fixtures cover beneficiary at $0, mid-year, and post-catastrophic YTD levels, plus a regression guard that an unmapped (non-30/60/90) days-supply in the catastrophic phase returns no dollar estimate rather than a fabricated `$0.00` — the same "no `COVERAGE_LEVEL` record, no number" rule already enforced for the other phases. |
 
 #### 7.3 Coinsurance dollar computation
 
@@ -432,6 +432,15 @@ Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and dr
 | **Ops** | Nightly cron ingests changed states only (delta detection via manifest version comparison) |
 | **UI** | Plan dropdown filters by user's state; `/api/plans?state=CA` query parameter |
 | **Storage** | Estimate disk sizing: ~50 states × ~500 plans × ~200K formulary rows ≈ multi-GB DuckDB; may require Render disk upgrade or partitioned storage |
+
+#### 7.6.1 Known limitation: PDP multi-state region tagging
+
+| Item | Detail |
+|---|---|
+| **Problem** | Standalone PDP (`S*`) plans are matched to a `state` via `PDP_REGION_CODE` in `config/ingest_filters.yaml`, but a single PDP region code can span several states (e.g. `CT`/`MA`/`RI`/`VT` all share region `"2"`; `DC`/`DE`/`MD` all share region `"5"`). The current ingest logic (`src/medicare_navigator/ingestion/spuf.py`) tags each such plan with only the *first* matching state, not all states the region actually covers. |
+| **Current impact** | None yet — the two currently-ingested states, AR (region `19`) and TX (region `22`), both have unique region codes. |
+| **Future impact** | Once ingestion expands to states sharing a PDP region code, the state-based plan picker (§7.6 UI) will under-represent PDP plan availability for every state in a shared region except the one arbitrarily chosen first. |
+| **Fix (not scheduled)** | Either store all states sharing a region code per plan (denormalized list or join table), or ingest the CMS county/region reference file directly rather than approximating via `config/ingest_filters.yaml`. Out of scope for the current zip/state plan-picker feature — zip/state remain a plan-*discovery* convenience there, not a source of new geographic precision. |
 
 ---
 
@@ -640,6 +649,14 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 | **Current** | MCP tools used internally by Navigator agent |
 | **Target** | Expose MCP server externally so third-party tools (EHR plugins, benefits apps) can call `estimate_drug_cost` directly |
 | **Auth** | Rate-limited API keys; no PHI in requests |
+
+#### 12.4 State-wide "total cost across drugs, all plans" lookup
+
+| Item | Detail |
+|---|---|
+| **Scope** | Given a beneficiary's full drug list (up to N drugs) and a state, compute the summed estimated cost of that basket on every plan available in the state, so a beneficiary or SHIP counselor can see which plans are cheapest for *their specific drugs* — an **informational cost table only**, not a recommendation engine. Per FR6, the product must never tell a user which plan to pick or imply a "best" plan; a future UI for this would present a sortable table of facts (plan, total estimated cost, caveats) and let the user draw their own conclusion, with the same "not a recommendation to switch plans" language already used for the plan-comparison feature. |
+| **Blockers found in this session** | (1) No premium data has been ingested — only formulary and cost-share (SPUF) data — so any "total plan cost" table would be pharmacy fill cost-share only and would need a prominent caveat that premiums are excluded. (2) This is an O(plans × drugs) batch computation across *every* plan in a state, not a handful of user-picked plans — meaningfully larger in scope and latency than the two same-session features (multi-drug-on-one-plan, one-drug-across-a-few-plans), and would need its own batching/caching strategy before it's viable. |
+| **Prerequisite** | Premium data ingestion (see Phase 7 national ingest work) and a dedicated batch-pricing path distinct from the per-request `batch_estimate` helper used for the smaller multi-drug/plan-comparison features. |
 
 ---
 

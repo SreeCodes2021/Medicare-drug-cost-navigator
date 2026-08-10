@@ -13,4 +13,5 @@ build/
 .ruff_cache/
 node_modules/
 .DS_Store
-NIW_docs/
+docs/
+other_docs/

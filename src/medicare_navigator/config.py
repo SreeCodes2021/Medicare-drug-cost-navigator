@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_model: str = "gpt-5.4-nano"
+    llm_model: str = "gpt-5.6-luna"
 
     data_dir: Path = Path("./data")
     duckdb_path: Path = Path("./data/navigator.duckdb")
@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # Overrides yaml `states` default. Unset = use yaml defaults (local dev).
     ingest_states: str = Field(default="", validation_alias="INGEST_STATES")
 
+    default_timezone: str = Field(default="America/Chicago", validation_alias="DEFAULT_TIMEZONE")
+
     project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property
@@ -74,6 +76,11 @@ class Settings(BaseSettings):
     @property
     def disclaimer_text(self) -> str:
         path = self.config_dir / "disclaimer.txt"
+        return path.read_text(encoding="utf-8").strip()
+
+    @property
+    def privacy_policy_text(self) -> str:
+        path = self.config_dir / "privacy_policy.txt"
         return path.read_text(encoding="utf-8").strip()
 
     @property

@@ -58,6 +58,10 @@ class MultiChannelDrugCostEstimate(BaseModel):
     remaining_oop_headroom: float | None = None
     annual_budget_cost_low: float | None = None
     annual_budget_cost_high: float | None = None
+    remaining_year_days: int | None = None
+    remaining_year_fills: int | None = None
+    remaining_year_budget_cost_low: float | None = None
+    remaining_year_budget_cost_high: float | None = None
 
 
 class EstimateApiResponse(BaseModel):
@@ -66,6 +70,37 @@ class EstimateApiResponse(BaseModel):
     data: MultiChannelDrugCostEstimate | None = None
     source_id: str = ""
     as_of_date: str = ""
+
+
+class BatchEstimateItem(BaseModel):
+    drug: str
+    data: MultiChannelDrugCostEstimate | None = None
+    status: str
+    message: str | None = None
+
+
+class BatchEstimateApiResponse(BaseModel):
+    status: str
+    items: list[BatchEstimateItem] = Field(default_factory=list)
+    combined_total_low: float | None = None
+    combined_total_high: float | None = None
+    caveat: str | None = None
+
+
+class PlanComparisonItem(BaseModel):
+    plan_id: str
+    data: MultiChannelDrugCostEstimate | None = None
+    status: str
+    message: str | None = None
+
+
+class PlanComparisonApiResponse(BaseModel):
+    status: str
+    items: list[PlanComparisonItem] = Field(default_factory=list)
+    disclaimer: str = (
+        "Pharmacy fill cost-share only — plan premiums are not included in this comparison. "
+        "This is not a recommendation to switch plans."
+    )
 
 
 class LlmUsage(BaseModel):
@@ -85,6 +120,7 @@ class QueryResponse(BaseModel):
     rxcui: str | None = None
     estimate: DrugCostEstimate | None = None
     channel_estimate: MultiChannelDrugCostEstimate | None = None
+    channel_estimates: list[MultiChannelDrugCostEstimate] = Field(default_factory=list)
     explanation: str = ""
     citations: list[Citation] = Field(default_factory=list)
     disclaimer: str = ""

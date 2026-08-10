@@ -3,6 +3,7 @@ from medicare_navigator.tools.part_d_benefit_params import (
     cap_fill_copay,
     effective_tier_cost_ceiling,
     project_annual_budget,
+    project_remaining_year_budget,
 )
 
 
@@ -34,3 +35,20 @@ def test_project_annual_budget_clamps_at_cap():
     assert headroom == 2100.0
     assert low == 2100.0
     assert high == 2100.0
+
+
+def test_project_remaining_year_budget_uses_days_remaining_not_full_year():
+    cap, headroom, low, high, days, fills = project_remaining_year_budget(
+        ytd_oop_spend=0,
+        days_supply=30,
+        cost_low=5.0,
+        cost_high=13.0,
+        contract_year=2026,
+        days_remaining=150,
+    )
+    assert cap == 2100.0
+    assert headroom == 2100.0
+    assert days == 150
+    assert fills == 5
+    assert low == 25.0
+    assert high == 65.0

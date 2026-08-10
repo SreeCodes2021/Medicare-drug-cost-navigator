@@ -26,6 +26,7 @@ async def test_all_channels_returns_four_pharmacy_rows():
     result = await estimate_drug_cost_all_channels(
         plan_key=PLAN_FL_PDP,
         drug_name="metformin",
+        dosage="500mg",
         days_supply=30,
         ytd_oop_spend=0,
     )
@@ -47,6 +48,11 @@ async def test_all_channels_returns_four_pharmacy_rows():
     assert data.remaining_oop_headroom == pytest.approx(2100.0)
     assert data.annual_budget_cost_low is not None
     assert data.annual_budget_cost_high is not None
+    assert data.remaining_year_days is not None
+    assert data.remaining_year_fills is not None
+    assert data.remaining_year_budget_cost_low is not None
+    assert data.remaining_year_budget_cost_high is not None
+    assert data.remaining_year_budget_cost_low < data.annual_budget_cost_low
 
 
 @pytest.mark.asyncio
@@ -54,6 +60,7 @@ async def test_all_channels_metformin_60_day_copay_differs_by_days_supply_code()
     result = await estimate_drug_cost_all_channels(
         plan_key=PLAN_FL_PDP,
         drug_name="metformin",
+        dosage="500mg",
         days_supply=60,
         ytd_oop_spend=0,
     )
@@ -68,6 +75,7 @@ async def test_all_channels_not_covered_includes_na_channels():
     result = await estimate_drug_cost_all_channels(
         plan_key=PLAN_FL_MAPD,
         drug_name="omeprazole",
+        dosage="20mg",
         days_supply=30,
         ytd_oop_spend=0,
     )
@@ -84,6 +92,7 @@ async def test_estimate_api_endpoint(offline_getter):
         {
             "plan_id": PLAN_FL_PDP,
             "drug": "metformin",
+            "dosage": "500mg",
             "days_supply": 30,
             "ytd_oop_spend": 0,
         },
@@ -100,6 +109,7 @@ async def test_all_channels_pre_deductible_applied_share_na():
     result = await estimate_drug_cost_all_channels(
         plan_key=PLAN_FL_PDP,
         drug_name="omeprazole",
+        dosage="20mg",
         days_supply=30,
         ytd_oop_spend=0,
     )

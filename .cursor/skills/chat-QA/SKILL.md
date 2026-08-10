@@ -60,9 +60,22 @@ Re-run health after they confirm. Do not grade fabricated output — only grade 
 | `user_message` | Original question (dimension 6 — leads with answer?) |
 | `grading.explanation` | Text shown to beneficiary (or `clarification_message` when clarifying) |
 | `grading.citations` | Citation-groundedness (dimension 1) |
-| `grading.formulary`, `cost_trend`, `alternatives` | Structured lookups for dimension 1 |
+| `grading.channel_estimates` | Per-plan, per-channel tool output (dimension 1 channel parity) |
+| `grading.channel_coverage` | Which channels have numeric estimates vs `null` (auto-computed) |
+| `grading.channel_warnings` | Auto-flag when prose claims "all channels" but data has gaps |
+| `grading.estimate` | Legacy single-channel estimate (tier, phase, cost) when present |
+| `grading.tools_invoked` | Which tools ran (`estimate_drug_cost`, `get_part_d_benefit_params`, etc.) |
+| `grading.tool_statuses` | Per-tool status from the pipeline |
 | `grading.data_as_of` | Disclaimer & data-currency (dimension 4) |
 | `session_id` | Pass to next `send` for multi-turn QA |
+
+**Phase 8 — not in bundle (do not expect these fields):** `grading.formulary`,
+`grading.cost_trend`, and `grading.alternatives` are **not returned** by
+`build_grading_bundle()` and are **not implemented** in the current API
+(`cost_trend_lookup` and `alternatives_finder` are on the
+[business-solution §9 roadmap](../../../docs/business-solution.md), not shipped).
+Ground tier/cost/phase claims against `grading.channel_estimates`, `grading.estimate`,
+and `grading.citations` instead.
 
 For pasted `/api/chat` JSON:
 
@@ -89,7 +102,9 @@ Map bundle fields to rubric inputs — **all context is present** after a succes
 |-------|--------------------------|
 | Generated explanation | `grading.explanation` |
 | Citations | `grading.citations` |
-| Structured lookups | `grading.formulary`, `cost_trend`, `alternatives` |
+| Channel tool output | `grading.channel_estimates`, `grading.channel_coverage`, `grading.channel_warnings` |
+| Cost/tier/phase grounding | `grading.channel_estimates`, `grading.estimate`, `grading.citations` |
+| Tools that ran | `grading.tools_invoked`, `grading.tool_statuses` |
 | Original question | `user_message` |
 
 **Project anchors** (for cross-checking, not re-grading the pipeline):
@@ -100,6 +115,14 @@ Map bundle fields to rubric inputs — **all context is present** after a succes
 This is a **grading tool**, not a prompt optimizer. Score one response per turn against the rubric below; do not propose prompt rewrites, A/B comparisons, or iteration loops.
 
 To **implement** fixes from a BLOCK/REVISE grade and re-test, hand off to [`/chat-bot-fixer`](../chat-bot-fixer/SKILL.md).
+
+For a single call that runs this rubric plus real-CMS numeric-accuracy checks,
+on-the-fly edge-case questioning, and misleading-case sub-skills together, use
+[`/quality-test`](../quality-test/SKILL.md) (§ 1c: no-false-signals,
+disclaimer-compliance, answer-consistency). For number-only ground-truth checks,
+use [`/numeric-accuracy`](../numeric-accuracy/SKILL.md). For inventing fresh
+edge-case/adversarial/follow-up questions, use
+[`/exploratory-qa`](../exploratory-qa/SKILL.md).
 
 ## When this applies
 
@@ -133,10 +156,21 @@ response that earned that score. Vague reasons ("seems fine") are not acceptable
 must be traceable to a specific span of text.
 
 ### 1. Citation-groundedness (0–2) — maps to FR7, §8
-Every factual claim about cost, tier, phase, price trend, or alternatives must trace to a
-provided source or structured lookup output.
+Every factual claim about **cost, tier, or benefit phase** must trace to
+`grading.channel_estimates`, `grading.estimate`, `grading.citations`, or another tool
+artifact listed in `grading.tools_invoked`.
+
+**When the response claims price trends or names therapeutic alternatives** (Phase 8
+capabilities not yet shipped):
+- **Named alternative drugs** or comparative tier/cost claims for substitutes → **score 0**
+  unless `alternatives_finder` appears in `grading.tools_invoked` (it will not in current
+  builds). Clinician-deferral-only guidance with no named drugs is a dimension 2/3 check,
+  not a structured lookup.
+- **Price-trend / year-over-year / "last year" claims** → **score 0** unless grounded in a
+  real tool artifact (`cost_trend_lookup` is not implemented).
+
 - **0 (ungrounded):** Contains at least one specific factual claim (a number, a date, a tier,
-  a named alternative drug) with no corresponding source in what was provided.
+  a named alternative drug, a historical price) with no corresponding source in what was provided.
 - **1 (partially grounded):** All specific claims trace to a source, but the response also
   contains vague/unattributed generalizations that aren't quite claims but aren't clean
   either (e.g., "many people find this plan works well" with nothing backing it).
@@ -147,14 +181,65 @@ Check specifically for the failure mode where the model fills a gap with a *plau
 (e.g., inventing a "typical" copay) instead of saying the data wasn't available. This is the
 single most important check in the rubric — flag it even if everything else is well-written.
 
+#### Channel parity sub-check (within dimension 1)
+
+When `grading.channel_estimates` or `grading.channel_coverage` is present (any cost or
+plan-comparison answer), also verify **tool-vs-prose parity** for pharmacy channels:
+
+1. Read `grading.channel_coverage` first. If `grading.channel_warnings` is non-empty, treat
+   that as a **dimension 1 score of 0** unless the explanation explicitly says pricing is
+   only known for specific channels and names which ones are missing.
+2. **Overclaim patterns** (score 0 if any apply without qualification):
+   - "all CMS pharmacy channels", "all four channels", "every channel", or similar when
+     `missing_channels` is non-empty for that plan.
+   - Stating one aggregate dollar amount as if it applies uniformly to all channels when
+     `priced_channels` differs between plans in a comparison (e.g., plan A has 1 priced
+     channel, plan B has 3 — call that out).
+3. **Aggregate range** — prose `$` figures must match `aggregate_cost_low` / `aggregate_cost_high`
+   in `channel_coverage` (min/max across channels **with** numeric estimates only). A correct
+   aggregate with silent channel gaps is **score 1**, not 2.
+4. **Null channels are not $0** — `cost_low: null` means "no CMS match for this channel at this
+   coverage level," not free. Do not treat missing channels as zero.
+
+**Regression scenario** (requires AR ingested data, not offline fixtures):
+
+```bash
+medicare-chat-invoke send --message "Compare the cost of metformin 500mg across these Medicare plans: H2802-063, H5216-366. Use a 30-day supply and \$0 year-to-date out-of-pocket spending. Summarize the differences and identify the lowest estimated cost." \
+  --filters-json '{"drug":"metformin","dosage":"500mg","days_supply":30,"ytd_oop_spend":0}'
+```
+
+Expected tool truth: both plans aggregate to `$0.00–$0.00`, but **preferred retail is missing
+for both**; H2802-063 has only `standard_retail` priced. Any answer claiming "all channels"
+should score 0 on dimension 1.
+
+Cross-check with deterministic API (no LLM):
+
+```bash
+curl -s -X POST http://localhost:8000/api/compare-plans \
+  -H 'Content-Type: application/json' \
+  -d '{"drug":"metformin","dosage":"500mg","plan_ids":["H2802-063","H5216-366"],"days_supply":30,"ytd_oop_spend":0}'
+```
+
+#### Plan-comparison sub-check (within dimensions 1 and 2)
+
+For compare-plans answers, also verify:
+
+- Prose mentions **plan premiums are not included** (fill cost-share only), or the UI
+  comparison disclaimer is clearly in scope — absence is **dimension 4 score 1** when costs
+  are compared across plans.
+- Tier, deductible, and **channel-coverage differences** between plans are stated when they
+  exist in tool output — silence when plans differ structurally is **dimension 1 score 1**.
+- "Lowest estimated cost" is allowed when the user asked, but must not add "best plan" /
+  switching language (dimension 2).
+
 ### 2. Regulatory/marketing-boundary compliance (0–2) — maps to FR6, §4.4, §9
 - **0 (violation):** Recommends, suggests, or implies the beneficiary should switch plans,
   drugs, or pharmacies for cost reasons, or reads like plan marketing/enrollment steering.
 - **1 (borderline):** Doesn't explicitly recommend switching, but phrasing nudges toward it
   ("you might want to look into other plans that cover this better") without being asked.
 - **2 (compliant):** Explains the current plan's mechanics only. If alternatives are
-  mentioned (FR3), they're framed as informational — therapeutic equivalents to discuss with
-  a doctor/pharmacist, not a comparative plan-shopping pitch.
+  mentioned (FR3 — Phase 8 roadmap), they're framed as informational — therapeutic equivalents
+  to discuss with a doctor/pharmacist, not a comparative plan-shopping pitch.
 
 ### 3. Scope boundary — medical advice (0–2) — §10
 - **0:** Contains anything that reads as a diagnosis, a recommendation to start/stop/change a
@@ -171,7 +256,8 @@ single most important check in the rubric — flag it even if everything else is
 - **1:** Has one but not the other, or has both but only in a generic/buried form rather than
   clearly attached to the figures shown.
 - **2:** Both present — disclaimer is clear and unmissable, and every specific figure (cost,
-  tier, trend data point) carries or is clearly covered by a dated "as of" marker.
+  tier, and any price-trend data point **when claimed**) carries or is clearly covered by a
+  dated "as of" marker.
 
 ### 5. Rebate-opacity honesty (0–2) — §9 risk table, §16
 Applies whenever the response states or implies a "net cost" or "true cost" figure.
