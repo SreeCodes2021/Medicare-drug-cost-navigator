@@ -20,8 +20,9 @@ walks all of them itself.
 **Scope:** does the app do the *right thing* — correct business logic,
 correct state handling, correct compliance behavior (disclaimer, all models
 working)? **Not in scope:** raw wiring (that's
-[`/smoke-test`](../smoke-test/SKILL.md)) or explanation quality/real-CMS
-numeric accuracy (that's [`/quality-test`](../quality-test/SKILL.md)).
+[`/smoke-test`](../smoke-test/SKILL.md)) or explanation quality / misleading
+surfaces / oracle prose consistency (that's
+[`/quality-test`](../quality-test/SKILL.md) § 1c).
 
 ## What this runs, in order
 
@@ -128,6 +129,7 @@ Same as `ui-functionality`: fix clear frontend/backend wiring bugs (missing dosa
 - [`ui-functionality/state-carryover/SKILL.md`](../ui-functionality/state-carryover/SKILL.md)
 - [`ui-functionality/disclaimer-everywhere/SKILL.md`](../ui-functionality/disclaimer-everywhere/SKILL.md)
 - [`ui-functionality/llm-availability/SKILL.md`](../ui-functionality/llm-availability/SKILL.md)
+- [`quality-test`](../quality-test/SKILL.md) § 1c — misleading UI, disclaimer dim 4, answer-oracle consistency (Tier 3; runs same disclaimer pytest plus live LLM checks)
 
 ## Constraints
 

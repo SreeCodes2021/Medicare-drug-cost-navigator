@@ -174,6 +174,12 @@
         <div class="guided-body" id="guided-body">
           <p id="guided-error" class="guided-error guided-field-full hidden" role="alert"></p>
 
+          <div class="mode-tabs guided-submode-tabs" role="tablist" aria-label="Guided estimate mode">
+            <button type="button" id="guided-mode-single" class="mode-tab active" role="tab" aria-selected="true">Single</button>
+            <button type="button" id="guided-mode-multidrug" class="mode-tab" role="tab" aria-selected="false">Multiple drugs</button>
+            <button type="button" id="guided-mode-compareplans" class="mode-tab" role="tab" aria-selected="false">Compare plans</button>
+          </div>
+
           <div class="location-picker guided-field-full" id="guided-location-picker">
             <label>State <span class="field-hint">(required — filters the plan list below)</span>
               <div class="plan-combobox">
@@ -198,26 +204,42 @@
             <p id="guided-zip-caution" class="zip-caution hidden" role="alert"></p>
           </div>
 
-          <div class="mode-tabs guided-submode-tabs" role="tablist" aria-label="Guided estimate mode">
-            <button type="button" id="guided-mode-single" class="mode-tab active" role="tab" aria-selected="true">Single</button>
-            <button type="button" id="guided-mode-multidrug" class="mode-tab" role="tab" aria-selected="false">Multiple drugs</button>
-            <button type="button" id="guided-mode-compareplans" class="mode-tab" role="tab" aria-selected="false">Compare plans</button>
-          </div>
-
           <div id="guided-single" class="guided-fields">
+            <label class="guided-field-full">Plan
+              <div class="plan-row">
+                <div class="plan-combobox">
+                  <input
+                    type="text"
+                    id="filter-plan-input"
+                    class="plan-combobox-input"
+                    placeholder="Type or scroll to select a plan"
+                    autocomplete="off"
+                    role="combobox"
+                    aria-expanded="false"
+                    aria-controls="filter-plan-listbox"
+                    aria-autocomplete="list"
+                  />
+                  <input type="hidden" id="filter-plan" value="" />
+                  <ul id="filter-plan-listbox" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+                </div>
+                <button type="button" id="refresh-plans" class="btn-secondary" title="Reload plan list from database">Refresh</button>
+              </div>
+              <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
+            </label>
             <label>Drug
               <div class="plan-combobox">
                 <input
                   type="text"
                   id="filter-drug-input"
                   class="plan-combobox-input"
-                  placeholder="Click to select a drug"
+                  placeholder="Select a plan first"
                   autocomplete="off"
                   role="combobox"
                   aria-expanded="false"
                   aria-controls="filter-drug-listbox"
                   aria-autocomplete="list"
                   readonly
+                  disabled
                 />
                 <input type="hidden" id="filter-drug" value="" />
                 <div id="filter-drug-panel" class="plan-dropdown-panel hidden" role="presentation">
@@ -251,27 +273,6 @@
                 <input type="hidden" id="filter-dosage" value="" />
                 <ul id="filter-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
               </div>
-            </label>
-            <label class="guided-field-full">Plan
-              <div class="plan-row">
-                <div class="plan-combobox">
-                  <input
-                    type="text"
-                    id="filter-plan-input"
-                    class="plan-combobox-input"
-                    placeholder="Type or scroll to select a plan"
-                    autocomplete="off"
-                    role="combobox"
-                    aria-expanded="false"
-                    aria-controls="filter-plan-listbox"
-                    aria-autocomplete="list"
-                  />
-                  <input type="hidden" id="filter-plan" value="" />
-                  <ul id="filter-plan-listbox" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
-                </div>
-                <button type="button" id="refresh-plans" class="btn-secondary" title="Reload plan list from database">Refresh</button>
-              </div>
-              <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
             </label>
             <div class="guided-fill-options guided-field-full">
               <label>Data release
@@ -321,19 +322,22 @@
           </div>
 
           <div id="guided-compareplans" class="guided-fields hidden">
+            <div id="compareplans-rows" class="repeatable-rows guided-field-full"></div>
+            <button type="button" id="compareplans-add-row" class="btn-secondary guided-field-full">+ Add plan</button>
             <label>Drug
               <div class="plan-combobox">
                 <input
                   type="text"
                   id="cp-drug-input"
                   class="plan-combobox-input"
-                  placeholder="Click to select a drug"
+                  placeholder="Select plans first"
                   autocomplete="off"
                   role="combobox"
                   aria-expanded="false"
                   aria-controls="cp-drug-listbox"
                   aria-autocomplete="list"
                   readonly
+                  disabled
                 />
                 <input type="hidden" id="cp-drug" value="" />
                 <div id="cp-drug-panel" class="plan-dropdown-panel hidden" role="presentation">
@@ -368,8 +372,6 @@
                 <ul id="cp-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
               </div>
             </label>
-            <div id="compareplans-rows" class="repeatable-rows guided-field-full"></div>
-            <button type="button" id="compareplans-add-row" class="btn-secondary guided-field-full">+ Add plan</button>
             <label>Days supply
               <select id="cp-days-supply">
                 <option value="30">30</option>
@@ -437,6 +439,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=35"></script>
+  <script src="/app.js?v=38"></script>
 </body>
 </html>

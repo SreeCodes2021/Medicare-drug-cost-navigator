@@ -116,7 +116,13 @@ This is a **grading tool**, not a prompt optimizer. Score one response per turn 
 
 To **implement** fixes from a BLOCK/REVISE grade and re-test, hand off to [`/chat-bot-fixer`](../chat-bot-fixer/SKILL.md).
 
-For a single call that runs this rubric plus real-CMS numeric-accuracy checks and on-the-fly edge-case questioning together, use [`/quality-test`](../quality-test/SKILL.md). For number-only ground-truth checks, use [`/numeric-accuracy`](../numeric-accuracy/SKILL.md). For inventing fresh edge-case/adversarial/follow-up questions, use [`/exploratory-qa`](../exploratory-qa/SKILL.md).
+For a single call that runs this rubric plus real-CMS numeric-accuracy checks,
+on-the-fly edge-case questioning, and misleading-case sub-skills together, use
+[`/quality-test`](../quality-test/SKILL.md) (§ 1c: no-false-signals,
+disclaimer-compliance, answer-consistency). For number-only ground-truth checks,
+use [`/numeric-accuracy`](../numeric-accuracy/SKILL.md). For inventing fresh
+edge-case/adversarial/follow-up questions, use
+[`/exploratory-qa`](../exploratory-qa/SKILL.md).
 
 ## When this applies
 

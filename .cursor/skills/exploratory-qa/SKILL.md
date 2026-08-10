@@ -31,7 +31,7 @@ If health fails, ask the user to start the server (`uvicorn medicare_navigator.a
 
 ## Query budget
 
-Default to **~30 real queries per run** when invoked standalone (matches the exploratory allocation inside [`/quality-test`](../quality-test/SKILL.md); when called directly rather than via `/quality-test`, you may go up to 50 if the user wants a deeper pass). Spread roughly evenly across the categories below rather than exhausting the budget on one category. State the actual count used in the output.
+Default to **~27 real queries per run** when invoked standalone (matches the exploratory allocation inside [`/quality-test`](../quality-test/SKILL.md); when called directly rather than via `/quality-test`, you may go up to 60 if the user wants a deeper pass). Spread roughly evenly across the categories below rather than exhausting the budget on one category — e.g. ~9 malformed, ~9 out-of-scope, ~9 queries' worth of category-3 follow-up interactions (note each follow-up case is **2 sends**, an opener plus the follow-up, so ~9 queries there is ~4 pairs, not 9 pairs). State the actual count used in the output.
 
 ## Categories (invent fresh questions per category per run, not a fixed script)
 

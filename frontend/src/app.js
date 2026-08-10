@@ -41,17 +41,13 @@ const PHARMACY_CHANNEL_ROWS = [
 ];
 
 const FIELD_TIPS = {
-  section_plan_fill: "Drug, dosage, plan, and fill length used for this estimate.",
-  section_benefit: "Formulary coverage, deductible, tier, and Part D benefit phase.",
-  section_channel: "Plan cost share and estimated out-of-pocket by pharmacy type.",
-  drug: "Medication name (search shows all drugs; coverage is checked against your selected plan).",
+  drug: "Medication name (type or click to browse).",
   dosage: "Strength and form you asked about.",
   plan: "Medicare Part D plan name and contract ID.",
   days_supply: "How many days one prescription fill is intended to cover.",
   covered: "Whether the drug is on this plan’s formulary.",
   deductible: "Annual drug deductible before the plan pays its share.",
   tier: "Formulary cost tier; higher tiers usually cost more.",
-  ded_applies: "Whether costs for this tier count toward the deductible (Y/N).",
   benefit_phase: "Part D phase from your year-to-date out-of-pocket spend.",
   effective_phase: "Phase used to price this fill after plan rules.",
   ytd_spend: "Out-of-pocket Part D drug costs you entered for this year.",
@@ -60,10 +56,7 @@ const FIELD_TIPS = {
   projected_annual_oop: "Rough yearly out-of-pocket if you keep this fill schedule.",
   projected_remaining_year_oop: "Estimated out-of-pocket from today through year-end at this fill schedule.",
   channel: "Pharmacy type (retail or mail-order, preferred or standard).",
-  plan_copay: "Fixed copay from plan data for this tier and channel.",
-  plan_coinsurance: "Coinsurance percentage from plan data.",
-  applied_copay: "Copay amount used for this fill after benefit rules.",
-  applied_coinsurance: "Coinsurance percentage used for this estimate.",
+  channel_rate: "Copay (fixed $) or coinsurance (%) the plan charges at this channel.",
   est_cost: "Estimated amount you pay for this fill at that channel.",
   preferred_retail: "In-network retail pharmacy with the lowest cost share.",
   standard_retail: "Retail pharmacy with standard (non-preferred) cost share.",
@@ -147,24 +140,9 @@ function formatCostRange(low, high) {
   return null;
 }
 
-function formatNa(value, formatter = String) {
-  if (value == null || value === "") return "NA";
-  return formatter(value);
-}
-
 function formatPercent(pct) {
   if (pct == null || Number.isNaN(pct)) return "NA";
   return `${pct}%`;
-}
-
-function formatShareCopay(copay) {
-  if (copay == null) return "NA";
-  return formatCurrency(copay);
-}
-
-function formatShareCoinsurance(pct) {
-  if (pct == null) return "NA";
-  return formatPercent(pct);
 }
 
 function formatChannelCost(channel) {
@@ -175,9 +153,41 @@ function formatChannelCost(channel) {
   return formatCostRange(channel.cost_low, channel.cost_high) || "NA";
 }
 
-function formatDedApplies(value) {
-  if (value === "Y" || value === "N") return value;
-  return "NA";
+// A channel is priced one way or the other (never both) — pick whichever applied value is
+// set and render just that, instead of four separate copay/coinsurance columns.
+function channelRateHtml(channel) {
+  const copay = channel?.applied_copay ?? channel?.plan_copay;
+  const pct = channel?.applied_coinsurance_pct ?? channel?.plan_coinsurance_pct;
+  if (copay != null) {
+    return `<span class="channel-rate">${escapeHtml(formatCurrency(copay))} copay</span>`;
+  }
+  if (pct != null) {
+    return (
+      `<span class="channel-rate">${escapeHtml(formatPercent(pct))} coinsurance</span>` +
+      `<span class="channel-rate-note">$ not available — see note below</span>`
+    );
+  }
+  return `<span class="channel-rate channel-rate--na">NA</span>`;
+}
+
+// Only a real dollar figure earns the "success" green — NA/unavailable states read as muted so
+// they don't compete visually with the numbers that actually matter.
+function channelCostHtml(channel) {
+  const text = formatChannelCost(channel);
+  const isReal = channel && (channel.cost_low != null || channel.cost_high != null);
+  return `<span class="channel-cost${isReal ? "" : " channel-cost--na"}">${escapeHtml(text)}</span>`;
+}
+
+function channelHasData(channel) {
+  return (
+    channel &&
+    (channel.applied_copay != null ||
+      channel.plan_copay != null ||
+      channel.applied_coinsurance_pct != null ||
+      channel.plan_coinsurance_pct != null ||
+      channel.cost_low != null ||
+      channel.cost_high != null)
+  );
 }
 
 function tierLabel(estimate) {
@@ -194,24 +204,47 @@ function benefitPhaseLabel(phase) {
   return BENEFIT_PHASE_LABELS[phase] || phase.replace(/_/g, " ");
 }
 
+// These two caveats are always-present, purely informational/methodological notes, not signs of
+// an actual problem — so their presence alone shouldn't turn a card "warning" colored. Text must
+// stay byte-for-byte in sync with disclaimers.py (BUG2_CAVEAT, CATASTROPHIC_PHASE_NOTE). Every
+// caveat, routine or not, still renders in full in the caveats list — this only affects color.
+const ROUTINE_CAVEAT_TEXTS = new Set([
+  "This estimate assumes the deductible-phase determination is based on your reported YTD spend and this plan's per-tier deductible rule as published by CMS. Some plans exempt certain tiers from the deductible; if your actual pharmacy charge differs from this estimate, your plan's tier-specific deductible treatment is the most likely reason. Confirm with your plan.",
+  "Your reported year-to-date out-of-pocket spend meets or exceeds the CMS annual Part D out-of-pocket maximum for this contract year. This fill is estimated using catastrophic coverage cost-sharing (COVERAGE_LEVEL 3 in CMS data), which is typically $0 for covered drugs on the regular formulary.",
+]);
+
+function hasActionableCaveats(caveats) {
+  return (caveats || []).some((c) => !ROUTINE_CAVEAT_TEXTS.has(c));
+}
+
+function caveatListHtml(caveats) {
+  if (!caveats?.length) return "";
+  const items = caveats
+    .map((c) => `<li${ROUTINE_CAVEAT_TEXTS.has(c) ? ' class="estimate-caveat--routine"' : ""}>${escapeHtml(c)}</li>`)
+    .join("");
+  return `<ul class="estimate-caveats">${items}</ul>`;
+}
+
 function estimateCardVariant(estimate) {
   if (estimate.quantity_limit_blocked || estimate.covered === false) {
     return "estimate-card--blocked";
   }
-  if (estimate.caveats?.length) {
+  if (hasActionableCaveats(estimate.caveats)) {
     return "estimate-card--warning";
   }
   return "";
 }
 
 const STATUS_ICONS = {
-  ok: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.5l3.2 3.2L15 6.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   warning: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 3.5l7.5 13h-15l7.5-13z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 8.2v3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="14.3" r="0.9" fill="currentColor"/></svg>`,
   blocked: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.8"/><path d="M6 6l8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
 };
 
+// No icon for the neutral/ok case — reserve the visual weight of a status badge for cards that
+// actually need attention (blocked/not-covered or a genuine warning).
 function estimateStatusIconHtml(variant) {
-  const key = variant === "estimate-card--blocked" ? "blocked" : variant === "estimate-card--warning" ? "warning" : "ok";
+  const key = variant === "estimate-card--blocked" ? "blocked" : variant === "estimate-card--warning" ? "warning" : null;
+  if (!key) return "";
   return `<span class="estimate-status-icon" aria-hidden="true">${STATUS_ICONS[key]}</span>`;
 }
 
@@ -243,15 +276,12 @@ function renderEstimateCardHtml(estimate, { compact = false } = {}) {
     }
   } else if (estimate.covered === false) {
     costHtml = `<div class="estimate-cost estimate-cost--blocked">Not covered</div>`;
-    costHtml += `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary (shown in the picker when a plan is selected).</p>`;
+    costHtml += `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary.</p>`;
   } else if (cost) {
     costHtml = `<div class="estimate-cost">${escapeHtml(cost)}</div>`;
   }
 
-  const caveats = estimate.caveats || [];
-  const caveatHtml = caveats.length
-    ? `<ul class="estimate-caveats">${caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
-    : "";
+  const caveatHtml = caveatListHtml(estimate.caveats);
 
   const compactClass = compact ? " estimate-card--compact" : "";
 
@@ -270,43 +300,89 @@ function renderEstimateCardHtml(estimate, { compact = false } = {}) {
     </div>`;
 }
 
-function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
+// Plan section: facts that describe the plan itself. Only rendered when at least one is known.
+function renderPlanFactsHtml(data) {
   if (!data) return "";
-
-  const drug = escapeHtml(data.drug_name || "Drug");
-  const dosageLine = data.dosage
-    ? `<span class="estimate-dosage">${escapeHtml(data.dosage)}</span>`
-    : "";
   const plan = escapeHtml(
     data.plan_name && data.plan_key
       ? `${data.plan_name} (${data.plan_key})`
       : data.plan_key || data.plan_name || ""
   );
-  const covered =
-    data.covered === true ? "Yes" : data.covered === false ? "No" : "NA";
-  const deductible = formatNa(data.deductible, (v) => formatCurrency(v));
-  const tier = data.tier != null ? `Tier ${data.tier}` : "NA";
-  const benefitPhase = benefitPhaseLabel(data.benefit_phase) || "NA";
-  const effectivePhase = benefitPhaseLabel(data.effective_phase) || "NA";
-  const days = data.days_supply ? `${data.days_supply}-day fill` : "NA";
-  const ytd =
-    data.ytd_oop_spend != null ? formatCurrency(data.ytd_oop_spend) : "NA";
+  const facts = [
+    plan ? `<div><dt>${withFieldInfo("Plan", "plan")}</dt><dd>${plan}</dd></div>` : "",
+    data.deductible != null
+      ? `<div><dt>${withFieldInfo("Deductible", "deductible")}</dt><dd>${escapeHtml(formatCurrency(data.deductible))}</dd></div>`
+      : "",
+    data.annual_oop_cap != null
+      ? `<div><dt>${withFieldInfo("OOP max", "annual_oop_cap")}</dt><dd>${escapeHtml(formatCurrency(data.annual_oop_cap))}</dd></div>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  if (!facts) return "";
+  return `
+      <section class="estimate-section" aria-labelledby="estimate-plan-heading">
+        <h4 class="estimate-section-title" id="estimate-plan-heading">Plan</h4>
+        <dl class="estimate-facts">${facts}</dl>
+      </section>`;
+}
 
+// Drug section: facts that describe the drug/fill within the plan's formulary. Only rendered
+// facts with a known value — no "NA" rows.
+function renderDrugFactsHtml(data) {
+  if (!data) return "";
+  const drug = escapeHtml(data.drug_name || "Drug");
+  const covered = data.covered === true ? "Yes" : data.covered === false ? "No" : null;
+  const benefitPhase = benefitPhaseLabel(data.benefit_phase);
+  const effectivePhase = benefitPhaseLabel(data.effective_phase);
+  const facts = [
+    `<div><dt>${withFieldInfo("Drug", "drug")}</dt><dd>${drug}</dd></div>`,
+    data.dosage
+      ? `<div><dt>${withFieldInfo("Dosage", "dosage")}</dt><dd>${escapeHtml(data.dosage)}</dd></div>`
+      : "",
+    data.days_supply
+      ? `<div><dt>${withFieldInfo("Fill size", "days_supply")}</dt><dd>${escapeHtml(`${data.days_supply}-day fill`)}</dd></div>`
+      : "",
+    covered
+      ? `<div><dt>${withFieldInfo("Covered", "covered")}</dt><dd>${escapeHtml(covered)}</dd></div>`
+      : "",
+    data.tier != null
+      ? `<div><dt>${withFieldInfo("Tier", "tier")}</dt><dd>${escapeHtml(`Tier ${data.tier}`)}</dd></div>`
+      : "",
+    benefitPhase
+      ? `<div><dt>${withFieldInfo("Benefit phase", "benefit_phase")}</dt><dd>${escapeHtml(benefitPhase)}</dd></div>`
+      : "",
+    effectivePhase
+      ? `<div><dt>${withFieldInfo("Effective phase", "effective_phase")}</dt><dd>${escapeHtml(effectivePhase)}</dd></div>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  return `
+      <section class="estimate-section" aria-labelledby="estimate-drug-heading">
+        <h4 class="estimate-section-title" id="estimate-drug-heading">Drug</h4>
+        <dl class="estimate-facts">${facts}</dl>
+      </section>`;
+}
+
+// Cost summary: per-channel rate/estimated cost plus the account-level spend outlook. Channels
+// always render (muted when empty) so the table shape stays consistent across cards; spend
+// facts only render when known.
+function renderCostSummaryHtml(data) {
+  if (!data) return "";
   const channelRows = PHARMACY_CHANNEL_ROWS.map(([key, label]) => {
     const channel = data.channels?.[key];
-    return `<tr>
+    const mutedClass = channelHasData(channel) ? "" : " channel-row--muted";
+    return `<tr class="${mutedClass.trim()}">
       <th scope="row">${withFieldInfo(label, key)}</th>
-      <td>${escapeHtml(formatShareCopay(channel?.plan_copay))}</td>
-      <td>${escapeHtml(formatShareCoinsurance(channel?.plan_coinsurance_pct))}</td>
-      <td>${escapeHtml(formatShareCopay(channel?.applied_copay))}</td>
-      <td>${escapeHtml(formatShareCoinsurance(channel?.applied_coinsurance_pct))}</td>
-      <td>${escapeHtml(formatChannelCost(channel))}</td>
+      <td>${channelRateHtml(channel)}</td>
+      <td>${channelCostHtml(channel)}</td>
     </tr>`;
   }).join("");
 
-  const annualFacts = [
-    data.annual_oop_cap != null
-      ? `<div><dt>${withFieldInfo("Annual OOP cap", "annual_oop_cap")}</dt><dd>${escapeHtml(formatCurrency(data.annual_oop_cap))}</dd></div>`
+  const spendFacts = [
+    data.ytd_oop_spend != null
+      ? `<div><dt>${withFieldInfo("YTD spend", "ytd_spend")}</dt><dd>${escapeHtml(formatCurrency(data.ytd_oop_spend))}</dd></div>`
       : "",
     data.remaining_oop_headroom != null
       ? `<div><dt>${withFieldInfo("Remaining before cap", "remaining_oop")}</dt><dd>${escapeHtml(formatCurrency(data.remaining_oop_headroom))}</dd></div>`
@@ -332,10 +408,40 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
     .filter(Boolean)
     .join("");
 
-  const caveats = data.caveats || [];
-  const caveatHtml = caveats.length
-    ? `<ul class="estimate-caveats">${caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
+  return `
+      <section class="estimate-section" aria-labelledby="estimate-cost-heading">
+        <h4 class="estimate-section-title" id="estimate-cost-heading">Cost summary</h4>
+        <div class="channel-cost-table-wrap">
+          <table class="channel-cost-table channel-cost-table--wide">
+            <caption class="sr-only">Cost share and estimated cost by pharmacy channel</caption>
+            <thead>
+              <tr>
+                <th scope="col">${withFieldInfo("Channel", "channel")}</th>
+                <th scope="col">${withFieldInfo("Rate", "channel_rate")}</th>
+                <th scope="col">${withFieldInfo("Est. cost", "est_cost")}</th>
+              </tr>
+            </thead>
+            <tbody>${channelRows}</tbody>
+          </table>
+        </div>
+        ${spendFacts ? `<dl class="estimate-facts estimate-facts--spend">${spendFacts}</dl>` : ""}
+      </section>`;
+}
+
+function renderMultiChannelEstimateCardHtml(data, { compact = false, hidePlan = false, hideDrug = false } = {}) {
+  if (!data) return "";
+
+  const drug = escapeHtml(data.drug_name || "Drug");
+  const dosageLine = data.dosage
+    ? `<span class="estimate-dosage">${escapeHtml(data.dosage)}</span>`
     : "";
+  const plan = escapeHtml(
+    data.plan_name && data.plan_key
+      ? `${data.plan_name} (${data.plan_key})`
+      : data.plan_key || data.plan_name || ""
+  );
+
+  const caveatHtml = caveatListHtml(data.caveats);
 
   const blockedHtml = data.quantity_limit_blocked
     ? `<p class="estimate-note estimate-note--blocked">Fill blocked${
@@ -347,14 +453,14 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
 
   const notCoveredHtml =
     data.covered === false
-      ? `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary (shown in the picker when a plan is selected).</p>`
+      ? `<p class="estimate-note estimate-note--blocked">This drug is not on this plan's formulary.</p>`
       : "";
 
   const compactClass = compact ? " estimate-card--compact" : "";
   const variant =
     data.quantity_limit_blocked || data.covered === false
       ? "estimate-card--blocked"
-      : caveats.length
+      : hasActionableCaveats(data.caveats)
         ? "estimate-card--warning"
         : "";
 
@@ -370,47 +476,9 @@ function renderMultiChannelEstimateCardHtml(data, { compact = false } = {}) {
       </div>
       ${blockedHtml}
       ${notCoveredHtml}
-      <section class="estimate-section" aria-labelledby="estimate-plan-fill-heading">
-        <h4 class="estimate-section-title" id="estimate-plan-fill-heading">${withFieldInfo("Plan & fill", "section_plan_fill")}</h4>
-        <dl class="estimate-facts">
-          <div><dt>${withFieldInfo("Drug", "drug")}</dt><dd>${drug}</dd></div>
-          <div><dt>${withFieldInfo("Dosage", "dosage")}</dt><dd>${escapeHtml(data.dosage ? data.dosage : "NA")}</dd></div>
-          <div><dt>${withFieldInfo("Plan", "plan")}</dt><dd>${plan || "NA"}</dd></div>
-          <div><dt>${withFieldInfo("Days supply", "days_supply")}</dt><dd>${escapeHtml(days)}</dd></div>
-        </dl>
-      </section>
-      <section class="estimate-section" aria-labelledby="estimate-benefit-heading">
-        <h4 class="estimate-section-title" id="estimate-benefit-heading">${withFieldInfo("Benefit context", "section_benefit")}</h4>
-        <dl class="estimate-facts">
-          <div><dt>${withFieldInfo("Covered", "covered")}</dt><dd>${escapeHtml(covered)}</dd></div>
-          <div><dt>${withFieldInfo("Deductible", "deductible")}</dt><dd>${escapeHtml(deductible)}</dd></div>
-          <div><dt>${withFieldInfo("Tier", "tier")}</dt><dd>${escapeHtml(tier)}</dd></div>
-          <div><dt>${withFieldInfo("Deductible applies to tier", "ded_applies")}</dt><dd>${escapeHtml(formatDedApplies(data.ded_applies_yn))}</dd></div>
-          <div><dt>${withFieldInfo("Benefit phase", "benefit_phase")}</dt><dd>${escapeHtml(benefitPhase)}</dd></div>
-          <div><dt>${withFieldInfo("Effective phase", "effective_phase")}</dt><dd>${escapeHtml(effectivePhase)}</dd></div>
-          <div><dt>${withFieldInfo("YTD spend", "ytd_spend")}</dt><dd>${escapeHtml(ytd)}</dd></div>
-          ${annualFacts}
-        </dl>
-      </section>
-      <section class="estimate-section" aria-labelledby="estimate-channel-heading">
-        <h4 class="estimate-section-title" id="estimate-channel-heading">${withFieldInfo("This fill by channel", "section_channel")}</h4>
-        <div class="channel-cost-table-wrap">
-          <table class="channel-cost-table channel-cost-table--wide">
-            <caption class="sr-only">Cost share and estimated cost by pharmacy channel</caption>
-            <thead>
-              <tr>
-                <th scope="col">${withFieldInfo("Channel", "channel")}</th>
-                <th scope="col">${withFieldInfo("Plan copay", "plan_copay")}</th>
-                <th scope="col">${withFieldInfo("Plan coinsurance", "plan_coinsurance")}</th>
-                <th scope="col">${withFieldInfo("Applied copay", "applied_copay")}</th>
-                <th scope="col">${withFieldInfo("Applied coinsurance", "applied_coinsurance")}</th>
-                <th scope="col">${withFieldInfo("Est. cost", "est_cost")}</th>
-              </tr>
-            </thead>
-            <tbody>${channelRows}</tbody>
-          </table>
-        </div>
-      </section>
+      ${hidePlan ? "" : renderPlanFactsHtml(data)}
+      ${hideDrug ? "" : renderDrugFactsHtml(data)}
+      ${renderCostSummaryHtml(data)}
       ${caveatHtml}
     </div>`;
 }
@@ -586,6 +654,9 @@ function resetGuidedFields() {
   showGuidedError(null);
   resetDrugRows();
   resetComparePlanRows();
+  refreshSingleDrugPickers();
+  refreshMultiDrugPickers();
+  refreshCompareDrugPickers();
   updateGuidedSubmitButtonState();
 }
 
@@ -861,15 +932,38 @@ function onGuidedStateChanged(state) {
     );
     inst.onPlansRescoped();
   });
+  refreshSingleDrugPickers();
+  refreshMultiDrugPickers();
+  refreshCompareDrugPickers();
   updateGuidedSubmitButtonState();
 }
 
 function refreshSingleDrugPickers() {
-  void singleDrugPicker.refreshForPlanChange?.();
+  const planId = el("filter-plan").value;
+  singleDrugPicker.setDrugDisabled(
+    !planId,
+    planId ? "Click to select a drug" : "Select a plan first"
+  );
+  if (planId) void singleDrugPicker.refreshForPlanChange?.();
+}
+
+function refreshCompareDrugPickers() {
+  const planIds = comparePlanRows.map(({ combobox }) => combobox.getValue()).filter(Boolean);
+  const enabled = planIds.length > 0;
+  compareDrugPicker.setDrugDisabled(
+    !enabled,
+    enabled ? "Click to select a drug" : "Select plans first"
+  );
+  if (enabled) void compareDrugPicker.refreshForPlanChange?.();
 }
 
 function refreshMultiDrugPickers() {
-  drugRows.forEach(({ picker }) => void picker.refreshForPlanChange?.());
+  const planId = el("md-plan").value;
+  const drugPlaceholder = planId ? "Click to select a drug" : "Select a plan first";
+  drugRows.forEach(({ picker }) => {
+    picker.setDrugDisabled(!planId, drugPlaceholder);
+    if (planId) void picker.refreshForPlanChange?.();
+  });
 }
 
 function isGuidedSingleValid() {
@@ -910,7 +1004,10 @@ const primaryPlanCombobox = createPlanCombobox({
   listboxId: "filter-plan-listbox",
   getPlans: guidedScopedPlans,
   onSelect: () => refreshSingleDrugPickers(),
-  onChange: updateGuidedSubmitButtonState,
+  onChange: () => {
+    refreshSingleDrugPickers();
+    updateGuidedSubmitButtonState();
+  },
 });
 
 const mdPlanCombobox = createPlanCombobox({
@@ -919,7 +1016,10 @@ const mdPlanCombobox = createPlanCombobox({
   listboxId: "md-plan-listbox",
   getPlans: guidedScopedPlans,
   onSelect: () => refreshMultiDrugPickers(),
-  onChange: updateGuidedSubmitButtonState,
+  onChange: () => {
+    refreshMultiDrugPickers();
+    updateGuidedSubmitButtonState();
+  },
 });
 
 function clearPlanSelection() {
@@ -1297,7 +1397,6 @@ async function fetchDrugs(query = "", planId = "") {
         name: item.name,
         value: item.name,
         label: item.name,
-        on_formulary: item.on_formulary,
       };
     });
   } catch (e) {
@@ -1324,7 +1423,6 @@ async function fetchDrugDosages(drug, planId = "") {
         dosage: item.dosage,
         value: item.dosage,
         label: item.dosage,
-        on_formulary: item.on_formulary,
       };
     });
   } catch (e) {
@@ -1343,15 +1441,8 @@ function normalizeComboboxOption(opt) {
   }
   const value = opt.value ?? opt.name ?? opt.dosage ?? "";
   const label = opt.label ?? opt.name ?? opt.dosage ?? value;
-  let meta = opt.meta ?? null;
-  let metaClass = opt.metaClass ?? null;
-  if (opt.on_formulary === true) {
-    meta = meta ?? "On formulary";
-    metaClass = metaClass ?? "picker-meta--on-formulary";
-  } else if (opt.on_formulary === false) {
-    meta = meta ?? "Not on formulary";
-    metaClass = metaClass ?? "picker-meta--off-formulary";
-  }
+  const meta = opt.meta ?? null;
+  const metaClass = opt.metaClass ?? null;
   return { value, label, meta, metaClass };
 }
 
@@ -1761,6 +1852,10 @@ function createDrugDosagePicker({
     }
   }
 
+  function setDrugDisabled(disabled, placeholder) {
+    drugCombobox.setDisabled(disabled, placeholder);
+  }
+
   function init() {
     drugCombobox.init();
     dosageCombobox.init();
@@ -1772,6 +1867,7 @@ function createDrugDosagePicker({
     clear,
     selectDrug,
     refreshForPlanChange,
+    setDrugDisabled,
     close: () => {
       drugCombobox.close();
       dosageCombobox.close();
@@ -1805,12 +1901,16 @@ const compareDrugPicker = createDrugDosagePicker({
   dosageInputId: "cp-dosage-input",
   dosageHiddenId: "cp-dosage",
   dosageListboxId: "cp-dosage-listbox",
+  getPlanId: () =>
+    comparePlanRows.map(({ combobox }) => combobox.getValue()).filter(Boolean)[0] || "",
   onChange: updateGuidedSubmitButtonState,
 });
 
 function initDrugPickers() {
   singleDrugPicker.init();
   compareDrugPicker.init();
+  refreshSingleDrugPickers();
+  refreshCompareDrugPickers();
 }
 
 // ── Guided form: multi-drug basket rows (plain drug/dosage text pairs, cap 5) ──
@@ -1889,6 +1989,8 @@ function createDrugRowElement() {
     onChange: updateGuidedSubmitButtonState,
   });
   picker.init();
+  const planId = el("md-plan").value;
+  picker.setDrugDisabled(!planId, planId ? "Click to select a drug" : "Select a plan first");
   const entry = { row, picker };
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(entry));
   return entry;
@@ -1968,7 +2070,10 @@ function createComparePlanRowEntry() {
     hiddenId: `cp-plan-${idx}`,
     listboxId: `cp-plan-listbox-${idx}`,
     getPlans: guidedScopedPlans,
-    onChange: updateGuidedSubmitButtonState,
+    onChange: () => {
+      refreshCompareDrugPickers();
+      updateGuidedSubmitButtonState();
+    },
   });
   combobox.init();
   combobox.setDisabled(!guidedState, guidedState ? "Type or scroll to select a plan" : "Select a state above first");
@@ -2038,6 +2143,13 @@ function switchGuidedSubmode(mode) {
 
 // ── Render + submit: multi-drug basket and plan comparison ──
 
+// Wraps a single Plan-facts or Drug-facts <section> in a lightweight card shell so it can be
+// shown once above a stack of cards that all share that section's data.
+function renderSharedSummaryCardHtml(sectionHtml) {
+  if (!sectionHtml) return "";
+  return `<div class="estimate-card estimate-card--shared estimate-card--compact" role="region" aria-label="Shared details">${sectionHtml}</div>`;
+}
+
 function renderBatchEstimateHtml(items, combinedTotal, caveat) {
   const totalText =
     combinedTotal.low != null
@@ -2047,32 +2159,41 @@ function renderBatchEstimateHtml(items, combinedTotal, caveat) {
   if (caveat) bannerParts.push(`<span>${escapeHtml(caveat)}</span>`);
   const banner = `<div class="batch-summary-banner">${bannerParts.join("")}</div>`;
 
+  // All items share one plan (Multi-drug form takes a single plan for every drug) — show the
+  // Plan section once instead of repeating it in every drug card.
+  const sharedPlan = renderSharedSummaryCardHtml(renderPlanFactsHtml(items.find((i) => i.data)?.data));
+
   const cards = items
     .map((item) => {
       const heading = `<div class="batch-item-heading">${escapeHtml(item.drug)}</div>`;
       if (item.data) {
-        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true });
+        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true, hidePlan: true });
       }
       return heading + `<p class="card-placeholder">${escapeHtml(item.message || "No estimate available.")}</p>`;
     })
     .join("");
 
-  return banner + cards;
+  return banner + sharedPlan + cards;
 }
 
 function renderPlanComparisonHtml(items, disclaimer) {
   const banner = `<div class="comparison-disclaimer-banner">${escapeHtml(disclaimer)}</div>`;
+
+  // All items share one drug (Compare-plans form takes a single drug across many plans) — show
+  // the Drug section once instead of repeating it in every plan card.
+  const sharedDrug = renderSharedSummaryCardHtml(renderDrugFactsHtml(items.find((i) => i.data)?.data));
+
   const cards = items
     .map((item) => {
       const label = item.data?.plan_name ? `${item.data.plan_name} (${item.plan_id})` : item.plan_id;
       const heading = `<div class="comparison-item-heading">${escapeHtml(label)}</div>`;
       if (item.data) {
-        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true });
+        return heading + renderMultiChannelEstimateCardHtml(item.data, { compact: true, hideDrug: true });
       }
       return heading + `<p class="card-placeholder">${escapeHtml(item.message || "No estimate available.")}</p>`;
     })
     .join("");
-  return banner + cards;
+  return banner + sharedDrug + cards;
 }
 
 function renderBatchEstimateResults(body) {
@@ -3173,6 +3294,8 @@ initLocationPickers();
 initDrugPickers();
 resetDrugRows();
 resetComparePlanRows();
+refreshMultiDrugPickers();
+refreshCompareDrugPickers();
 initGuidedSubmitWraps();
 initGuidedAddRowButtons();
 populateModelSelect();

@@ -424,6 +424,7 @@ class Navigator:
         from medicare_navigator.agent.request_context import set_request_timezone
         from medicare_navigator.agent.alternatives_questions import resolve_alternatives_question
         from medicare_navigator.agent.dosage_questions import resolve_dosage_question
+        from medicare_navigator.agent.medical_advice_questions import resolve_medical_advice_question
         from medicare_navigator.agent.oop_questions import resolve_oop_question
         from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
 
@@ -476,6 +477,24 @@ class Navigator:
                 tools_invoked=tools_invoked,
                 tool_statuses={},
                 response_source="System/Alternatives",
+            )
+
+        medical_advice_result = resolve_medical_advice_question(message)
+        if medical_advice_result:
+            explanation, tool_artifacts, tools_invoked = medical_advice_result
+            explanation = _explanation_with_disclaimer(explanation)
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/MedicalAdvice",
             )
 
         # When a plan is already known, defer strength clarification to the estimate

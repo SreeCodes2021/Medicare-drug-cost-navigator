@@ -13,6 +13,7 @@ from medicare_navigator.guardrails.channel_parity import (
     summarize_channel_coverage,
     text_claims_no_estimate,
     deterministic_cost_explanation,
+    cost_sentence_for_estimate,
 )
 from medicare_navigator.guardrails.source_catalog import (
     drug_name_from_artifacts,
@@ -515,6 +516,16 @@ def _estimate_calls(tool_artifacts: dict[str, dict[str, Any]]) -> list[dict[str,
     return [primary] if primary else []
 
 
+def _covered_estimate_calls(
+    tool_artifacts: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        artifact
+        for artifact in _estimate_calls(tool_artifacts)
+        if artifact.get("status") == "ok" and (artifact.get("data") or {}).get("covered") is True
+    ]
+
+
 def repair_false_not_covered_for_missing_dosage(
     explanation: str, tool_artifacts: dict[str, dict[str, Any]]
 ) -> str:
@@ -565,6 +576,32 @@ def repair_false_not_covered_for_missing_dosage(
     )
 
 
+def repair_false_not_covered_when_covered(
+    explanation: str,
+    tool_artifacts: dict[str, dict[str, Any]],
+    channel_estimates: list[dict[str, Any]] | None = None,
+) -> str:
+    """Replace prose that denies coverage when estimate tool(s) returned covered=true."""
+    if not _FALSE_NOT_COVERED_RE.search(explanation):
+        return explanation
+    covered_calls = _covered_estimate_calls(tool_artifacts)
+    if not covered_calls:
+        return explanation
+    if channel_estimates:
+        deterministic = deterministic_cost_explanation(channel_estimates)
+        if deterministic:
+            return deterministic
+    sentences: list[str] = []
+    for artifact in covered_calls:
+        data = artifact.get("data") or {}
+        sentence = cost_sentence_for_estimate(data)
+        if sentence and sentence not in sentences:
+            sentences.append(sentence)
+    if sentences:
+        return "\n\n".join(sentences)
+    return explanation
+
+
 def apply_guardrails(
     explanation: str,
     tool_artifacts: dict[str, dict[str, Any]],
@@ -578,6 +615,11 @@ def apply_guardrails(
     channel_estimates = channel_estimates or [
         est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
     ]
+    repaired_not_covered = repair_false_not_covered_when_covered(
+        explanation, tool_artifacts, channel_estimates
+    )
+    had_repair = repaired_not_covered != explanation
+    explanation = repaired_not_covered
     channel_coverage = summarize_channel_coverage(channel_estimates)
     priced_channels_exist = any(
         (summary.get("priced_channels") or []) for summary in channel_coverage
@@ -589,10 +631,10 @@ def apply_guardrails(
             had_repair = True
         else:
             repaired = repair_false_unavailable_prose(explanation.strip(), channel_estimates)
-            had_repair = repaired != explanation.strip()
+            had_repair = had_repair or repaired != explanation.strip()
     else:
         repaired = repair_false_unavailable_prose(explanation.strip(), channel_estimates)
-        had_repair = repaired != explanation.strip()
+        had_repair = had_repair or repaired != explanation.strip()
     out = _strip_card_only_caveat_paraphrases(repaired)
     if had_repair:
         out = _drop_contradictory_unavailable_paragraphs(out)

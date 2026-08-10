@@ -1254,12 +1254,15 @@ body.modal-open {
 
 /* ── Estimate card ── */
 
+/* Neutral by default in both themes — status color is reserved for the left accent + icon on
+   cards that actually need attention (estimate-card--warning/--blocked), not a full background
+   wash on every card. */
 .estimate-card {
-  background: var(--estimate-bg);
-  border: 1px solid var(--estimate-border);
-  border-left: 4px solid var(--estimate-accent);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   padding: 0.85rem 1rem;
   margin-bottom: 0.65rem;
   outline: none;
@@ -1269,16 +1272,20 @@ body.modal-open {
   margin-bottom: 0.75rem;
 }
 
+.estimate-card--shared {
+  border-left-style: dashed;
+}
+
+.estimate-card--shared .estimate-section {
+  margin-bottom: 0;
+}
+
 .estimate-card--warning {
-  background: var(--estimate-warning-bg);
-  border-color: var(--estimate-warning-border);
-  border-left-color: var(--estimate-warning-accent);
+  border-left: 3px solid var(--estimate-warning-accent);
 }
 
 .estimate-card--blocked {
-  background: var(--estimate-blocked-bg);
-  border-color: var(--estimate-blocked-border);
-  border-left-color: var(--estimate-blocked-accent);
+  border-left: 3px solid var(--estimate-blocked-accent);
 }
 
 .estimate-card-header {
@@ -1294,12 +1301,12 @@ body.modal-open {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.6rem;
-  height: 1.6rem;
+  width: 1.4rem;
+  height: 1.4rem;
   border-radius: 50%;
   margin-top: 0.05rem;
   color: #fff;
-  background: var(--estimate-accent);
+  background: var(--muted);
 }
 
 .estimate-card--warning .estimate-status-icon {
@@ -1356,28 +1363,38 @@ body.modal-open {
   color: var(--muted);
 }
 
+/* Quiet by default (this repeats on nearly every field) — full contrast only on hover/focus,
+   so the tooltip stays discoverable without visually competing with the data itself. */
 .field-info {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 0.85rem;
-  height: 0.85rem;
+  width: 0.75rem;
+  height: 0.75rem;
   margin-left: 0.1rem;
   padding: 0;
   border-radius: 50%;
-  border: 1px solid var(--muted);
-  background: var(--surface);
-  font-size: 0.58rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 0.55rem;
   font-weight: 700;
   font-style: italic;
   font-family: Georgia, "Times New Roman", serif;
   line-height: 1;
   color: var(--muted);
+  opacity: 0.6;
   cursor: pointer;
   vertical-align: middle;
   flex-shrink: 0;
   text-transform: none;
   letter-spacing: 0;
+  transition: opacity 0.12s ease;
+}
+
+.field-info:hover,
+.field-info:focus-visible {
+  opacity: 1;
+  border-color: var(--muted);
 }
 
 .field-info-tooltip {
@@ -1470,6 +1487,12 @@ body.modal-open {
   margin-top: 0.25rem;
 }
 
+/* Routine, always-present methodological notes (e.g. the deductible-phase assumption) read as
+   a plain muted footnote rather than a warning — actionable caveats keep the amber text above. */
+.estimate-caveats li.estimate-caveat--routine {
+  color: var(--muted);
+}
+
 
 .estimate-facts {
   display: grid;
@@ -1500,6 +1523,8 @@ body.modal-open {
   color: var(--text);
 }
 
+/* Row separators only, no vertical grid lines and no filled header — a lighter, less "boxed"
+   table than a fully bordered grid. */
 .channel-cost-table {
   width: 100%;
   border-collapse: collapse;
@@ -1509,18 +1534,25 @@ body.modal-open {
 
 .channel-cost-table th,
 .channel-cost-table td {
-  border: 1px solid var(--border);
+  border: none;
+  border-bottom: 1px solid var(--border);
   padding: 0.4rem 0.55rem;
   text-align: left;
 }
 
+.channel-cost-table tbody tr:last-child th,
+.channel-cost-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
 .channel-cost-table thead th {
-  background: var(--surface);
   color: var(--muted);
   font-size: 0.72rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   vertical-align: bottom;
+  border-bottom: 1px solid var(--border);
 }
 
 .channel-cost-table thead th .field-info,
@@ -1530,11 +1562,51 @@ body.modal-open {
 
 .channel-cost-table tbody th {
   font-weight: 500;
+  color: var(--text);
 }
 
-.channel-cost-table td {
+.channel-row--muted {
+  opacity: 0.55;
+}
+
+.channel-row--muted th {
+  color: var(--muted);
+}
+
+.channel-rate {
+  display: block;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.channel-rate--na {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.channel-rate-note {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: normal;
+}
+
+.channel-cost {
   font-weight: 600;
   color: var(--success);
+}
+
+.channel-cost--na {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.estimate-facts--spend {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border);
 }
 
 .channel-cost-table-wrap {
@@ -1558,7 +1630,7 @@ body.modal-open {
 }
 
 .channel-cost-table--wide {
-  min-width: 36rem;
+  min-width: 22rem;
   font-size: 0.75rem;
 }
 
@@ -1568,9 +1640,8 @@ body.modal-open {
   white-space: nowrap;
 }
 
-.channel-cost-table--wide td:not(:last-child) {
-  color: var(--text);
-  font-weight: 500;
+.channel-cost-table--wide td:nth-child(2) {
+  white-space: normal;
 }
 
 .estimate-note--blocked {

@@ -64,3 +64,115 @@ def test_repair_false_not_covered_when_covered_variant_exists():
     )
     assert repaired.lower().startswith("i need the strength")
     assert "januvia" in repaired.lower()
+
+
+def test_repair_false_not_covered_when_tool_shows_covered():
+    from medicare_navigator.guardrails.citations import repair_false_not_covered_when_covered
+
+    artifacts = {
+        "estimate_drug_cost_all_channels__calls": [
+            {
+                "status": "ok",
+                "data": {
+                    "plan_key": "H1045-057",
+                    "plan_name": "Test Plan",
+                    "drug_name": "januvia",
+                    "dosage": "100mg",
+                    "covered": True,
+                    "days_supply": 30,
+                    "channels": {
+                        "preferred_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                        "standard_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                        "preferred_mail": {"cost_low": None, "cost_high": None},
+                        "standard_mail": {"cost_low": None, "cost_high": None},
+                    },
+                },
+            }
+        ],
+        "estimate_drug_cost_all_channels": {
+            "status": "ok",
+            "data": {
+                "plan_key": "H1045-057",
+                "plan_name": "Test Plan",
+                "drug_name": "januvia",
+                "dosage": "100mg",
+                "covered": True,
+                "days_supply": 30,
+                "channels": {
+                    "preferred_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                    "standard_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                    "preferred_mail": {"cost_low": None, "cost_high": None},
+                    "standard_mail": {"cost_low": None, "cost_high": None},
+                },
+            },
+        },
+    }
+    # Re-fetched guardrail channel list disagrees (covered=false) — repair must use tool artifact.
+    stale_channel_estimates = [
+        {
+            "plan_key": "H1045-057",
+            "drug_name": "januvia",
+            "covered": False,
+            "days_supply": 30,
+            "channels": {
+                "preferred_retail": {"cost_low": None, "cost_high": None},
+                "standard_retail": {"cost_low": None, "cost_high": None},
+                "preferred_mail": {"cost_low": None, "cost_high": None},
+                "standard_mail": {"cost_low": None, "cost_high": None},
+            },
+        }
+    ]
+    repaired = repair_false_not_covered_when_covered(
+        "Januvia is not covered on plan H1045-057, so no 30-day out-of-pocket estimate is available.",
+        artifacts,
+        stale_channel_estimates,
+    )
+    assert "not covered" not in repaired.lower()
+    assert "$117.24" in repaired
+
+
+def test_apply_guardrails_repairs_false_not_covered_with_stale_channel_estimates():
+    from medicare_navigator.guardrails.citations import apply_guardrails
+
+    artifacts = {
+        "estimate_drug_cost_all_channels": {
+            "status": "ok",
+            "source_id": "cms_spuf_2026_q3",
+            "as_of_date": "2026-01-15",
+            "data": {
+                "plan_key": "H1045-057",
+                "plan_name": "Test Plan",
+                "drug_name": "januvia",
+                "dosage": "100mg",
+                "covered": True,
+                "days_supply": 30,
+                "channels": {
+                    "preferred_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                    "standard_retail": {"cost_low": 117.24, "cost_high": 117.24},
+                    "preferred_mail": {"cost_low": None, "cost_high": None},
+                    "standard_mail": {"cost_low": None, "cost_high": None},
+                },
+            },
+        }
+    }
+    stale_channel_estimates = [
+        {
+            "plan_key": "H1045-057",
+            "drug_name": "januvia",
+            "covered": False,
+            "days_supply": 30,
+            "channels": {
+                "preferred_retail": {"cost_low": None, "cost_high": None},
+                "standard_retail": {"cost_low": None, "cost_high": None},
+                "preferred_mail": {"cost_low": None, "cost_high": None},
+                "standard_mail": {"cost_low": None, "cost_high": None},
+            },
+        }
+    ]
+    out, _, _ = apply_guardrails(
+        "Januvia is not covered on plan H1045-057, so no 30-day out-of-pocket estimate is available.",
+        artifacts,
+        channel_estimates=stale_channel_estimates,
+    )
+    assert "not covered" not in out.lower()
+    assert "$117.24" in out
