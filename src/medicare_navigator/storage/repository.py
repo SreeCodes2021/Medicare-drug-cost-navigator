@@ -149,6 +149,41 @@ class BasicDrugsFormularyRepository:
             for r in rows
         ]
 
+    def get_matches_any(
+        self, formulary_id: str, rxcuis: list[str]
+    ) -> list[BasicDrugsFormularyRecord]:
+        """Return formulary rows whose rxcui is any of ``rxcuis`` (deduped)."""
+        if not rxcuis:
+            return []
+        unique = list(dict.fromkeys(str(r) for r in rxcuis if r))
+        if not unique:
+            return []
+        placeholders = ", ".join("?" for _ in unique)
+        rows = self.db.fetchall(
+            f"""
+            SELECT formulary_id, ndc, rxcui, tier, quantity_limit_yn, quantity_limit_amount,
+                   quantity_limit_days, prior_authorization_yn, step_therapy_yn, as_of_date
+            FROM basic_drugs_formulary
+            WHERE formulary_id = ? AND rxcui IN ({placeholders})
+            """,
+            [formulary_id, *unique],
+        )
+        return [
+            BasicDrugsFormularyRecord(
+                formulary_id=r[0],
+                ndc=r[1],
+                rxcui=r[2],
+                tier=r[3],
+                quantity_limit_yn=bool(r[4]),
+                quantity_limit_amount=r[5],
+                quantity_limit_days=r[6],
+                prior_authorization_yn=bool(r[7]),
+                step_therapy_yn=bool(r[8]),
+                as_of_date=r[9],
+            )
+            for r in rows
+        ]
+
     def has_any_rxcui(self, formulary_id: str, rxcuis: list[str]) -> bool:
         if not rxcuis:
             return False
@@ -217,6 +252,70 @@ class BeneficiaryCostRepository:
         if not row:
             return None
         return bool(row[0])
+
+
+class InsulinBeneficiaryCostRepository:
+    """Insulin cost-share lookups keyed on plan_key (not segment_id).
+
+    segment_id is stored at ingest but not used in queries — same convention as
+    BeneficiaryCostRepository. MA-PD plans with multiple local segments may have
+    ambiguous copays when segment rows differ; inherited project-wide limitation.
+    """
+
+    def __init__(self, db: DuckDBConnection | None = None) -> None:
+        self.db = db or DuckDBConnection()
+
+    def get_cost_share(
+        self,
+        plan_key: str,
+        tier: int,
+        days_supply_code: int | None,
+        *,
+        pharmacy_channel: str = "preferred_retail",
+    ) -> float | None:
+        """Returns the already-capped insulin copay for this plan/tier/fill-size/channel,
+        or None if not offered / no data. Falls back to TIER IS NULL when the exact tier
+        has no row — CMS uses a "." (parsed to NULL) tier sentinel for defined-standard
+        plans, which price insulin with a single flat schedule regardless of formulary
+        tier.
+
+        ``days_supply_code`` may be None when the requested raw days-supply doesn't map
+        to any known CMS code — same "no silent coercion" contract as
+        BeneficiaryCostRepository.get_cost_share.
+        """
+        if days_supply_code is None:
+            return None
+        row = self.db.fetchone(
+            """
+            SELECT copay FROM insulin_beneficiary_cost
+            WHERE plan_key = ? AND tier = ? AND days_supply_code = ? AND pharmacy_channel = ?
+            """,
+            [plan_key, tier, days_supply_code, pharmacy_channel],
+        )
+        if not row:
+            row = self.db.fetchone(
+                """
+                SELECT copay FROM insulin_beneficiary_cost
+                WHERE plan_key = ? AND tier IS NULL AND days_supply_code = ? AND pharmacy_channel = ?
+                """,
+                [plan_key, days_supply_code, pharmacy_channel],
+            )
+        if not row:
+            return None
+        return float(row[0])
+
+    def has_any(self, plan_key: str, tier: int, days_supply_code: int) -> bool:
+        """True if this plan has an insulin cost-share row for this tier (or the
+        defined-standard-plan NULL-tier fallback) and fill-size, in any channel."""
+        row = self.db.fetchone(
+            """
+            SELECT 1 FROM insulin_beneficiary_cost
+            WHERE plan_key = ? AND (tier = ? OR tier IS NULL) AND days_supply_code = ?
+            LIMIT 1
+            """,
+            [plan_key, tier, days_supply_code],
+        )
+        return row is not None
 
 
 class PricingRepository:

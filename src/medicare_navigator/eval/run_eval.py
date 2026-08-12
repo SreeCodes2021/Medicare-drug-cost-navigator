@@ -67,7 +67,9 @@ async def _run_case(case: dict) -> dict:
             result["failures"].append("missing disclaimer in explanation")
 
     hard_stop_statuses = {"suppressed", "insulin_out_of_scope", "quantity_limit_blocked", "not_covered"}
-    estimate_status = resp.tool_statuses.get("estimate_drug_cost")
+    estimate_status = resp.tool_statuses.get("estimate_drug_cost_all_channels") or resp.tool_statuses.get(
+        "estimate_drug_cost"
+    )
     if resp.status == "ok" and not resp.citations and estimate_status not in hard_stop_statuses:
         # Mock navigator may build citations from artifacts; allow empty only for clarification-like
         # ok responses or the spec's hard-stop/no-cost statuses, which have no computed data to cite.

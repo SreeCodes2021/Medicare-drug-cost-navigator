@@ -101,7 +101,7 @@ CHROMA_PATH=/data/chroma
 | Layer | Cleared on nightly ingest? |
 |-------|----------------------------|
 | CMS zip files in `data/raw/` | **No** (reused unless `--force-download`) |
-| SPUF tables (plans, formulary, pricing, beneficiary_cost) | **Replaced** each run |
+| SPUF tables (plans, formulary, pricing, beneficiary_cost, insulin_beneficiary_cost) | **Replaced** each run |
 | Other DuckDB tables | **Kept** when using `--preserve-other` (default in `run-daily-ingest.sh`) |
 | Chroma | **Not touched** by SPUF ingest |
 
@@ -110,6 +110,14 @@ CHROMA_PATH=/data/chroma
 `GET /api/health` fields: `seeded_at`, `data_fresh`, `spuf_source_id`, `spuf_as_of`, `spuf_version`.
 
 Alert when `data_fresh` is `false` for more than one check cycle.
+
+### Insulin cost-share data
+
+CMS ships insulin's capped pricing in its own file within the same quarterly SPUF ZIP (the **Insulin Beneficiary Cost File**) — `medicare-ingest spuf` discovers and loads it automatically alongside the other SPUF tables, no separate ingest step. Ingestion tolerates an older cached zip that lacks this file: `insulin_beneficiary_cost` simply stays empty for the affected plans, and insulin requests return the narrow `insulin_out_of_scope` data-gap message rather than failing. After any real (non-fixture) ingest, run the post-ingest validator to re-confirm the statutory-cap assumptions documented in [insulin-cost-estimation.md](./insulin-cost-estimation.md):
+
+```bash
+python scripts/validate_insulin_cost_data.py --db /data/navigator.duckdb
+```
 
 ## Inspecting and managing loaded data (Render Shell)
 
@@ -204,6 +212,7 @@ plan_key = 'S5678-012'  # change me
 conn = DuckDBConnection().connect()
 drop_spuf_indexes(conn)
 conn.execute('DELETE FROM beneficiary_cost WHERE plan_key = ?', [plan_key])
+conn.execute('DELETE FROM insulin_beneficiary_cost WHERE plan_key = ?', [plan_key])
 conn.execute('DELETE FROM pricing WHERE plan_key = ?', [plan_key])
 conn.execute('DELETE FROM plans WHERE plan_key = ?', [plan_key])
 create_indexes(conn)

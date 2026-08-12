@@ -63,6 +63,15 @@ def _explanation_with_disclaimer(explanation: str) -> str:
         return f"{text}\n\n{disclaimer}"
     return text
 
+
+def _insulin_policy_explanation() -> str:
+    return (
+        "The $35 insulin rule is a ceiling, not a guaranteed price: a covered insulin "
+        "product can cost less when its CMS plan cost-share is below the ceiling, and it "
+        "can be $0 in catastrophic coverage. Name the specific insulin product and plan "
+        "to get its CMS estimate; insulin does not use a deductible phase."
+    )
+
 # Stable key under which every estimate_drug_cost_all_channels call this turn is appended (as a
 # list), so a second call in the same turn doesn't overwrite the first the way
 # tool_artifacts["estimate_drug_cost_all_channels"] (last-call-wins) does. lookup_plan and
@@ -378,6 +387,123 @@ def _build_llm_usage(model_id: str, usage: TokenUsage) -> LlmUsage:
 
 
 class Navigator:
+    async def _run_deterministic_insulin_request(
+        self,
+        request,
+        session,
+        message: str,
+    ) -> QueryResponse:
+        """Estimate every explicitly named insulin before prose generation.
+
+        This prevents the model from dropping a product or converting a
+        multi-product cap question into one pooled estimate.
+        """
+        from medicare_navigator.agent.insulin_requests import (
+            format_insulin_estimate_sentence,
+            insulin_policy_preamble,
+        )
+
+        tool_name = (
+            "estimate_drug_cost"
+            if request.pharmacy_channel
+            else "estimate_drug_cost_all_channels"
+        )
+        tool_artifacts: dict[str, Any] = {}
+        calls: list[dict[str, Any]] = []
+        last_calls: list[dict[str, Any]] = []
+        plan_keys = (
+            request.plan_keys
+            if len(request.plan_keys) >= 2
+            else (request.plan_key,)
+        )
+        for plan_key in plan_keys:
+            if not plan_key:
+                continue
+            for product in request.products:
+                arguments = {
+                    "plan_key": plan_key,
+                    "drug_name": product,
+                    "days_supply": request.days_supply,
+                    "ytd_oop_spend": request.ytd_oop_spend,
+                }
+                if request.pharmacy_channel:
+                    arguments["pharmacy_channel"] = request.pharmacy_channel
+                artifact = await call_tool(tool_name, arguments)
+                serialized = (
+                    serialize_tool_result(artifact)
+                    if not isinstance(artifact, dict)
+                    else artifact
+                )
+                calls.append(serialized)
+                last_calls.append({"name": tool_name, "arguments": arguments})
+
+        tool_artifacts[tool_name] = calls[-1]
+        if tool_name == "estimate_drug_cost_all_channels":
+            tool_artifacts[_MULTI_CHANNEL_CALLS_KEY] = calls
+
+        explanations: list[str] = []
+        policy_preamble = insulin_policy_preamble(request.intent)
+        if policy_preamble:
+            explanations.append(policy_preamble)
+
+        call_index = 0
+        for plan_key in plan_keys:
+            if not plan_key:
+                continue
+            for product in request.products:
+                artifact = calls[call_index]
+                call_index += 1
+                explanations.append(
+                    format_insulin_estimate_sentence(
+                        product=product,
+                        plan_key=plan_key,
+                        days_supply=request.days_supply,
+                        artifact=artifact,
+                        intent=request.intent,
+                    )
+                )
+
+        if len(request.products) > 1:
+            explanations.append(
+                "The insulin ceiling applies separately to each product; these products are "
+                "not pooled into one $35 monthly total."
+            )
+        explanations.append(
+            "These are CMS government reference estimates for the current quarter, not "
+            "real-time pharmacy prices."
+        )
+        explanation = "\n\n".join(explanations)
+        citations = build_citations_from_artifacts(tool_artifacts)
+        channel_estimates = channel_estimates_from_artifact(tool_artifacts)
+        explanation, citations, _ = apply_guardrails(
+            explanation,
+            tool_artifacts,
+            citations,
+            channel_estimates=channel_estimates,
+        )
+        if len(request.products) > 1 or len(plan_keys) > 1:
+            # The generic channel repair logic is intentionally single-primary-call oriented.
+            # Reapply our per-product rendering after validation so a later not_covered result
+            # cannot erase an earlier covered product or the explicit pooled-cap correction.
+            explanation = _explanation_with_disclaimer("\n\n".join(explanations))
+        session_manager.set_last_tool_calls(session, last_calls)
+        session_manager.append_turn(session, message, explanation)
+        return QueryResponse(
+            query_id=str(uuid.uuid4()),
+            session_id=session["session_id"],
+            status="ok",
+            drug_name=request.products[0],
+            estimate=estimate_from_artifact(tool_artifacts),
+            channel_estimate=channel_estimates[0] if channel_estimates else None,
+            channel_estimates=channel_estimates,
+            explanation=explanation,
+            citations=citations,
+            disclaimer=settings.disclaimer_text,
+            tools_invoked=[tool_name],
+            tool_statuses={tool_name: calls[-1].get("status", "unknown")},
+            response_source="System/Insulin",
+        )
+
     async def run(
         self,
         message: str,
@@ -423,7 +549,16 @@ class Navigator:
 
         from medicare_navigator.agent.request_context import set_request_timezone
         from medicare_navigator.agent.alternatives_questions import resolve_alternatives_question
-        from medicare_navigator.agent.dosage_questions import resolve_dosage_question
+        from medicare_navigator.agent.dosage_questions import (
+            resolve_dosage_question,
+            should_clarify_dosage_before_estimate,
+        )
+        from medicare_navigator.agent.enrollment_questions import resolve_enrollment_question
+        from medicare_navigator.agent.insulin_requests import (
+            message_names_non_insulin_cost_drugs,
+            resolve_insulin_request,
+        )
+        from medicare_navigator.agent.invalid_input_questions import resolve_invalid_input_question
         from medicare_navigator.agent.medical_advice_questions import resolve_medical_advice_question
         from medicare_navigator.agent.oop_questions import resolve_oop_question
         from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
@@ -497,11 +632,154 @@ class Navigator:
                 response_source="System/MedicalAdvice",
             )
 
-        # When a plan is already known, defer strength clarification to the estimate
-        # tool so suppressed-plan and insulin hard-stops run before needs_dosage.
+        enrollment_result = resolve_enrollment_question(message)
+        if enrollment_result:
+            explanation, tool_artifacts, tools_invoked = enrollment_result
+            explanation = _explanation_with_disclaimer(explanation)
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/Enrollment",
+            )
+
+        invalid_input_result = resolve_invalid_input_question(message)
+        if invalid_input_result:
+            explanation, tool_artifacts, tools_invoked = invalid_input_result
+            explanation = _explanation_with_disclaimer(explanation)
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="needs_clarification",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/InvalidInput",
+            )
+
+        insulin_request = resolve_insulin_request(
+            message,
+            filter_plan_id=filter_plan_id,
+            filter_days_supply=filter_slots.days_supply if filter_slots else None,
+            filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+        )
+        if insulin_request and insulin_request.is_policy_question:
+            explanation = _explanation_with_disclaimer(_insulin_policy_explanation())
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                explanation=explanation,
+                disclaimer=settings.disclaimer_text,
+                response_source="System/InsulinPolicy",
+            )
+        from medicare_navigator.agent.mixed_basket_requests import (
+            build_batch_requests,
+            build_mixed_basket_explanation,
+            batch_result_to_artifact,
+            resolve_mixed_basket_request,
+        )
+        from medicare_navigator.tools.batch_estimate import run_batch_estimates
+
+        mixed_request = await resolve_mixed_basket_request(
+            message,
+            filter_plan_id=filter_plan_id,
+            filter_days_supply=filter_slots.days_supply if filter_slots else None,
+            filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+            filter_drug=filter_slots.drug if filter_slots else None,
+            filter_dosage=filter_slots.dosage if filter_slots else None,
+        )
+        if mixed_request:
+            batch_results = await run_batch_estimates(build_batch_requests(mixed_request))
+            built_explanation = build_mixed_basket_explanation(mixed_request, batch_results)
+            explanation = built_explanation
+            tool_name = "estimate_drug_cost_all_channels"
+            artifacts = [batch_result_to_artifact(r) for r in batch_results]
+            tool_artifacts: dict[str, Any] = {tool_name: artifacts[-1]}
+            tool_artifacts[_MULTI_CHANNEL_CALLS_KEY] = artifacts
+            last_calls = [
+                {
+                    "name": tool_name,
+                    "arguments": {
+                        "plan_key": mixed_request.plan_key,
+                        "drug_name": item.drug_name,
+                        "dosage": item.dosage,
+                        "days_supply": mixed_request.days_supply,
+                        "ytd_oop_spend": mixed_request.ytd_oop_spend,
+                    },
+                }
+                for item in mixed_request.items
+            ]
+            citations = build_citations_from_artifacts(tool_artifacts)
+            channel_estimates = channel_estimates_from_artifact(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation,
+                tool_artifacts,
+                citations,
+                channel_estimates=channel_estimates,
+            )
+            if len(mixed_request.items) > 1:
+                explanation = _explanation_with_disclaimer(built_explanation)
+            session_manager.set_last_tool_calls(session, last_calls)
+            session_manager.append_turn(session, message, explanation, query_id=query_id)
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(
+                query_id,
+                session["session_id"],
+                [tool_name],
+                {tool_name: artifacts[-1].get("status", "unknown")},
+                latency,
+            )
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status="ok",
+                drug_name=mixed_request.items[0].drug_name,
+                estimate=estimate_from_artifact(tool_artifacts),
+                channel_estimate=channel_estimates[0] if channel_estimates else None,
+                channel_estimates=channel_estimates,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=[tool_name],
+                tool_statuses={tool_name: artifacts[-1].get("status", "unknown")},
+                response_source="System/MixedBasket",
+            )
+
+        if insulin_request and insulin_request.products and (
+            insulin_request.plan_key or len(insulin_request.plan_keys) >= 2
+        ) and not message_names_non_insulin_cost_drugs(message):
+            response = await self._run_deterministic_insulin_request(
+                insulin_request,
+                session,
+                message,
+            )
+            response.query_id = query_id
+            return response
+
+        # When a plan is already known, defer single-drug strength gaps to the estimate
+        # tool so suppressed-plan and insulin data-gap hard-stops run before needs_dosage.
+        # Multi-drug asks still clarify here so the LLM does not guess strengths.
         plan_known = _parsed_plan_in_message(message) or bool(filter_plan_id)
         dosage_result = None
-        if not plan_known:
+        if should_clarify_dosage_before_estimate(
+            message,
+            filter_drug=filter_slots.drug if filter_slots else None,
+            filter_dosage=filter_slots.dosage if filter_slots else None,
+            plan_known=plan_known,
+        ):
             dosage_result = await resolve_dosage_question(
                 message,
                 filter_drug=filter_slots.drug if filter_slots else None,

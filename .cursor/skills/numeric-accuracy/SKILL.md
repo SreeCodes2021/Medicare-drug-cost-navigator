@@ -66,6 +66,8 @@ Golden cases file: [`golden-cases.jsonl`](golden-cases.jsonl). Each row has `req
 | `coinsurance` | `expected_plan_coinsurance_pct`, `expected_applied_coinsurance_pct`; use `expect_cost_na: true` when Bug 4 blocks dollar estimate |
 | `estimated_cost_copay` | non-NA `expected_cost_low` / `expected_cost_high` on copay-type fills |
 | `estimated_cost_coinsurance` | non-NA cost where ingredient pricing applies, plus coinsurance fields where relevant |
+| `insulin_cap` | `expected_benefit_phase: "insulin_cap"` (or `catastrophic` post-OOP cap), non-NA `expected_cost_low`/`expected_cost_high` at/under the $35-per-30-day statutory cap (scaled for 60/90-day), optional `expected_status: insulin_out_of_scope` for data-gap rows, `expect_no_cost` for unmapped days supply. Min **7 offline + 2 live** (`golden-037`–`047`; run via `--case-group insulin_cap`). |
+| `mixed_basket` | Batch rows with `"batch": true` and `items[]` — per-item `expected_status`/`expected_benefit_phase`, `expected_combined_total_low`/`high`, optional `expect_caveat`. Min **3 offline** (`golden-048`–`050`; run via `--case-group mixed_basket`). |
 
 Run with `--by-group` to summarize pass counts per group. Plain-English intent is in each row's `notes` field.
 
@@ -83,9 +85,13 @@ Only add a case after **manually** confirming the number against CMS (a real ing
 
 ## Step 3 — Chat/guided prose vs. oracle (full loop)
 
+Single message:
+
 ```bash
 medicare-chat-invoke send --message "What's the cost for metformin 500mg on plan S9999-001?"
 ```
+
+Fixed multi-scenario catalogs: `python scripts/run_llm_scenarios.py --suite insulin` or `--suite mixed-basket` (see `scripts/llm_scenario_suites/`).
 
 Compare `grading.explanation`'s dollar figures against Step 1's oracle response for the same inputs. Use [`/chat-QA`](../chat-QA/SKILL.md)'s channel-parity sub-check for the detailed rubric on partial-channel claims.
 

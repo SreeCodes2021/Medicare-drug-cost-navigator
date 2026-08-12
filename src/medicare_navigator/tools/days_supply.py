@@ -18,3 +18,13 @@ def map_pricing_days_supply_to_code(days_supply: int) -> int | None:
     Callers must not silently coerce an unmapped value to a nearby code.
     """
     return DAYS_SUPPLY_CODE_MAP.get(days_supply)
+
+
+def invalid_days_supply_message(days_supply: int) -> str | None:
+    """Return a user-facing error when days_supply cannot be estimated."""
+    if days_supply <= 0:
+        return (
+            f"A {days_supply}-day supply isn't valid for estimating. Please use a standard "
+            "30-, 60-, or 90-day supply."
+        )
+    return None

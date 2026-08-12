@@ -2,7 +2,7 @@
 
 **Medicare Drug Cost & Benefit-Transparency Navigator** — technical reference for running, developing, testing, and deploying the Phase 6 system.
 
-> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, or catastrophic phase, priced per pharmacy channel. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
+> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, insulin-cap, or catastrophic phase, priced per pharmacy channel — including insulin, priced via its separate IRA statutory $35/30-day cap (see [insulin-cost-estimation.md](./insulin-cost-estimation.md)), and multi-drug baskets mixing insulin and oral drugs on one plan. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
 
 ---
 
@@ -42,7 +42,7 @@ Core design principles:
 | **Deterministic dollars** | All cost figures come from an 8-step Python pipeline (`estimate_drug_cost`), not from LLM arithmetic |
 | **LLM for language only** | A single Navigator agent calls MCP tools and explains results in plain English |
 | **CMS SPUF as source of truth** | Formulary, pricing, and cost-share data loaded from CMS quarterly files into DuckDB |
-| **Explicit hard stops** | Insulin, suppressed plans, quantity-limit violations, and coinsurance are handled in code with verbatim caveats |
+| **Explicit hard stops** | Suppressed plans, quantity-limit violations, coinsurance, and (narrowly) a plan with no CMS insulin cost-share record are handled in code with verbatim caveats. Insulin itself is priced (not hard-stopped) via a dedicated statutory-cap pipeline. |
 | **Read-only API at runtime** | Data refresh is a **scheduled batch job**, not an in-request ingest |
 
 ```mermaid
@@ -346,7 +346,9 @@ Medicare-drug-cost-navigator/
 │   ├── generate-crontab.py   # Renders crontab from deploy.yaml
 │   └── run-daily-ingest.sh   # Nightly medicare-ingest spuf --download
 ├── src/medicare_navigator/
-│   ├── agent/                # Navigator + system prompt
+│   ├── agent/                # Navigator + system prompt + deterministic request routers
+│   │                         #   (insulin_requests, mixed_basket_requests, dosage_questions,
+│   │                         #    enrollment_questions, invalid_input_questions, ...)
 │   ├── api/                  # FastAPI app
 │   ├── eval/                 # Offline eval suite (queries.jsonl)
 │   ├── guardrails/           # Citation enforcement
@@ -358,7 +360,7 @@ Medicare-drug-cost-navigator/
 │   ├── qa/                   # Chat QA CLI
 │   ├── session/              # In-memory sessions
 │   ├── storage/              # DuckDB connection + repositories
-│   ├── tools/                # estimate_drug_cost, normalize_drug, etc.
+│   ├── tools/                # estimate_drug_cost, insulin_cost, normalize_drug, etc.
 │   └── ui_test/              # UI contract smoke tests
 ├── tests/                    # pytest suite + SPUF fixtures
 ├── Dockerfile
@@ -386,6 +388,7 @@ Medicare-drug-cost-navigator/
 erDiagram
     plans ||--o{ pricing : "plan_key"
     plans ||--o{ beneficiary_cost : "plan_key"
+    plans ||--o{ insulin_beneficiary_cost : "plan_key"
     plans ||--o| basic_drugs_formulary : "formulary_id"
     drugs }o--o| basic_drugs_formulary : "rxcui / ndc"
 
@@ -435,6 +438,16 @@ erDiagram
         varchar as_of_date
     }
 
+    insulin_beneficiary_cost {
+        varchar plan_key
+        varchar segment_id
+        int tier "nullable — CMS '.' sentinel for defined-standard plans"
+        int days_supply_code
+        varchar pharmacy_channel
+        double copay
+        varchar as_of_date
+    }
+
     drugs {
         varchar drug_name
         varchar rxcui
@@ -461,6 +474,7 @@ erDiagram
 | `basic_drugs_formulary` | `basic drugs formulary` | Tier, NDC, RxCUI, QL/PA/ST flags |
 | `pricing` | `pricing` | `unit_cost` per plan + NDC + days supply |
 | `beneficiary_cost` | `beneficiary cost` | Copay/coinsurance by tier, coverage level, days-supply **code** |
+| `insulin_beneficiary_cost` | `insulin beneficiary cost` | Insulin statutory-cap copay by tier (nullable), pharmacy channel, days-supply **code** — no `coverage_level` column; insulin has no deductible phase. `coin_amt_*` columns are deliberately never ingested (see [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5) |
 | `drugs` | Runtime (RxNorm cache) | Cached normalization results |
 | `query_log` | Runtime | Optional analytics (failures swallowed) |
 
@@ -487,6 +501,7 @@ SCHEMA_MIGRATIONS = (
 | `idx_plans_state_year` | `(state, contract_year)` | Plan listing |
 | `idx_beneficiary_cost_lookup` | `(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)` | Cost-share lookup |
 | `idx_pricing_plan_ndc` | `(plan_key, ndc, days_supply)` | Pricing lookup |
+| `idx_insulin_beneficiary_cost` | `(plan_key, tier, days_supply_code, pharmacy_channel)` | Insulin cost-share lookup |
 
 Indexes are dropped before bulk SPUF delete/reload (DuckDB ART index delete bug) and recreated after ingest.
 
@@ -550,6 +565,8 @@ xychart-beta
     bar [0.462, 195.5, 4807.6, 53.5]
 ```
 
+`insulin_beneficiary_cost` (new table, no verified AR+TX row count published here yet) scales with `beneficiary_cost` but is smaller — CMS's national CY2026 Q1 Insulin Beneficiary Cost File has 43,140 rows total (all states); check the actual count for your ingest with `SELECT COUNT(*) FROM insulin_beneficiary_cost`, or via `scripts/validate_insulin_cost_data.py`. See [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5 for the empirical validation methodology.
+
 Use `--merge-states` on low-memory hosts when ingesting additional states.
 
 ---
@@ -565,23 +582,27 @@ flowchart TD
     Start([estimate_drug_cost]) --> S1[1. Resolve plan]
     S1 --> Suppressed{plan_suppressed?}
     Suppressed -->|Yes| HS6[Hard stop — Bug 6]
-    Suppressed -->|No| S2[2. normalize_drug]
-    S2 --> Insulin{is_insulin?}
-    Insulin -->|Yes| HSI[Hard stop — out of scope]
-    Insulin -->|No| S3[3. Formulary lookup]
+    Suppressed -->|No| S2[2. normalize_drug<br/>flag is_insulin]
+    S2 --> S3[3. Formulary lookup]
     S3 --> Covered{NDCs found?}
     Covered -->|No| NC[not_covered]
     Covered -->|Yes| QL{QL exceeded? Bug 5b}
     QL -->|Yes| HQL[quantity_limit_blocked]
     QL -->|No| S4[4. Days-supply map Bug 1]
-    S4 --> S5[5. Price each NDC Bug 3]
+    S4 --> Insulin{is_insulin?}
+    Insulin -->|Yes, no CMS row| HSI[insulin_out_of_scope<br/>data-gap hard stop]
+    Insulin -->|Yes, has row| SI[Insulin cap lookup<br/>$35/30-day statutory cap]
+    SI --> S8[8. Assemble DrugCostEstimate]
+    Insulin -->|No| S5[5. Price each NDC Bug 3]
     S5 --> S6[6. Benefit phase + DED_APPLIES Bug 2]
     S6 --> S7[7. Cost-share lookup]
     S7 --> Coin{Coinsurance? Bug 4}
     Coin -->|Yes| RangeNC[Copay-only range + caveat]
-    Coin -->|No| S8[8. Assemble DrugCostEstimate]
+    Coin -->|No| S8
     S8 --> Done([ToolResult ok])
 ```
+
+Insulin is flagged at step 2 (`is_insulin()`, checked again post-RxNorm resolution — belt-and-suspenders, no CMS field marks a drug as insulin) but no longer short-circuits the pipeline there. It still goes through formulary/QL checks at steps 3–4 like any other drug, then branches at step 4 into `tools/insulin_cost.py` instead of steps 5–7: no deductible/`DED_APPLIES_YN` lookup ever runs for it (`ded_applies_yn` is forced to `"NA"`), and its cost-share comes from the dedicated `insulin_beneficiary_cost` table instead of `beneficiary_cost`. See [insulin-cost-estimation.md](./insulin-cost-estimation.md) for the full methodology, including how the copay-vs-coinsurance field ambiguity in CMS's insulin file was resolved empirically.
 
 ### 6.2 Days-supply code mapping (Bug 1)
 
@@ -607,6 +628,8 @@ A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a do
 
 > Pre-pivot assumptions (1=deductible, 2=initial) were incorrect and would have returned wrong copays (e.g. $0 catastrophic instead of Bug 4 coinsurance disclaimer).
 
+Insulin's `insulin_beneficiary_cost` table has **no `COVERAGE_LEVEL` column at all** — CMS's insulin file has no per-benefit-phase rows, consistent with insulin's flat, phase-independent-except-catastrophic pricing. Catastrophic detection for insulin reuses the same `compute_benefit_phase` / `annual_oop_cap` logic as every other drug; it is the only phase branch that affects insulin's price.
+
 ### 6.4 CMS bugs handled in v1
 
 | Bug | Issue | v1 behavior |
@@ -618,6 +641,7 @@ A day count outside {30, 60, 90} never joins to `beneficiary_cost`. Whether a do
 | **5** | Multiple NDCs per RxCUI | Independent computation; report low–high range |
 | **5b** | Quantity limits | Hard stop if requested supply exceeds plan limit |
 | **6** | Suppressed plans (`PLAN_SUPPRESSED_YN=Y`) | Hard stop; plans **persisted** at ingest (not filtered out) |
+| **Insulin field ambiguity** | CMS's insulin file has both a copay and a coinsurance-style field per row with no selector for which one is authoritative | Copay field used exclusively, after empirically cross-validating 122,472 real row×channel combinations against the general file's cost-type flags (0 cap exceptions); disclosed via `INSULIN_STATUTORY_CAP_CAVEAT` — see [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5 |
 
 Full verbatim messages live in `tools/disclaimers.py`.
 
@@ -633,7 +657,7 @@ class DrugCostEstimate(BaseModel):
     matched_ndc_count: int
     same_tier: bool
     days_supply: int
-    benefit_phase: str | None      # "pre_deductible" | "initial_coverage"
+    benefit_phase: str | None      # "pre_deductible" | "initial_coverage" | "insulin_cap"
     cost_low: float | None
     cost_high: float | None
     caveats: list[str]
@@ -661,7 +685,7 @@ class DrugCostEstimate(BaseModel):
 
 ### 7.2 System prompt
 
-`agent/prompts.py` — `NAVIGATOR_SYSTEM_PROMPT` encodes v1 scope boundaries (no enrollment advice, no insulin estimates, cite tool outputs only).
+`agent/prompts.py` — `NAVIGATOR_SYSTEM_PROMPT` encodes v1 scope boundaries (no enrollment advice, cite tool outputs only), plus insulin-specific rules: named insulin products may be priced without a strength/form (the statutory-cap path prices brand-only insulin), multiple named insulin products must never be collapsed into one pooled $35 total, and a normal priced insulin result (`benefit_phase: "insulin_cap"`) is presented like any other drug's estimate — no deductible-phase language.
 
 ### 7.3 LLM client (`llm/client.py`)
 
@@ -691,12 +715,12 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 
 | Tool | Type | Description |
 |---|---|---|
-| `estimate_drug_cost` | Async | Full 8-step pipeline for one pharmacy channel; includes internal `normalize_drug` |
-| `estimate_drug_cost_all_channels` | Async | Same pipeline run independently across all four CMS pharmacy channels; returns `MultiChannelDrugCostEstimate`. Default tool the Navigator calls for general (non-channel-specific) cost questions |
+| `estimate_drug_cost` | Async | Full 8-step pipeline for one pharmacy channel; includes internal `normalize_drug`. Prices insulin via its statutory-cap branch (`benefit_phase: "insulin_cap"`), not just oral drugs |
+| `estimate_drug_cost_all_channels` | Async | Same pipeline run independently across all four CMS pharmacy channels; returns `MultiChannelDrugCostEstimate`. Default tool the Navigator calls for general (non-channel-specific) cost questions, including insulin — no separate insulin tool or schema exists; multi-product insulin/mixed-basket requests call this once per product |
 | `lookup_plan` | Sync | Resolve by `plan_key` or fuzzy `search_text` |
 | `list_plans` | Sync | Filter by `state`, `plan_type`, `contract_year` |
 
-`normalize_drug` is **not** LLM-visible — it runs inside `estimate_drug_cost` so insulin routing cannot be skipped.
+`normalize_drug` is **not** LLM-visible — it runs inside `estimate_drug_cost` so insulin detection cannot be skipped (it now sets a flag rather than hard-stopping).
 
 ### Tool result envelope
 
@@ -710,7 +734,7 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 }
 ```
 
-`ToolStatus` values include: `ok`, `not_found`, `not_covered`, `no_match`, `suppressed`, `insulin_out_of_scope`, `quantity_limit_blocked`.
+`ToolStatus` values include: `ok`, `not_found`, `not_covered`, `no_match`, `suppressed`, `insulin_out_of_scope`, `quantity_limit_blocked`. `insulin_out_of_scope` now means "this plan has no CMS insulin cost-share record for this product's tier and fill size" — a narrow data gap — rather than "insulin is unsupported."
 
 ---
 
@@ -721,7 +745,7 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 1. **`build_citations_from_artifacts`** — Maps tool results to `Citation` objects for the Sources panel (including lookup failures).
 2. **`apply_guardrails`** — Force-appends verbatim caveats from tools if the LLM paraphrased or omitted them; validates dollar amounts trace to `cost_low`/`cost_high`.
 
-Enforced hard-stop statuses: `suppressed`, `insulin_out_of_scope`, `quantity_limit_blocked`.
+Enforced hard-stop statuses: `suppressed`, `insulin_out_of_scope` (the narrow data-gap case), `quantity_limit_blocked`. `INSULIN_STATUTORY_CAP_CAVEAT` is in `_CARD_ONLY_CAVEATS` alongside `BUG2_CAVEAT` — it renders on the estimate card without LLM paraphrasing, same treatment as the deductible-phase caveat.
 
 ---
 
@@ -979,7 +1003,7 @@ Default: **integration tests deselected** (`-m 'not integration'` in `pyproject.
 pytest tests/ -v -m integration
 ```
 
-Current suite: **91 tests** run by default, plus 2 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 93 total. Run `pytest --collect-only -q` to confirm the current count.
+Current suite: **347 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 352 total. Run `pytest --collect-only -q` to confirm the current count.
 
 ### 14.2 Test categories
 
@@ -991,6 +1015,10 @@ flowchart TB
         T3[test_citations — guardrails]
         T4[test_normalize_drug]
         T5[test_mcp_registry]
+        T10[test_insulin — allowlist, cap, catastrophic $0]
+        T11[test_insulin_golden_contract — golden-037..045]
+        T12[test_mixed_basket — insulin + oral baskets]
+        T13[test_early_return_questions — enrollment, invalid input]
     end
     subgraph Integration
         T6[test_navigator — E2E agent]
@@ -999,7 +1027,7 @@ flowchart TB
         T9[test_ui — frontend contract]
     end
     subgraph Fixtures
-        F[tests/fixtures/spuf — synthetic plans]
+        F[tests/fixtures/spuf — synthetic plans, incl. insulin beneficiary cost file]
     end
     F --> Unit & Integration
 ```
@@ -1045,7 +1073,7 @@ ruff format --check src tests
 Offline acceptance tests driven by `src/medicare_navigator/eval/queries.jsonl`.
 
 ```bash
-# Ensures fixture ingest + runs 12 cases with LLM_MOCK
+# Ensures fixture ingest + runs 15 cases with LLM_MOCK
 LLM_MOCK=1 medicare-eval
 ```
 
@@ -1124,6 +1152,15 @@ Download CMS zip to `data/raw/` without loading DuckDB.
 
 Manual CLI for sending chat messages (see `qa/cli.py`).
 
+### `scripts/validate_insulin_cost_data.py`
+
+Post-ingest validation for `insulin_beneficiary_cost` — checks that no copay exceeds the statutory cap for its days-supply code, and flags duplicate lookup keys with conflicting copays (a proxy for `segment_id` ambiguity). Run after each real CMS SPUF ingest:
+
+```bash
+python scripts/validate_insulin_cost_data.py
+python scripts/validate_insulin_cost_data.py --db data/navigator.duckdb
+```
+
 ---
 
 ## 18. Troubleshooting
@@ -1158,11 +1195,13 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 
 - Medicare Part D / MA-PD with Part D benefit
 - Ingested states (AR + TX verified with real data)
-- Non-insulin oral drugs on regular formulary
+- Oral drugs on regular formulary, priced through the tiered/deductible pipeline
+- Insulin, priced through its separate $35-per-30-day IRA statutory cap (no deductible phase) — see [insulin-cost-estimation.md](./insulin-cost-estimation.md)
+- Multi-drug requests on one plan (up to 5 drugs), including baskets mixing insulin and oral drugs
 - Non-LIS beneficiaries
-- Pre-deductible, initial-coverage, or catastrophic phase (user supplies YTD OOP; catastrophic uses the statutory annual OOP cap from `config/benefit_params.yaml`)
+- Pre-deductible, initial-coverage, insulin-cap, or catastrophic phase (user supplies YTD OOP; catastrophic uses the statutory annual OOP cap from `config/benefit_params.yaml`)
 - 30 / 60 / 90-day fills
-- Copay cost-sharing (with Bug 2 tier override)
+- Copay cost-sharing (with Bug 2 tier override) for oral drugs; statutory-capped copay for insulin
 - Per-pharmacy-channel pricing (preferred/standard retail, preferred/standard mail) via `estimate_drug_cost_all_channels`
 - PA/ST as soft caveats (cost still computed)
 
@@ -1170,7 +1209,7 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 
 | Topic | Behavior |
 |---|---|
-| Insulin | Hard stop |
+| Insulin with no CMS cost-share record for the plan's tier/fill size | Narrow hard stop (`insulin_out_of_scope` — data gap, not a blanket exclusion) |
 | Suppressed plans | Hard stop (Bug 6) |
 | Quantity limit exceeded | Hard stop (Bug 5b) |
 | Coinsurance dollar amount | Not computed — caveat only (Bug 4) |
@@ -1185,6 +1224,7 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 | Document | When to read |
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | Implementing or changing cost logic |
+| [insulin-cost-estimation.md](./insulin-cost-estimation.md) | Implementing or changing insulin cost logic; CMS source docs, field-resolution evidence, worked examples |
 | [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | Understanding the Phase 6 pivot |
 | [deployment.md](./deployment.md) | Ops, cron, Render disk |
 | [data-sources.md](./data-sources.md) | CMS/RxNorm URLs (note stale Chroma sections) |

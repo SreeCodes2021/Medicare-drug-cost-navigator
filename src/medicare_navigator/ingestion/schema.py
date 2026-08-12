@@ -9,6 +9,7 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
     if drop_existing:
         for table in (
             "beneficiary_cost",
+            "insulin_beneficiary_cost",
             "plans",
             "basic_drugs_formulary",
             "query_log",
@@ -54,6 +55,15 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS insulin_beneficiary_cost (
+            plan_key VARCHAR, segment_id VARCHAR, tier INTEGER,
+            days_supply_code INTEGER, pharmacy_channel VARCHAR,
+            copay DOUBLE, as_of_date VARCHAR
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS query_log (
             query_id VARCHAR, session_id VARCHAR, tools_invoked VARCHAR,
             statuses VARCHAR, latency_ms DOUBLE,
@@ -68,6 +78,7 @@ SPUF_INDEX_NAMES = (
     "idx_plans_state_year",
     "idx_beneficiary_cost_lookup",
     "idx_pricing_plan_ndc",
+    "idx_insulin_beneficiary_cost",
 )
 
 # Additive migrations for DuckDB files created before a column was introduced.
@@ -128,6 +139,10 @@ def create_indexes(conn) -> None:
         "ON beneficiary_cost(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pricing_plan_ndc ON pricing(plan_key, ndc, days_supply)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_insulin_beneficiary_cost "
+        "ON insulin_beneficiary_cost(plan_key, tier, days_supply_code, pharmacy_channel)"
+    )
 
 
 def ensure_schema(db: DuckDBConnection | None = None) -> None:

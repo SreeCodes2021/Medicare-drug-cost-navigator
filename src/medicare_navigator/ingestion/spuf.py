@@ -34,6 +34,23 @@ PLAN_FILE_HINTS = ("plan information",)
 FORMULARY_FILE_HINTS = ("basic drugs formulary",)
 BENEFICIARY_COST_FILE_HINTS = ("beneficiary cost",)
 PRICING_FILE_HINTS = ("pricing",)
+INSULIN_FILE_HINTS = ("insulin beneficiary cost",)
+
+# CMS insulin beneficiary cost file column per pharmacy channel. Unlike the general
+# beneficiary cost file, there is no COST_TYPE_* selector — copay_amt_*_insln is the
+# authoritative, already-capped charge (empirically verified against the full CMS
+# release: never exceeds the statutory $35/30-day cap in any row). coin_amt_*_insln is
+# deliberately not read — it doesn't reliably match plans' real coinsurance rates.
+# CMS ships this file's copay/coin columns in lowercase in the raw release (unlike every
+# other SPUF file), but _normalize_header() upper-cases every column on read regardless
+# of source casing — so these constants must be uppercase to match the post-normalization
+# row dict keys, same as every other *_COLUMNS mapping in this module.
+INSULIN_PHARMACY_CHANNEL_COLUMNS: dict[str, str] = {
+    "preferred_retail": "COPAY_AMT_PREF_INSLN",
+    "standard_retail": "COPAY_AMT_NONPREF_INSLN",
+    "preferred_mail": "COPAY_AMT_MAIL_PREF_INSLN",
+    "standard_mail": "COPAY_AMT_MAIL_NONPREF_INSLN",
+}
 
 _PROGRESS_INTERVAL = 500_000
 _WRITE_PARTS = 10
@@ -46,6 +63,9 @@ _BENEFICIARY_COST_INSERT_SQL = """
 INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _PRICING_INSERT_SQL = "INSERT INTO pricing VALUES (?, ?, ?, ?)"
+_INSULIN_BENEFICIARY_COST_INSERT_SQL = """
+INSERT INTO insulin_beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
 
 
 def _member_label(member: str | Path | None) -> str:
@@ -225,8 +245,14 @@ def _read_pipe_from_zip(zf: zipfile.ZipFile, member: str) -> Iterator[dict[str, 
             yield _parse_spuf_row(header, row)
 
 
-def _find_member(names: list[str], hints: tuple[str, ...]) -> str | None:
-    lowered = [(n, n.lower()) for n in names]
+def _find_member(
+    names: list[str], hints: tuple[str, ...], *, exclude_hints: tuple[str, ...] = ()
+) -> str | None:
+    lowered = [
+        (n, n.lower())
+        for n in names
+        if not any(ex in n.lower() for ex in exclude_hints)
+    ]
     for hint in hints:
         for original, low in lowered:
             if hint in low and low.endswith(".txt"):
@@ -350,15 +376,48 @@ def _extract_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
     return shares
 
 
-def _discover_spuf_files(source: Path) -> dict[str, str | Path]:
+def _extract_insulin_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
+    """Extract every pharmacy-channel insulin cost share row. Unlike the general
+    beneficiary cost file, there's no COST_TYPE selector and no COVERAGE_LEVEL column
+    (insulin never has a deductible phase) — copay_amt_*_insln is the sole authoritative
+    field, per the empirical validation in the implementation plan (never exceeds the
+    statutory $35/30-day cap in any of the 122,472 checked row×channel combinations)."""
+    tier = _parse_int(row.get("TIER"))  # None for CMS's "." sentinel (defined-standard plans)
+    days_supply_code = _parse_int(row.get("DAYS_SUPPLY"))
+    if days_supply_code is None:
+        return []
+    segment_id = row.get("SEGMENT_ID", "").strip()
+
+    shares: list[dict[str, Any]] = []
+    for channel, copay_col in INSULIN_PHARMACY_CHANNEL_COLUMNS.items():
+        copay = _parse_float(row.get(copay_col))
+        if copay is None:
+            # Blank = channel not offered for this plan/tier, not a $0 charge.
+            continue
+        shares.append(
+            {
+                "segment_id": segment_id,
+                "tier": tier,
+                "days_supply_code": days_supply_code,
+                "pharmacy_channel": channel,
+                "copay": copay,
+            }
+        )
+    return shares
+
+
+def _discover_spuf_files(source: Path) -> dict[str, str | Path | None]:
     if source.is_dir():
         names = [p.name for p in source.iterdir() if p.is_file()]
         base = source
+        insulin_name = _find_member(names, INSULIN_FILE_HINTS)
         return {
             "plan": base / _find_member(names, PLAN_FILE_HINTS),
             "formulary": base / _find_member(names, FORMULARY_FILE_HINTS),
-            "beneficiary_cost": base / _find_member(names, BENEFICIARY_COST_FILE_HINTS),
+            "beneficiary_cost": base
+            / _find_member(names, BENEFICIARY_COST_FILE_HINTS, exclude_hints=INSULIN_FILE_HINTS),
             "pricing": base / _find_member(names, PRICING_FILE_HINTS),
+            "insulin_beneficiary_cost": (base / insulin_name) if insulin_name else None,
         }
     if source.suffix.lower() == ".zip":
         with zipfile.ZipFile(source) as zf:
@@ -366,8 +425,11 @@ def _discover_spuf_files(source: Path) -> dict[str, str | Path]:
             return {
                 "plan": _find_member(names, PLAN_FILE_HINTS),
                 "formulary": _find_member(names, FORMULARY_FILE_HINTS),
-                "beneficiary_cost": _find_member(names, BENEFICIARY_COST_FILE_HINTS),
+                "beneficiary_cost": _find_member(
+                    names, BENEFICIARY_COST_FILE_HINTS, exclude_hints=INSULIN_FILE_HINTS
+                ),
                 "pricing": _find_member(names, PRICING_FILE_HINTS),
+                "insulin_beneficiary_cost": _find_member(names, INSULIN_FILE_HINTS),
             }
     raise FileNotFoundError(f"SPUF source must be a directory or .zip file: {source}")
 
@@ -398,7 +460,23 @@ def _purge_states(conn, states: list[str]) -> int:
     # index"); drop indexes first and recreate them after ingest completes.
     drop_spuf_indexes(conn)
     plan_subquery = f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})"
-    for table in ("beneficiary_cost", "pricing"):
+    formulary_ids = [
+        row[0]
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT formulary_id FROM plans
+            WHERE upper(state) IN ({placeholders}) AND formulary_id IS NOT NULL AND formulary_id != ''
+            """,
+            normalized,
+        ).fetchall()
+    ]
+    if formulary_ids:
+        fid_placeholders = ", ".join("?" * len(formulary_ids))
+        conn.execute(
+            f"DELETE FROM basic_drugs_formulary WHERE formulary_id IN ({fid_placeholders})",
+            formulary_ids,
+        )
+    for table in ("beneficiary_cost", "insulin_beneficiary_cost", "pricing"):
         conn.execute(
             f"DELETE FROM {table} WHERE plan_key IN ({plan_subquery})",
             normalized,
@@ -544,7 +622,13 @@ def ingest_spuf(
             if purged:
                 _progress(f"Purged {purged} existing plan(s) for merge.", file="plans")
         elif preserve_non_spuf_tables:
-            for table in ("plans", "basic_drugs_formulary", "beneficiary_cost", "pricing"):
+            for table in (
+                "plans",
+                "basic_drugs_formulary",
+                "beneficiary_cost",
+                "insulin_beneficiary_cost",
+                "pricing",
+            ):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             create_tables(conn, drop_existing=False)
             purged = 0
@@ -704,6 +788,41 @@ def ingest_spuf(
                     label=files["beneficiary_cost"],
                 )
 
+        insulin_beneficiary_cost_rows: list[list[Any]] = []
+        if files.get("insulin_beneficiary_cost"):
+            _progress("Loading insulin beneficiary cost shares...", file=files["insulin_beneficiary_cost"])
+            for row in _iter_rows(source, files["insulin_beneficiary_cost"]):
+                contract_id = row.get("CONTRACT_ID", "").strip()
+                plan_id = row.get("PLAN_ID", "").strip()
+                plan_key = f"{contract_id}-{plan_id}"
+                if plan_key not in plans:
+                    continue
+                for share in _extract_insulin_cost_shares(row):
+                    insulin_beneficiary_cost_rows.append(
+                        [
+                            plan_key,
+                            share["segment_id"],
+                            share["tier"],
+                            share["days_supply_code"],
+                            share["pharmacy_channel"],
+                            share["copay"],
+                            as_of,
+                        ]
+                    )
+            if insulin_beneficiary_cost_rows:
+                _progress(
+                    f"Inserting {len(insulin_beneficiary_cost_rows):,} insulin beneficiary cost row(s) "
+                    f"in {_WRITE_PARTS} parts...",
+                    file=files["insulin_beneficiary_cost"],
+                )
+                _insert_in_parts(
+                    conn,
+                    _INSULIN_BENEFICIARY_COST_INSERT_SQL,
+                    iter(insulin_beneficiary_cost_rows),
+                    len(insulin_beneficiary_cost_rows),
+                    label=files["insulin_beneficiary_cost"],
+                )
+
         formulary_total = _count_formulary_insert_rows(formulary_drugs)
         _progress(
             f"Inserting {formulary_total:,} basic_drugs_formulary row(s) into DuckDB "
@@ -747,6 +866,9 @@ def ingest_spuf(
             "formulary_rows": conn.execute("SELECT COUNT(*) FROM basic_drugs_formulary").fetchone()[0],
             "beneficiary_cost_rows": conn.execute(
                 "SELECT COUNT(*) FROM beneficiary_cost"
+            ).fetchone()[0],
+            "insulin_beneficiary_cost_rows": conn.execute(
+                "SELECT COUNT(*) FROM insulin_beneficiary_cost"
             ).fetchone()[0],
             "total_plans": conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0],
         }

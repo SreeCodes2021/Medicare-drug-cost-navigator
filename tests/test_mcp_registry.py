@@ -53,10 +53,23 @@ async def test_mcp_estimate_drug_cost_suppressed_plan():
 
 
 @pytest.mark.asyncio
-async def test_mcp_estimate_drug_cost_insulin_routed():
+async def test_mcp_estimate_drug_cost_insulin_priced():
     result = await call_tool(
         "estimate_drug_cost",
         {"plan_key": PLAN_FL_PDP, "drug_name": "lantus"},
+    )
+    assert result["status"] == "ok"
+    assert result["data"]["benefit_phase"] == "insulin_cap"
+    assert result["data"]["cost_low"] is not None
+
+
+@pytest.mark.asyncio
+async def test_mcp_estimate_drug_cost_insulin_no_cost_share_data():
+    """H8888-001 (PLAN_FL_MAPD) has lantus on formulary but no insulin cost-share row —
+    the narrower data-gap hard stop remains, distinct from "insulin unsupported"."""
+    result = await call_tool(
+        "estimate_drug_cost",
+        {"plan_key": PLAN_FL_MAPD, "drug_name": "lantus"},
     )
     assert result["status"] == "insulin_out_of_scope"
 

@@ -31,6 +31,7 @@ const BENEFIT_PHASE_LABELS = {
   pre_deductible: "Pre-deductible",
   initial_coverage: "Initial coverage",
   catastrophic: "Catastrophic coverage",
+  insulin_cap: "Insulin cap ($35/30-day)",
 };
 
 const PHARMACY_CHANNEL_ROWS = [
@@ -204,13 +205,15 @@ function benefitPhaseLabel(phase) {
   return BENEFIT_PHASE_LABELS[phase] || phase.replace(/_/g, " ");
 }
 
-// These two caveats are always-present, purely informational/methodological notes, not signs of
+// These caveats are always-present, purely informational/methodological notes, not signs of
 // an actual problem — so their presence alone shouldn't turn a card "warning" colored. Text must
-// stay byte-for-byte in sync with disclaimers.py (BUG2_CAVEAT, CATASTROPHIC_PHASE_NOTE). Every
-// caveat, routine or not, still renders in full in the caveats list — this only affects color.
+// stay byte-for-byte in sync with disclaimers.py (BUG2_CAVEAT, CATASTROPHIC_PHASE_NOTE,
+// INSULIN_STATUTORY_CAP_CAVEAT). Every caveat, routine or not, still renders in full in the
+// caveats list — this only affects color.
 const ROUTINE_CAVEAT_TEXTS = new Set([
   "This estimate assumes the deductible-phase determination is based on your reported YTD spend and this plan's per-tier deductible rule as published by CMS. Some plans exempt certain tiers from the deductible; if your actual pharmacy charge differs from this estimate, your plan's tier-specific deductible treatment is the most likely reason. Confirm with your plan.",
   "Your reported year-to-date out-of-pocket spend meets or exceeds the CMS annual Part D out-of-pocket maximum for this contract year. This fill is estimated using catastrophic coverage cost-sharing (COVERAGE_LEVEL 3 in CMS data), which is typically $0 for covered drugs on the regular formulary.",
+  "Federal law (Inflation Reduction Act) caps your cost-sharing for this insulin product at $35 per 30-day supply (scaled for 60/90-day fills), with no deductible ever applying — this estimate reflects that cap directly from CMS's insulin-specific pricing file. That file also publishes a coinsurance-style field for this plan/tier, but it does not reliably match plans' real coinsurance rates, so it was not used to compute this figure; the copay-based amount shown is the authoritative one.",
 ]);
 
 function hasActionableCaveats(caveats) {
@@ -612,7 +615,7 @@ function closeInfoModal() {
 const ABOUT_APP_HTML = `
   <p>Estimates what a specific prescription drug will cost on a specific Medicare Part D or Medicare Advantage-with-Part-D plan, using CMS's own published formulary and pricing data — before you go to the pharmacy.</p>
   <p>Every dollar figure traces back to a specific CMS record; it isn't guessed by the AI model.</p>
-  <p>Currently covers Arkansas and Texas plans, for a single drug on a plan's standard formulary (non-insulin, non-low-income-subsidy, pre-deductible/initial-coverage/catastrophic phase), across all four standard pharmacy channels. Other states, insulin, and coinsurance-based plans aren't supported yet.</p>
+  <p>Currently covers Arkansas and Texas plans, for a single drug on a plan's standard formulary (non-low-income-subsidy, pre-deductible/initial-coverage/catastrophic phase), across all four standard pharmacy channels — including insulin, priced via its separate $35-per-30-day-supply statutory cap. Other states and coinsurance-based plans aren't supported yet.</p>
   <p>This is not medical advice, financial advice, or Medicare enrollment guidance — confirm with your doctor, pharmacist, or plan before making decisions.</p>
   <p><em>Data source: CMS's public SPUF program.</em></p>
 `;

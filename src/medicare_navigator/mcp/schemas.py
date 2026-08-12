@@ -8,9 +8,14 @@ TOOL_SCHEMAS: list[dict] = [
             "formulary. Runs the full resolve-plan -> resolve-drug -> formulary -> pricing -> "
             "cost-share pipeline server-side and returns a cost range plus any required caveats "
             "(quantity limits, prior authorization/step therapy, multi-NDC pricing spread, "
-            "unconfirmed coinsurance base). Also used to route insulin and suppressed-plan "
-            "requests to their required out-of-scope / hard-stop messages — call this whenever "
-            "the user asks what a drug will cost on a plan, even before you know if it's covered."
+            "unconfirmed coinsurance base). Insulin is priced via its separate statutory "
+            "$35-per-30-day-supply cap (benefit_phase reads insulin_cap) rather than the tiered/"
+            "deductible pipeline. Also used to route suppressed-plan requests, and the narrower "
+            "case of an insulin drug with no published CMS cost-share record for this plan/tier, "
+            "to their required hard-stop messages — call this whenever the user asks what a "
+            "single drug will cost on a plan, even before you know if it's covered. "
+            "Multi-product insulin requests are resolved by the application layer and produce "
+            "one estimate per named product."
         ),
         "parameters": {
             "type": "object",
@@ -46,7 +51,9 @@ TOOL_SCHEMAS: list[dict] = [
             "Estimate out-of-pocket cost for all four CMS pharmacy channels "
             "(preferred_retail, standard_retail, preferred_mail, standard_mail) in one "
             "deterministic call. Returns per-channel cost ranges, deductible, tier, "
-            "DED_APPLIES_YN, benefit phase, and effective phase after tier exemption."
+            "DED_APPLIES_YN, benefit phase, and effective phase after tier exemption. "
+            "This call estimates one named product; multi-product insulin requests use one "
+            "call per product."
         ),
         "parameters": {
             "type": "object",
