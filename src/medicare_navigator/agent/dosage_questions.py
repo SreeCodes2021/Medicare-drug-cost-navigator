@@ -83,6 +83,36 @@ async def build_dosage_clarification_explanation(drugs: list[str]) -> str:
     return "\n".join(lines)
 
 
+def should_clarify_dosage_before_estimate(
+    message: str,
+    *,
+    filter_drug: str | None = None,
+    filter_dosage: str | None = None,
+    plan_known: bool = False,
+) -> bool:
+    """Whether to intercept before the LLM/estimate tools.
+
+    When the user already named a plan, single-drug strength gaps still defer to the
+    estimate tool (suppressed-plan / insulin data-gap / needs_dosage). Multi-drug asks
+    must clarify first so the model does not guess strengths.
+    """
+    missing = drugs_missing_dosage(
+        message, filter_drug=filter_drug, filter_dosage=filter_dosage
+    )
+    if not missing:
+        return False
+    if not plan_known:
+        return True
+    if len(_mentioned_common_drugs(message)) > 1:
+        return True
+    from medicare_navigator.agent.insulin_requests import resolve_insulin_request
+
+    insulin_request = resolve_insulin_request(message)
+    if insulin_request and insulin_request.products:
+        return True
+    return False
+
+
 async def resolve_dosage_question(
     message: str,
     *,
@@ -96,4 +126,14 @@ async def resolve_dosage_question(
     if not missing:
         return None
     explanation = await build_dosage_clarification_explanation(missing)
+    from medicare_navigator.agent.insulin_requests import resolve_insulin_request
+
+    insulin_request = resolve_insulin_request(message)
+    if insulin_request and insulin_request.products:
+        insulin_names = ", ".join(f"**{product}**" for product in insulin_request.products)
+        explanation = (
+            f"{explanation}\n\n"
+            f"I also see {insulin_names} in your question — once the missing strength(s) "
+            "are provided, I can estimate insulin and oral drug costs together on this plan."
+        )
     return explanation, {}, []

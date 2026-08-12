@@ -3,6 +3,7 @@ import pytest
 from medicare_navigator.agent.dosage_questions import (
     drugs_missing_dosage,
     resolve_dosage_question,
+    should_clarify_dosage_before_estimate,
 )
 from medicare_navigator.guardrails.citations import repair_false_not_covered_for_missing_dosage
 
@@ -34,6 +35,30 @@ async def test_multi_drug_compare_without_strengths_returns_clarification():
 
 def test_drugs_missing_dosage_ignores_named_strength():
     assert drugs_missing_dosage("lovastatin 40mg on S5921-400") == []
+
+
+def test_should_clarify_multi_drug_even_when_plan_known():
+    message = "Compare metformin and januvia costs on S5921-400"
+    assert should_clarify_dosage_before_estimate(message, plan_known=True) is True
+
+
+def test_should_not_clarify_single_drug_when_plan_known():
+    message = "lovastatin cost on S5921-400"
+    assert should_clarify_dosage_before_estimate(message, plan_known=True) is False
+
+
+@pytest.mark.asyncio
+async def test_mixed_insulin_and_regular_clarifies_dosage():
+    message = "Compare metformin and lantus costs on S9999-001"
+    assert should_clarify_dosage_before_estimate(message, plan_known=True) is True
+    resolved = await resolve_dosage_question(message)
+    assert resolved is not None
+    explanation, _, tools = resolved
+    assert tools == []
+    lower = explanation.lower()
+    assert "metformin" in lower
+    assert "lantus" in lower
+    assert "not covered" not in lower
 
 
 def test_repair_false_not_covered_when_covered_variant_exists():

@@ -9,6 +9,7 @@ from medicare_navigator.agent.prompts import NAVIGATOR_SYSTEM_PROMPT, build_navi
 from medicare_navigator.config import settings
 from medicare_navigator.llm.client import llm_client
 from medicare_navigator.llm.errors import LLMNotConfiguredError
+from medicare_navigator.tools.disclaimers import INSULIN_OUT_OF_SCOPE_MESSAGE
 from medicare_navigator.session.manager import session_manager
 from tests.spuf_fixture import (
     PLAN_FL_MAPD,
@@ -59,6 +60,40 @@ async def test_navigator_needs_plan_clarification():
 
 
 @pytest.mark.asyncio
+async def test_navigator_multi_drug_compare_without_strengths_clarifies():
+    response = await navigator.run(
+        f"Compare metformin and januvia costs on plan {PLAN_FL_PDP}"
+    )
+    assert response.status == "needs_clarification"
+    assert response.response_source == "System/Dosage"
+    assert response.tools_invoked == []
+    lower = response.explanation.lower()
+    assert "metformin" in lower
+    assert "januvia" in lower
+    assert "not covered" not in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_refuses_enrollment_without_plan_lookup():
+    response = await navigator.run(f"sign me up for plan {PLAN_FL_PDP} please")
+    assert response.status == "ok"
+    assert response.response_source == "System/Enrollment"
+    assert response.tools_invoked == []
+    assert "enroll" in response.explanation.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigator_rejects_negative_days_supply_in_message():
+    response = await navigator.run(
+        f"metformin 500mg on {PLAN_FL_PDP} with -30 day supply"
+    )
+    assert response.status == "needs_clarification"
+    assert response.response_source == "System/InvalidInput"
+    assert response.tools_invoked == []
+    assert "-30" in response.explanation or "30-" in response.explanation.replace(" ", "")
+
+
+@pytest.mark.asyncio
 async def test_router_uses_navigator():
     from medicare_navigator.orchestrator.router import orchestrator
 
@@ -74,9 +109,131 @@ async def test_navigator_suppressed_plan_hard_stop():
 
 
 @pytest.mark.asyncio
-async def test_navigator_insulin_out_of_scope():
+async def test_navigator_insulin_priced_via_statutory_cap():
+    """Insulin is no longer a hard stop — it must return a real, dollar-figure estimate
+    (fixture: S9999-001 tier 3 insulin copay, capped at/under $35/30-day)."""
     response = await navigator.run(f"lantus cost on plan {PLAN_FL_PDP}")
-    assert "insulin" in response.explanation.lower()
+    assert response.status == "ok"
+    assert response.estimate is not None
+    assert response.estimate.benefit_phase == "insulin_cap"
+    assert response.estimate.cost_low is not None
+    assert "$" in response.explanation
+    assert "not supported" not in response.explanation.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_no_cost_share_data_hard_stop():
+    """H8888-001 (PLAN_FL_MAPD) has lantus on formulary but no insulin cost-share row —
+    the narrower data-gap hard stop, distinct from the old blanket "unsupported" message.
+    Unlike the suppressed-plan hard stop, this message legitimately cites the fixed $35
+    statutory figure as explanatory text — so the check here is "message relayed
+    verbatim," not "no dollar sign anywhere"."""
+    response = await navigator.run(f"lantus cost on plan {PLAN_FL_MAPD}")
+    assert "cost-share" in response.explanation.lower()
+    assert INSULIN_OUT_OF_SCOPE_MESSAGE in response.explanation
+    assert "not supported by this tool" not in response.explanation.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_multi_product_answers_each_product():
+    response = await navigator.run(
+        f"Lantus and Humalog together are $35 total on plan {PLAN_FL_PDP}, right?"
+    )
+    assert response.status == "ok"
+    assert len(response.channel_estimates) == 2
+    assert {estimate.drug_name.lower() for estimate in response.channel_estimates} == {
+        "lantus",
+        "humalog",
+    }
+    lower = response.explanation.lower()
+    assert "lantus" in lower
+    assert "humalog" in lower
+    assert "not pooled" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_generic_insulin_policy_does_not_lookup_generic_drug():
+    response = await navigator.run(
+        f"Is insulin always exactly $35 on plan {PLAN_FL_PDP}, or can it be lower?"
+    )
+    assert response.status == "ok"
+    assert response.response_source == "System/InsulinPolicy"
+    assert "ceiling" in response.explanation.lower()
+    assert "estimate_drug_cost" not in response.tools_invoked
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_named_product_policy_ceiling():
+    response = await navigator.run(
+        f"Is insulin always $35 per month on plan {PLAN_FL_PDP} for Lantus?"
+    )
+    assert response.status == "ok"
+    assert response.response_source == "System/Insulin"
+    assert "ceiling" in response.explanation.lower()
+    assert "$" in response.explanation
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_deductible_policy_answer():
+    response = await navigator.run(
+        f"Does the Part D deductible apply before I pay for Lantus on plan {PLAN_FL_PDP}?"
+    )
+    assert "deductible" in response.explanation.lower()
+    assert "no" in response.explanation.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_catastrophic_from_oop_max_wording():
+    response = await navigator.run(
+        f"I'm in catastrophic coverage — what do I pay for Lantus on plan {PLAN_FL_PDP}? "
+        f"Assume I've met my $2100 annual OOP max."
+    )
+    assert response.estimate is not None
+    assert response.estimate.benefit_phase == "catastrophic"
+    assert response.estimate.cost_low == 0.0
+    assert "$0.00" in response.explanation
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_tier_lookup_mentions_tier():
+    response = await navigator.run(f"What formulary tier is Lantus on plan {PLAN_FL_PDP}?")
+    assert "tier 3" in response.explanation.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_channel_contrast_lists_both_channels():
+    response = await navigator.run(
+        f"For plan {PLAN_FL_PDP}, how does mail-order cost compare to retail for a 30-day Lantus fill?"
+    )
+    lower = response.explanation.lower()
+    assert "$30.00" in response.explanation
+    assert "$35.00" in response.explanation
+    assert "mail" in lower
+    assert "retail" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_under_cap_policy_ceiling():
+    response = await navigator.run(
+        f"On plan {PLAN_FL_PDP}, is Humalog always capped at $35 or could it be lower?"
+    )
+    assert response.status == "ok"
+    lower = response.explanation.lower()
+    assert "ceiling" in lower
+    assert "$10.00" in response.explanation
+    assert "below the federal $35 insulin ceiling" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_insulin_multi_plan_compare_mentions_both_plans():
+    response = await navigator.run(
+        f"Please compare Lantus costs between plans {PLAN_FL_PDP} and {PLAN_FL_MAPD} "
+        f"for a 30-day supply."
+    )
+    lower = response.explanation.lower()
+    assert PLAN_FL_PDP.lower() in lower
+    assert PLAN_FL_MAPD.lower() in lower
+    assert "cost-share" in lower or "$" in response.explanation
 
 
 def test_navigator_prompt_describes_scope():
@@ -89,6 +246,8 @@ def test_navigator_prompt_describes_scope():
     assert "what today's date is" in NAVIGATOR_SYSTEM_PROMPT.lower()
     assert "remaining_year_budget_cost_low" in NAVIGATOR_SYSTEM_PROMPT
     assert "do not append the general disclaimer" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "exception — insulin" in NAVIGATOR_SYSTEM_PROMPT.lower()
+    assert "omit dosage" in NAVIGATOR_SYSTEM_PROMPT.lower()
 
 
 def test_navigator_system_prompt_includes_runtime_datetime():

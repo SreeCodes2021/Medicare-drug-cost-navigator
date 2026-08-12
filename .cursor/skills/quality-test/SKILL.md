@@ -39,8 +39,15 @@ at the end of each run (see [Post-run backlog](#post-run-backlog)).
 | `/quality-test/no-false-signals` | Picker must not imply coverage | [no-false-signals/SKILL.md](no-false-signals/SKILL.md) |
 | `/quality-test/disclaimer-compliance` | Disclaimer on every surface | [disclaimer-compliance/SKILL.md](disclaimer-compliance/SKILL.md) |
 | `/quality-test/answer-consistency` | Oracle vs UI/chat prose | [answer-consistency/SKILL.md](answer-consistency/SKILL.md) |
+| `/quality-test/insulin` | IRA insulin cap billing — deterministic + 10 LLM (insulin-only) | [insulin/SKILL.md](insulin/SKILL.md) |
+| `/quality-test/mixed-basket` | Insulin + regular same-plan baskets — deterministic + 20 LLM | [mixed-basket/SKILL.md](mixed-basket/SKILL.md) |
 
 For a single call that runs everything in this tier, invoke `/quality-test` only.
+
+**Insulin billing** (`/quality-test/insulin`) is a **separate sub-skill** with its own
+**10-query** insulin-only LLM budget. **Mixed insulin + regular baskets**
+(`/quality-test/mixed-basket`) use a **20-query** budget — neither is included in the
+60-query cap above. Invoke after insulin or routing changes, or alongside a general quality pass.
 
 ## Real LLM mandate — no mock, ever, in this skill
 
@@ -87,10 +94,11 @@ under 60 total unless they explicitly raise the cap:
 | **Pharmacy channels** | **2 queries (required)** | See [§ 2d](#2d-pharmacy-channels-mandatory--2-queries-every-run) |
 | **Benefit phase** | **2 queries (required)** | See [§ 2e](#2e-benefit-phase-mandatory--2-queries-every-run) |
 | **Dosage clarification & alternatives deferral** | **2 queries (required)** | See [§ 2f](#2f-dosage-clarification--alternatives-deferral-mandatory--2-queries-every-run) |
-| On-the-fly exploratory questioning | **27 queries** | Fresh questions per [`exploratory-qa`](../exploratory-qa/SKILL.md) |
+| **Mixed insulin + regular basket** | **2 queries (required)** | See [§ 2g](#2g-mixed-insulin--regular-basket-mandatory--2-queries-every-run) — run `python scripts/run_llm_scenarios.py --suite quality-test-2g` |
+| On-the-fly exploratory questioning | **25 queries** | Fresh questions per [`exploratory-qa`](../exploratory-qa/SKILL.md) |
 | **Typical PASS total** | **~54** | Escalation reserve unused |
 | **Worst-case FAIL total** | **~59** | All 5 escalation queries spent |
-| **Total cap** | **≤ 60** | Scale proportionally on a faster pass — **never skip** § 1b, § 1c, or § 2b–2f entirely |
+| **Total cap** | **≤ 60** | Scale proportionally on a faster pass — **never skip** § 1b, § 1c, or § 2b–2g entirely |
 
 Use real plan/drug combinations from the live data actually loaded on this
 server (check `GET /api/plans`, `GET /api/drugs`, `GET /api/states` first) —
@@ -128,6 +136,7 @@ python scripts/run_golden_cases.py --include-live --base-url http://localhost:80
 | `coinsurance` | 5 | `expected_plan_coinsurance_pct` + `expected_applied_coinsurance_pct` (non-NA; post-deductible januvia uses `expect_cost_na: true`) |
 | `estimated_cost_copay` | 5 | Dollar estimate for copay-type fills (non-NA `cost_low`/`cost_high`) |
 | `estimated_cost_coinsurance` | 5 | Dollar estimate for coinsurance-type fills where CMS pricing applies (pre-deductible ingredient cost, or cross-tier copay wins) |
+| `mixed_basket` | 3 | `/api/estimate-batch` — per-item phases/status; combined total; partial-basket caveat (`golden-048`–`050`) |
 
 Any golden `[FAIL]` is an overall **BLOCK** — fix the cost pipeline before grading LLM prose.
 
@@ -283,9 +292,40 @@ Scenario 2 is also graded per [`chat-QA`](../chat-QA/SKILL.md) dimension 1
 Phase 8 rule — a named substitute drug is dimension 1 score 0 regardless of
 how the rest of the answer reads.
 
-### 3. On-the-fly exploratory questioning (budget: 27 real queries)
+### 2g. Mixed insulin + regular basket (mandatory — 2 queries every run)
 
-Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh questions each run across all its categories (malformed input, out-of-scope asks, meaningful vs. meaningless follow-ups, prompt injection) and grade with the same rubric plus the "did not break" check. Use **`gpt-5.6-luna`** unless multi-model was requested. Distribute across categories roughly evenly (e.g. ~9 malformed, ~9 out-of-scope, ~9 queries on follow-up interactions — roughly 4 opener+follow-up pairs, since each pair is 2 sends). **OOP/MOOP, tier, channel, benefit-phase, dosage-clarification, and alternatives-deferral cases are not duplicated here** — they are mandatory in § 2b–2f. For **alternatives or price-trend claims** in exploratory answers, apply [`chat-QA`](../chat-QA/SKILL.md) dimension 1 Phase 8 rules (named alternatives without `alternatives_finder` → score 0).
+Verify same-plan **multi-drug baskets** where at least one product uses the IRA
+insulin cap path and at least one uses ordinary Part D tier/deductible/phase logic.
+Deterministic anchor: `tests/test_mixed_basket.py`, `tests/test_batch_estimate.py`,
+golden `mixed_basket` group. Full 20-scenario catalog:
+[mixed-basket/llm-scenarios.md](mixed-basket/llm-scenarios.md).
+
+**Run the §2g subset (do not hand-roll invoke loops):**
+
+```bash
+python scripts/run_llm_scenarios.py --suite quality-test-2g --failures-only
+```
+
+Full mixed-basket pass: `python scripts/run_llm_scenarios.py --suite mixed-basket`.
+
+| # | Scenario | Example shape (rephrase each run) | Pass criteria |
+|---|----------|----------------------------------|---------------|
+| 1 | **Priced regular + priced insulin** | "What do metformin 500mg and lantus cost on \<plan_key\>?" (fixture: `S9999-001`) | Both drugs addressed; per-drug `$`/phase match `POST /api/estimate-batch` oracle; phases differ (`insulin_cap` vs regular) |
+| 2 | **Partial basket** | "Lantus and metformin 500mg on plan H8888-001" (or live insulin data-gap + priced regular) | Honest insulin data-gap; regular still priced; combined-total caveat if applicable; no fabricated insulin `$` |
+
+**Oracle (free):**
+
+```bash
+curl -s -X POST http://localhost:8000/api/estimate-batch \
+  -H 'Content-Type: application/json' \
+  -d '{"plan_id":"S9999-001","items":[{"drug":"metformin","dosage":"500mg"},{"drug":"lantus"}],"days_supply":30,"ytd_oop_spend":0}'
+```
+
+**Behavior anchor:** [`navigator.py`](../../../src/medicare_navigator/agent/navigator.py) skips deterministic insulin when non-insulin drugs are named; [`dosage_questions.py`](../../../src/medicare_navigator/agent/dosage_questions.py) clarifies missing oral strengths in mixed asks.
+
+### 3. On-the-fly exploratory questioning (budget: 25 real queries)
+
+Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh questions each run across all its categories (malformed input, out-of-scope asks, meaningful vs. meaningless follow-ups, prompt injection) and grade with the same rubric plus the "did not break" check. Use **`gpt-5.6-luna`** unless multi-model was requested. Distribute across categories roughly evenly (e.g. ~8 malformed, ~8 out-of-scope, ~9 queries on follow-up interactions — roughly 4 opener+follow-up pairs, since each pair is 2 sends). **OOP/MOOP, tier, channel, benefit-phase, dosage-clarification, alternatives-deferral, and mixed-basket cases are not duplicated here** — they are mandatory in § 2b–2g. For **alternatives or price-trend claims** in exploratory answers, apply [`chat-QA`](../chat-QA/SKILL.md) dimension 1 Phase 8 rules (named alternatives without `alternatives_finder` → score 0).
 
 ## One consolidated report
 
@@ -305,6 +345,7 @@ Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh 
 | coinsurance | N/N | |
 | estimated_cost_copay | N/N | |
 | estimated_cost_coinsurance | N/N | |
+| mixed_basket | N/N | |
 
 ### Misleading UI (no-false-signals) — § 1c-A
 | Check | Result | Notes |
@@ -355,6 +396,12 @@ Follow [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — invent fresh 
 ### Dosage clarification & alternatives deferral (mandatory)
 | Scenario | Model | Expected | Actual | Verdict | Notes |
 |----------|-------|----------|--------|---------|-------|
+
+### Mixed insulin + regular basket (mandatory §2g)
+| Scenario | Model | Expected | Actual | Verdict | Notes |
+|----------|-------|----------|--------|---------|-------|
+| Priced regular + insulin | … | Batch oracle per drug + phases | … | PASS/FAIL | |
+| Partial basket | … | Data-gap honesty + caveat | … | PASS/FAIL | |
 
 ### Exploratory findings
 | Category | Question tried | Model | Did-not-break | Verdict | Notes |
@@ -424,18 +471,21 @@ Before appending, read the file and skip items that duplicate an open entry (sam
 |----------------|-------------------|
 | Numeric / tier / channel / phase oracle gap | [`golden-cases.jsonl`](../numeric-accuracy/golden-cases.jsonl) — follow numeric-accuracy "Adding a new golden case" bar |
 | Recurring LLM scenario (OOP, tier, channel, benefit phase) | Mandatory tables in this skill (§2b–2e) |
+| Mixed insulin + regular same-plan basket | [`mixed-basket/llm-scenarios.md`](mixed-basket/llm-scenarios.md) or parent §2g |
 | Adversarial / malformed / injection pattern | [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) categories |
 | Picker / disclaimer / oracle UI contract | Relevant pytest under `tests/` or sub-skill in `quality-test/` |
 
 ## Internal building blocks (do not ask the user to call these separately)
 
 - [`numeric-accuracy/SKILL.md`](../numeric-accuracy/SKILL.md) + [`golden-cases.jsonl`](../numeric-accuracy/golden-cases.jsonl) + `scripts/run_golden_cases.py`
+- **Fixed LLM scenario suites** — `scripts/run_llm_scenarios.py` + `scripts/llm_scenario_suites/` (`mixed-basket`, `insulin`, `quality-test-2g`)
 - [`chat-QA/SKILL.md`](../chat-QA/SKILL.md) — the rubric itself, applied to both the happy-path baseline and exploratory findings
 - [`exploratory-qa/SKILL.md`](../exploratory-qa/SKILL.md) — the on-the-fly question categories
 - **Misleading-case sub-skills (§ 1c):**
   - [no-false-signals/SKILL.md](no-false-signals/SKILL.md)
   - [disclaimer-compliance/SKILL.md](disclaimer-compliance/SKILL.md)
   - [answer-consistency/SKILL.md](answer-consistency/SKILL.md)
+  - [mixed-basket/SKILL.md](mixed-basket/SKILL.md)
 
 ## Constraints
 

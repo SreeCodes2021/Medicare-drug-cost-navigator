@@ -1,0 +1,41 @@
+{
+  "suite": "quality-test-2g",
+  "description": "Parent /quality-test §2g mandatory mixed-basket subset (2 queries)",
+  "default_model": "gpt-5.6-luna",
+  "scenarios": [
+    {
+      "id": "2g-1",
+      "message": "What do metformin 500mg and lantus cost on plan S9999-001?",
+      "batch": {
+        "plan_id": "S9999-001",
+        "items": [
+          {"drug": "metformin", "dosage": "500mg"},
+          {"drug": "lantus"}
+        ],
+        "days_supply": 30,
+        "ytd_oop_spend": 0
+      },
+      "expect": {
+        "status": "ok",
+        "drugs_named": ["metformin", "lantus"]
+      }
+    },
+    {
+      "id": "2g-2",
+      "message": "Lantus and metformin 500mg on plan H8888-001",
+      "batch": {
+        "plan_id": "H8888-001",
+        "items": [
+          {"drug": "lantus"},
+          {"drug": "metformin", "dosage": "500mg"}
+        ],
+        "days_supply": 30,
+        "ytd_oop_spend": 0
+      },
+      "expect": {
+        "status": "ok",
+        "drugs_named": ["lantus", "metformin"]
+      }
+    }
+  ]
+}

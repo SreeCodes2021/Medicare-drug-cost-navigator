@@ -19,28 +19,35 @@ from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import (
     BasicDrugsFormularyRepository,
     BeneficiaryCostRepository,
+    InsulinBeneficiaryCostRepository,
     PlanRepository,
     PricingRepository,
 )
-from medicare_navigator.tools.days_supply import map_pricing_days_supply_to_code
+from medicare_navigator.tools.days_supply import invalid_days_supply_message, map_pricing_days_supply_to_code
 from medicare_navigator.tools.disclaimers import (
     BUG2_CAVEAT,
     BUG4_CAVEAT,
     BUG6_MESSAGE,
     CATASTROPHIC_PHASE_NOTE,
     INSULIN_OUT_OF_SCOPE_MESSAGE,
+    INSULIN_STATUTORY_CAP_CAVEAT,
     NO_COST_SHARE_DATA_MESSAGE,
     bug5_caveat,
     bug5b_message,
     pa_st_caveat,
     unmapped_days_supply_caveat,
 )
-from medicare_navigator.tools.insulin import is_insulin
+from medicare_navigator.tools.insulin import INSULIN_FORMULARY_ALIASES, is_insulin
+from medicare_navigator.tools.insulin_cost import compute_insulin_channel_costs, has_insulin_cost_data
+from medicare_navigator.tools.numeric_helpers import unique_or_none
 from medicare_navigator.tools.drug_lookup import COMMON_DRUGS_REQUIRING_DOSAGE
 from medicare_navigator.tools.normalize_drug import (
+    _dosage_in_name,
+    _rxnorm_exact_lookup,
     canonicalize_drug_name,
     compute_benefit_phase,
     dosage_candidates_for_drug,
+    list_strength_concepts,
     normalize_drug,
 )
 from medicare_navigator.tools.part_d_benefit_params import (
@@ -54,6 +61,57 @@ SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 
 # Bug 3: absent per-drug dosing data, assume 1 dose unit ("pill") per day.
 DAYS_PER_DOSE_UNIT_DEFAULT = 1
+
+
+async def _formulary_matches_with_strength_fallback(
+    *,
+    formulary_id: str,
+    rxcui: str,
+    drug_name: str,
+    dosage: str | None,
+) -> tuple[list, str]:
+    """Match formulary by exact RXCUI, then by RxNorm SCD/SBD strength concepts.
+
+    Bare brand names often resolve to an ingredient/brand RXCUI (e.g. Lantus → 261551)
+    while CMS SPUF formulary rows are keyed on clinical-drug SBDs (e.g. 285018 for the
+    same Lantus NDC). When the exact join misses, expand via list_strength_concepts —
+    the same multi-RXCUI approach drug_on_formulary already uses for the picker.
+    """
+    repo = BasicDrugsFormularyRepository()
+    matches = repo.get_matches(formulary_id, rxcui)
+    if matches:
+        return matches, rxcui
+
+    lookup_names = [drug_name]
+    lookup_names.extend(INSULIN_FORMULARY_ALIASES.get(drug_name.lower(), ()))
+    alt_rxcuis: list[str] = []
+    for lookup_name in lookup_names:
+        if lookup_name != drug_name:
+            for concept in await _rxnorm_exact_lookup(lookup_name):
+                alt = concept.get("rxcui")
+                if alt and str(alt) != str(rxcui):
+                    alt_rxcuis.append(str(alt))
+        concepts = await list_strength_concepts(lookup_name)
+        for concept in concepts:
+            alt = concept.get("rxcui")
+            if not alt or str(alt) == str(rxcui):
+                continue
+            concept_name = concept.get("concept_name") or concept.get("name") or ""
+            if dosage and not _dosage_in_name(concept_name, dosage):
+                continue
+            alt_rxcuis.append(str(alt))
+
+    if not alt_rxcuis:
+        return [], rxcui
+
+    matches = repo.get_matches_any(formulary_id, alt_rxcuis)
+    if not matches:
+        return [], rxcui
+
+    matched_rxcuis = {str(m.rxcui) for m in matches if m.rxcui}
+    if len(matched_rxcuis) == 1:
+        return matches, next(iter(matched_rxcuis))
+    return matches, rxcui
 
 
 def _source_id() -> str:
@@ -85,6 +143,7 @@ class _EstimateContext:
     source_id: str
     quantity_limit_blocked: bool = False
     extra_caveats: tuple[str, ...] = ()
+    is_insulin: bool = False
 
 
 @dataclass
@@ -131,26 +190,24 @@ def _cost_share_copay_and_pct(
     return copay, None
 
 
-def _unique_or_none(values: list[float | None]) -> float | None:
-    present = [v for v in values if v is not None]
-    if not present:
-        return None
-    unique = set(present)
-    if len(unique) == 1:
-        return present[0]
-    return None
-
-
 def _resolve_tier_metadata(
     plan_key: str,
     tiers_matched: list[int],
     raw_phase: str,
     beneficiary_repo: BeneficiaryCostRepository,
+    *,
+    is_insulin: bool = False,
 ) -> tuple[int | None, str, str, list[int]]:
     unique_tiers = sorted(set(tiers_matched))
     tier: int | None = unique_tiers[0] if len(unique_tiers) == 1 else None
     effective_phase = raw_phase
     ded_applies_yn = "NA"
+
+    if is_insulin:
+        # Insulin is statutorily deductible-exempt in every phase but catastrophic — the
+        # general beneficiary_cost table's per-tier DED_APPLIES_YN describes an unrelated
+        # drug at that tier number, not insulin, so it's never looked up here.
+        return tier, ded_applies_yn, effective_phase, unique_tiers
 
     if len(unique_tiers) == 1:
         ded_applies = beneficiary_repo.get_ded_applies(plan_key, unique_tiers[0])
@@ -174,7 +231,19 @@ def _compute_channel_costs(
     pharmacy_channel: str,
     beneficiary_repo: BeneficiaryCostRepository,
     pricing_repo: PricingRepository,
+    insulin_repo: InsulinBeneficiaryCostRepository,
 ) -> _ChannelComputation:
+    if ctx.is_insulin:
+        computed = compute_insulin_channel_costs(
+            plan_key=ctx.plan_key,
+            matches=ctx.surviving,
+            days_supply_code=ctx.days_supply_code,
+            pharmacy_channel=pharmacy_channel,
+            is_catastrophic=ctx.raw_phase == "catastrophic",
+            repo=insulin_repo,
+        )
+        return _ChannelComputation(**vars(computed))
+
     tiers_matched: list[int] = []
     ndc_costs: list[float] = []
     any_coinsurance_excluded = False
@@ -240,10 +309,10 @@ def _compute_channel_costs(
         ndc_costs=ndc_costs,
         tiers_matched=tiers_matched,
         any_coinsurance_excluded=any_coinsurance_excluded,
-        plan_copay=_unique_or_none(plan_copays),
-        plan_coinsurance_pct=_unique_or_none(plan_pcts),
-        applied_copay=_unique_or_none(applied_copays),
-        applied_coinsurance_pct=_unique_or_none(applied_pcts),
+        plan_copay=unique_or_none(plan_copays),
+        plan_coinsurance_pct=unique_or_none(plan_pcts),
+        applied_copay=unique_or_none(applied_copays),
+        applied_coinsurance_pct=unique_or_none(applied_pcts),
     )
 
 
@@ -257,7 +326,7 @@ def _build_caveats(
     any_coinsurance_excluded: bool,
     include_no_cost_share: bool,
 ) -> list[str]:
-    caveats: list[str] = [BUG2_CAVEAT]
+    caveats: list[str] = [INSULIN_STATUTORY_CAP_CAVEAT] if ctx.is_insulin else [BUG2_CAVEAT]
     if ctx.raw_phase == "catastrophic":
         caveats.append(CATASTROPHIC_PHASE_NOTE)
     if any_coinsurance_excluded:
@@ -300,6 +369,15 @@ async def _resolve_estimate_context(
     as_of = _manifest_as_of()
     source_id = _source_id()
 
+    days_supply_error = invalid_days_supply_message(days_supply)
+    if days_supply_error:
+        return ToolResult.failure(
+            ToolStatus.no_match,
+            source_id=source_id,
+            as_of_date=as_of,
+            message=days_supply_error,
+        )
+
     plan = PlanRepository().get_plan(plan_key)
     if not plan:
         return ToolResult.failure(
@@ -317,13 +395,11 @@ async def _resolve_estimate_context(
         )
 
     canonical_name = canonicalize_drug_name(drug_name)
-    if is_insulin(canonical_name, canonical_name):
-        return ToolResult.failure(
-            ToolStatus.insulin_out_of_scope,
-            source_id=source_id,
-            as_of_date=as_of,
-            message=INSULIN_OUT_OF_SCOPE_MESSAGE,
-        )
+    # Detected here (pre-RxNorm) and again below (post-RxNorm, by resolved name +
+    # ingredient) — two independent signals, kept as belt-and-suspenders. Insulin no
+    # longer hard-stops the whole request; it's priced via the statutory $35/30-day cap
+    # (tools/insulin_cost.py) instead of the general tiered/deductible pipeline below.
+    is_insulin_drug = is_insulin(canonical_name, canonical_name)
 
     if not dosage or not str(dosage).strip():
         if canonical_name in COMMON_DRUGS_REQUIRING_DOSAGE:
@@ -356,13 +432,7 @@ async def _resolve_estimate_context(
     rxcui = selected.get("rxcui")
     ingredient = selected.get("ingredient")
 
-    if is_insulin(resolved_drug_name, ingredient):
-        return ToolResult.failure(
-            ToolStatus.insulin_out_of_scope,
-            source_id=source_id,
-            as_of_date=as_of,
-            message=INSULIN_OUT_OF_SCOPE_MESSAGE,
-        )
+    is_insulin_drug = is_insulin_drug or is_insulin(resolved_drug_name, ingredient)
 
     if not rxcui:
         return ToolResult.failure(
@@ -373,7 +443,15 @@ async def _resolve_estimate_context(
         )
 
     formulary_id = plan.get("formulary_id")
-    matches = BasicDrugsFormularyRepository().get_matches(formulary_id, rxcui) if formulary_id else []
+    if formulary_id:
+        matches, rxcui = await _formulary_matches_with_strength_fallback(
+            formulary_id=formulary_id,
+            rxcui=str(rxcui),
+            drug_name=resolved_drug_name or canonical_name,
+            dosage=resolved_dosage,
+        )
+    else:
+        matches = []
     if not matches:
         return ToolResult.failure(
             ToolStatus.not_covered,
@@ -446,6 +524,27 @@ async def _resolve_estimate_context(
     )
     days_supply_code = map_pricing_days_supply_to_code(days_supply)
 
+    if is_insulin_drug and days_supply_code is not None:
+        if not has_insulin_cost_data(plan_key, surviving, days_supply_code):
+            return ToolResult.failure(
+                ToolStatus.insulin_out_of_scope,
+                source_id=source_id,
+                as_of_date=as_of,
+                message=INSULIN_OUT_OF_SCOPE_MESSAGE,
+                data=MultiChannelDrugCostEstimate(
+                    plan_key=plan_key,
+                    plan_name=plan["plan_name"],
+                    drug_name=resolved_drug_name,
+                    dosage=resolved_dosage,
+                    rxcui=rxcui,
+                    covered=True,
+                    days_supply=days_supply,
+                    ytd_oop_spend=ytd_oop_spend,
+                    deductible=float(plan["deductible"]) if plan.get("deductible") is not None else None,
+                    channels=_empty_channel_costs(),
+                ),
+            )
+
     return _EstimateContext(
         plan=plan,
         plan_key=plan_key,
@@ -464,6 +563,7 @@ async def _resolve_estimate_context(
         st_flag=any(m.step_therapy_yn for m in surviving),
         as_of=as_of,
         source_id=source_id,
+        is_insulin=is_insulin_drug,
     )
 
 
@@ -528,9 +628,20 @@ def _apply_annual_budget_fields(
     estimate.remaining_year_budget_cost_high = remaining_high
 
 
+def _display_phase(ctx: _EstimateContext) -> str:
+    """The benefit_phase shown to the user. Insulin never shows pre_deductible/
+    initial_coverage (no deductible phase exists for insulin) — it shows "insulin_cap"
+    instead, except when the annual OOP cap has been crossed, which still shows
+    "catastrophic" (insulin is $0 there too, same as every other covered drug)."""
+    if ctx.raw_phase == "catastrophic":
+        return "catastrophic"
+    return "insulin_cap" if ctx.is_insulin else ctx.raw_phase
+
+
 def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEstimate:
     beneficiary_repo = BeneficiaryCostRepository()
     pricing_repo = PricingRepository()
+    insulin_repo = InsulinBeneficiaryCostRepository()
 
     channels: dict[str, ChannelCost] = {}
     any_coinsurance = False
@@ -538,7 +649,7 @@ def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEs
     reference_tiers: list[int] = []
 
     for channel in PHARMACY_CHANNELS:
-        computed = _compute_channel_costs(ctx, channel, beneficiary_repo, pricing_repo)
+        computed = _compute_channel_costs(ctx, channel, beneficiary_repo, pricing_repo, insulin_repo)
         reference_tiers = computed.tiers_matched
         has_cost = bool(computed.ndc_costs)
         any_has_cost = any_has_cost or has_cost
@@ -556,8 +667,10 @@ def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEs
     matched_ndc_count = len(ctx.surviving)
     same_tier = len(set(reference_tiers)) <= 1
     tier, ded_applies_yn, effective_phase, unique_tiers = _resolve_tier_metadata(
-        ctx.plan_key, reference_tiers, ctx.raw_phase, beneficiary_repo
+        ctx.plan_key, reference_tiers, ctx.raw_phase, beneficiary_repo, is_insulin=ctx.is_insulin
     )
+    if ctx.is_insulin:
+        effective_phase = _display_phase(ctx)
     deductible = ctx.plan.get("deductible")
     caveats = _build_caveats(
         ctx=ctx,
@@ -582,7 +695,7 @@ def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEs
         tier=tier,
         tiers_matched=unique_tiers,
         ded_applies_yn=ded_applies_yn,
-        benefit_phase=ctx.raw_phase,
+        benefit_phase=_display_phase(ctx),
         effective_phase=effective_phase,
         channels=channels,
         matched_ndc_count=matched_ndc_count,
@@ -666,7 +779,8 @@ async def estimate_drug_cost(
     ctx = resolved
     beneficiary_repo = BeneficiaryCostRepository()
     pricing_repo = PricingRepository()
-    computed = _compute_channel_costs(ctx, pharmacy_channel, beneficiary_repo, pricing_repo)
+    insulin_repo = InsulinBeneficiaryCostRepository()
+    computed = _compute_channel_costs(ctx, pharmacy_channel, beneficiary_repo, pricing_repo, insulin_repo)
 
     matched_ndc_count = len(ctx.surviving)
     same_tier = len(set(computed.tiers_matched)) <= 1
@@ -694,7 +808,7 @@ async def estimate_drug_cost(
             matched_ndc_count=matched_ndc_count,
             same_tier=same_tier,
             days_supply=ctx.days_supply,
-            benefit_phase=ctx.raw_phase,
+            benefit_phase=_display_phase(ctx),
             cost_low=cost_low,
             cost_high=cost_high,
             caveats=caveats,

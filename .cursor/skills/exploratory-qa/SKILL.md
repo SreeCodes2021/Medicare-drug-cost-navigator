@@ -31,7 +31,7 @@ If health fails, ask the user to start the server (`uvicorn medicare_navigator.a
 
 ## Query budget
 
-Default to **~27 real queries per run** when invoked standalone (matches the exploratory allocation inside [`/quality-test`](../quality-test/SKILL.md); when called directly rather than via `/quality-test`, you may go up to 60 if the user wants a deeper pass). Spread roughly evenly across the categories below rather than exhausting the budget on one category — e.g. ~9 malformed, ~9 out-of-scope, ~9 queries' worth of category-3 follow-up interactions (note each follow-up case is **2 sends**, an opener plus the follow-up, so ~9 queries there is ~4 pairs, not 9 pairs). State the actual count used in the output.
+Default to **~25 real queries per run** when invoked standalone (matches the exploratory allocation inside [`/quality-test`](../quality-test/SKILL.md); when called directly rather than via `/quality-test`, you may go up to 60 if the user wants a deeper pass). Spread roughly evenly across the categories below rather than exhausting the budget on one category — e.g. ~8 malformed, ~8 out-of-scope, ~9 queries' worth of category-3 follow-up interactions (note each follow-up case is **2 sends**, an opener plus the follow-up, so ~9 queries there is ~4 pairs, not 9 pairs). State the actual count used in the output.
 
 ## Categories (invent fresh questions per category per run, not a fixed script)
 
@@ -86,6 +86,11 @@ Start a session with a normal cost question, then send a follow-up from each gro
 - **Meaningless / off-topic** — unrelated to the conversation ("what's the weather today", "tell me a joke", repeats the exact same question verbatim)
 
 ## Running each case
+
+Fixed catalogs (insulin, mixed-basket) use `python scripts/run_llm_scenarios.py` — see
+[`quality-test/insulin`](../quality-test/insulin/SKILL.md) and
+[`quality-test/mixed-basket`](../quality-test/mixed-basket/SKILL.md). **This skill invents
+questions each run** — do not use those suites here; invoke per case:
 
 ```bash
 medicare-chat-invoke send --message "<invented question>"

@@ -18,6 +18,9 @@ Usage:
 
     # Summary by case_group (tier_lookup, channel, benefit_phase, copay, etc.)
     python scripts/run_golden_cases.py --by-group
+
+    # Insulin-only oracle pass
+    python scripts/run_golden_cases.py --case-group insulin_cap --by-group
 """
 
 from __future__ import annotations
@@ -57,10 +60,25 @@ def _check_case(case: dict, estimate: dict) -> list[str]:
 
     If the case pins a `channel` (e.g. "preferred_retail"), channel-level
     fields (cost, copay, coinsurance) are checked on that channel only.
+
+    Optional non-ok expectations:
+      - expected_status (e.g. insulin_out_of_scope)
+      - expect_covered (bool on data.covered when data is present)
+      - expect_no_cost (all channel costs must be null)
     """
     failures = []
-    if estimate.get("status") != "ok":
-        failures.append(f"estimate status: expected ok, got {estimate.get('status')}")
+    expected_status = case.get("expected_status", "ok")
+    actual_status = estimate.get("status")
+    if actual_status != expected_status:
+        failures.append(f"estimate status: expected {expected_status}, got {actual_status}")
+        if expected_status != "ok":
+            data = estimate.get("data") or {}
+            if case.get("expect_covered") is not None:
+                actual_covered = data.get("covered")
+                if actual_covered != case["expect_covered"]:
+                    failures.append(
+                        f"covered: expected {case['expect_covered']}, got {actual_covered}"
+                    )
         return failures
 
     data = estimate.get("data") or {}
@@ -83,6 +101,15 @@ def _check_case(case: dict, estimate: dict) -> list[str]:
             failures.append(
                 f"effective_phase: expected {case['expected_effective_phase']}, got {actual}"
             )
+
+    if case.get("expect_no_cost"):
+        priced = [
+            c
+            for c in channels.values()
+            if c.get("cost_low") is not None or c.get("cost_high") is not None
+        ]
+        if priced:
+            failures.append(f"expected no channel costs, got priced channels: {list(channels)}")
 
     if case.get("channel") and channel is None:
         failures.append(f"channel '{case['channel']}' missing from response")
@@ -147,6 +174,82 @@ def _check_case(case: dict, estimate: dict) -> list[str]:
     return failures
 
 
+def _item_channel_bounds(data: dict) -> tuple[float | None, float | None]:
+    channels = data.get("channels") or {}
+    lows = [c["cost_low"] for c in channels.values() if c.get("cost_low") is not None]
+    if not lows:
+        return None, None
+    highs = [
+        c.get("cost_high", c.get("cost_low"))
+        for c in channels.values()
+        if c.get("cost_low") is not None
+    ]
+    return min(lows), max(highs)
+
+
+def _check_batch_case(case: dict, batch: dict) -> list[str]:
+    failures = []
+    if batch.get("status") != "ok":
+        failures.append(f"batch status: expected ok, got {batch.get('status')}")
+        return failures
+
+    items_by_drug = {item["drug"]: item for item in batch.get("items") or []}
+    for expected_item in case.get("items") or []:
+        drug = expected_item["drug"]
+        actual = items_by_drug.get(drug)
+        if actual is None:
+            failures.append(f"missing batch item for drug {drug!r}")
+            continue
+
+        expected_status = expected_item.get("expected_status", "ok")
+        if actual.get("status") != expected_status:
+            failures.append(
+                f"{drug} status: expected {expected_status}, got {actual.get('status')}"
+            )
+            continue
+
+        data = actual.get("data") or {}
+        if expected_item.get("expect_covered") is not None:
+            if data.get("covered") != expected_item["expect_covered"]:
+                failures.append(
+                    f"{drug} covered: expected {expected_item['expect_covered']}, "
+                    f"got {data.get('covered')}"
+                )
+
+        for phase_key in ("expected_benefit_phase", "expected_effective_phase"):
+            expected = expected_item.get(phase_key)
+            if expected is None:
+                continue
+            actual_key = phase_key.replace("expected_", "")
+            actual_value = data.get(actual_key)
+            if actual_value != expected:
+                failures.append(
+                    f"{drug} {actual_key}: expected {expected}, got {actual_value}"
+                )
+
+    expected_low = case.get("expected_combined_total_low")
+    expected_high = case.get("expected_combined_total_high")
+    if expected_low is not None and batch.get("combined_total_low") != expected_low:
+        failures.append(
+            f"combined_total_low: expected {expected_low}, got {batch.get('combined_total_low')}"
+        )
+    if expected_high is not None and batch.get("combined_total_high") != expected_high:
+        failures.append(
+            f"combined_total_high: expected {expected_high}, got {batch.get('combined_total_high')}"
+        )
+
+    expect_caveat = case.get("expect_caveat")
+    if expect_caveat is not None:
+        has_caveat = batch.get("caveat") is not None
+        if has_caveat != expect_caveat:
+            failures.append(
+                f"caveat: expected {'present' if expect_caveat else 'absent'}, "
+                f"got {'present' if has_caveat else 'absent'}"
+            )
+
+    return failures
+
+
 def _offline_post_estimate():
     """Fixture-backed in-process client for requires_live_ingest=false cases."""
     import tempfile
@@ -166,6 +269,10 @@ def _offline_post_estimate():
     def post_estimate(payload: dict) -> dict:
         return client.post("/api/estimate", json=payload).json()
 
+    def post_batch(payload: dict) -> dict:
+        return client.post("/api/estimate-batch", json=payload).json()
+
+    post_estimate.post_batch = post_batch  # type: ignore[attr-defined]
     return post_estimate
 
 
@@ -178,15 +285,30 @@ def _live_post_estimate(base_url: str):
     def post_estimate(payload: dict) -> dict:
         return http_client.post("/api/estimate", json=payload).json()
 
+    def post_batch(payload: dict) -> dict:
+        return http_client.post("/api/estimate-batch", json=payload).json()
+
+    post_estimate.post_batch = post_batch  # type: ignore[attr-defined]
     return post_estimate
 
 
-def run(*, include_live: bool, base_url: str, by_group: bool = False) -> int:
+def run(
+    *,
+    include_live: bool,
+    base_url: str,
+    by_group: bool = False,
+    case_group: str | None = None,
+) -> int:
     """Fixture-only cases always run against the offline fixture DB (they only
     exist there); requires_live_ingest cases run against `base_url` only when
     --include-live is passed. Never cross the two — a fixture plan key will
     never resolve on a real CMS ingest and vice versa."""
     cases = _load_cases()
+    if case_group:
+        cases = [c for c in cases if c.get("case_group") == case_group]
+        if not cases:
+            print(f"No golden cases found for case_group={case_group!r}")
+            return 1
     offline_post_estimate = None
     live_post_estimate = None
 
@@ -212,20 +334,35 @@ def run(*, include_live: bool, base_url: str, by_group: bool = False) -> int:
             post_estimate = offline_post_estimate
 
         total += 1
-        payload = {
-            "plan_id": case["plan_id"],
-            "drug": case["drug"],
-            "days_supply": case.get("days_supply", 30),
-            "ytd_oop_spend": case.get("ytd_oop_spend", 0),
-        }
-        if case.get("dosage") is not None:
-            payload["dosage"] = case["dosage"]
+        if case.get("batch"):
+            payload = {
+                "plan_id": case["plan_id"],
+                "items": [
+                    {k: v for k, v in item.items() if not k.startswith("expected_") and k != "expect_covered"}
+                    for item in case["items"]
+                ],
+                "days_supply": case.get("days_supply", 30),
+                "ytd_oop_spend": case.get("ytd_oop_spend", 0),
+            }
+            batch = post_estimate.post_batch(payload)  # type: ignore[attr-defined]
+            failures = _check_batch_case(case, batch)
+            drug_labels = " + ".join(item["drug"] for item in case["items"])
+            label = f"{drug_labels} on {case['plan_id']} [batch]"
+        else:
+            payload = {
+                "plan_id": case["plan_id"],
+                "drug": case["drug"],
+                "days_supply": case.get("days_supply", 30),
+                "ytd_oop_spend": case.get("ytd_oop_spend", 0),
+            }
+            if case.get("dosage") is not None:
+                payload["dosage"] = case["dosage"]
 
-        estimate = post_estimate(payload)
-        failures = _check_case(case, estimate)
-        label = f"{case['drug']} {case.get('dosage') or ''} on {case['plan_id']}"
-        if case.get("channel"):
-            label += f" [{case['channel']}]"
+            estimate = post_estimate(payload)
+            failures = _check_case(case, estimate)
+            label = f"{case['drug']} {case.get('dosage') or ''} on {case['plan_id']}"
+            if case.get("channel"):
+                label += f" [{case['channel']}]"
         group = case.get("case_group", "uncategorized")
         group_totals[group].append(not failures)
 
@@ -262,8 +399,20 @@ def main() -> None:
         action="store_true",
         help="Print pass counts grouped by case_group after the run",
     )
+    parser.add_argument(
+        "--case-group",
+        metavar="NAME",
+        help="Run only cases with this case_group (e.g. insulin_cap)",
+    )
     args = parser.parse_args()
-    sys.exit(run(include_live=args.include_live, base_url=args.base_url, by_group=args.by_group))
+    sys.exit(
+        run(
+            include_live=args.include_live,
+            base_url=args.base_url,
+            by_group=args.by_group,
+            case_group=args.case_group,
+        )
+    )
 
 
 if __name__ == "__main__":

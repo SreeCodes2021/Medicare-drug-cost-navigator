@@ -27,11 +27,20 @@ BUG6_MESSAGE = (
     "estimate from this plan's records — please contact the plan directly."
 )
 
+INSULIN_STATUTORY_CAP_CAVEAT = (
+    "Federal law (Inflation Reduction Act) caps your cost-sharing for this insulin product at "
+    "$35 per 30-day supply (scaled for 60/90-day fills), with no deductible ever applying — this "
+    "estimate reflects that cap directly from CMS's insulin-specific pricing file. That file also "
+    "publishes a coinsurance-style field for this plan/tier, but it does not reliably match plans' "
+    "real coinsurance rates, so it was not used to compute this figure; the copay-based amount "
+    "shown is the authoritative one."
+)
+
 INSULIN_OUT_OF_SCOPE_MESSAGE = (
-    "Insulin cost estimates are not supported by this tool. Insulin has a separate statutory "
-    "$35/month cap that does not depend on deductible or benefit-phase status, and CMS "
-    "publishes it under a different file than the one this estimator uses. Please check your "
-    "plan's insulin-specific pricing directly."
+    "This plan's CMS insulin-specific pricing file has no published cost-share record for this "
+    "product's tier and fill size, so a confirmed dollar estimate isn't available. By federal law "
+    "your cost-sharing for a covered insulin product is capped at $35 per 30-day supply with no "
+    "deductible — contact your plan to confirm your exact copay for this fill."
 )
 
 CATASTROPHIC_PHASE_NOTE = (

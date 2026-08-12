@@ -43,6 +43,8 @@ medicare-chat-invoke send --message "metformin copay" \
 medicare-chat-invoke send --message "what if I've spent $800?" --session-id "<session_id>"
 ```
 
+**Batch fixed catalogs** (insulin / mixed-basket / §2g): `python scripts/run_llm_scenarios.py --suite <name> --failures-only`
+
 If health fails or `send` errors, tell the user to start the server:
 
 ```bash

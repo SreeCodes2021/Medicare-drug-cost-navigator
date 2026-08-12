@@ -78,7 +78,28 @@
   },
   {
     "id": "eval-012",
-    "message": "cost for januvia 100mg on plan S9999-001 for a 90-day supply",
+    "message": "cost for januvia on plan S9999-001 for a 90-day supply",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-013",
+    "message": "lantus cost on plan H8888-001",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-014",
+    "message": "cost for lantus on plan S9999-001 for a 90-day supply",
+    "actual_status": "ok",
+    "passed": true,
+    "failures": []
+  },
+  {
+    "id": "eval-015",
+    "message": "lantus cost plan S9999-001 spent $2200 YTD",
     "actual_status": "ok",
     "passed": true,
     "failures": []

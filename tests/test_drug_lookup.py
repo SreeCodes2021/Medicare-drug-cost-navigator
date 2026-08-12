@@ -72,6 +72,15 @@ def test_has_any_rxcui(spuf_db):
     assert not repo.has_any_rxcui("FORM0001", [])
 
 
+def test_get_matches_any(spuf_db):
+    repo = BasicDrugsFormularyRepository()
+    rows = repo.get_matches_any("FORM0001", ["6809", "999999"])
+    assert rows
+    assert all(r.rxcui == "6809" for r in rows)
+    assert repo.get_matches_any("FORM0001", []) == []
+    assert repo.get_matches_any("FORM0001", ["999999"]) == []
+
+
 @pytest.mark.asyncio
 async def test_drug_on_formulary_with_mocked_strengths(spuf_db):
     metformin_concepts = [

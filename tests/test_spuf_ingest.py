@@ -15,7 +15,7 @@ from medicare_navigator.ingestion.spuf import (
     ingest_spuf,
 )
 from medicare_navigator.storage.connection import DuckDBConnection
-from medicare_navigator.storage.repository import PlanRepository
+from medicare_navigator.storage.repository import InsulinBeneficiaryCostRepository, PlanRepository
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "spuf"
 
@@ -153,6 +153,74 @@ def test_beneficiary_cost_keeps_all_days_supply_codes_and_coverage_levels(spuf_d
     assert ded_row == (False,)
 
 
+def test_insulin_beneficiary_cost_ingested_separately_from_general_file(spuf_db):
+    """Hint-collision regression: the real CMS zip member for the insulin file is named
+    "insulin beneficiary cost file ...", which contains the general file's own
+    BENEFICIARY_COST_FILE_HINTS substring ("beneficiary cost"). File discovery must not
+    let the two cross-contaminate in either direction."""
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    conn = spuf_db.connect()
+    try:
+        insulin_rows = conn.execute(
+            "SELECT days_supply_code, pharmacy_channel, copay FROM insulin_beneficiary_cost "
+            "WHERE plan_key = 'S9999-001' AND tier = 3"
+        ).fetchall()
+        general_tier3_types = conn.execute(
+            "SELECT DISTINCT cost_type FROM beneficiary_cost WHERE plan_key = 'S9999-001' AND tier = 3"
+        ).fetchall()
+    finally:
+        conn.close()
+    # 3 fixture rows (30/60/90-day) x 4 channels, all populated in the fixture.
+    assert len(insulin_rows) == 12
+    thirty_day = {channel: copay for code, channel, copay in insulin_rows if code == 1}
+    assert thirty_day == {
+        "preferred_retail": 35.0,
+        "standard_retail": 35.0,
+        "preferred_mail": 30.0,
+        "standard_mail": 35.0,
+    }
+    # The general file's own tier-3 rows (an unrelated drug) are untouched/uninflated by
+    # the insulin file — still exactly the copay-type rows the general fixture defines.
+    assert general_tier3_types == [("copay",)]
+
+
+def test_insulin_beneficiary_cost_repository_scaling_and_narrow_fallback(spuf_db):
+    """30/60/90-day scaling via the repository, plus the narrow insulin_out_of_scope
+    fallback case: H8888-001 has lantus on its formulary (tier 2) but no insulin
+    cost-share row at all — has_any must report False, not silently return $0."""
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    repo = InsulinBeneficiaryCostRepository(db=spuf_db)
+
+    assert repo.get_cost_share("S9999-001", 3, 1, pharmacy_channel="preferred_retail") == 35.0
+    assert repo.get_cost_share("S9999-001", 3, 4, pharmacy_channel="preferred_retail") == 70.0
+    assert repo.get_cost_share("S9999-001", 3, 2, pharmacy_channel="preferred_mail") == 90.0
+    assert repo.has_any("S9999-001", 3, 1) is True
+
+    assert repo.has_any("H8888-001", 2, 1) is False
+    assert repo.get_cost_share("H8888-001", 2, 1) is None
+
+    # Defined-standard NULL-tier fallback: humalog tier 1 on S9999-004 has no exact-tier
+    # row but does have a CMS "." sentinel row stored as tier IS NULL.
+    assert repo.get_cost_share("S9999-004", 1, 1, pharmacy_channel="preferred_retail") == 12.0
+
+
+def test_insulin_null_tier_sentinel_ingested(spuf_db):
+    """CMS '.' tier sentinel in the insulin file is stored as NULL and queryable."""
+    ingest_spuf(FIXTURE_DIR, filters=_fl_filters(), db=spuf_db, version="SPUF.2026.20260115")
+    conn = spuf_db.connect()
+    try:
+        row = conn.execute(
+            "SELECT tier, copay FROM insulin_beneficiary_cost "
+            "WHERE plan_key = 'S9999-004' AND days_supply_code = 1 "
+            "AND pharmacy_channel = 'preferred_retail'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] == 12.0
+
+
 def test_copay_cost_max_placeholder_zero_is_dropped_not_treated_as_ceiling():
     """CMS fills COST_MAX_AMT_* with literal '0' for flat-copay rows (COST_TYPE=1); it only
     bounds a real dollar range for coinsurance rows (COST_TYPE=2). Treating that placeholder
@@ -269,6 +337,50 @@ def test_purge_states_with_indexes_and_many_formulary_rows(spuf_db):
         assert purged == 2
         assert conn.execute("SELECT COUNT(*) FROM beneficiary_cost").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM plans WHERE state = 'CA'").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_ingest_spuf_merge_states_refreshes_formulary_for_replaced_state(spuf_db):
+    """Re-merging a state must replace basic_drugs_formulary rows for that state's
+    formulary IDs so fixture anchors like humalog tier 1 are not left stale."""
+    filters = _fl_filters(states=["FL"], pdp_region_codes={"FL": "11"})
+    ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    conn = spuf_db.connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM basic_drugs_formulary WHERE formulary_id='FORM0001' AND rxcui='135805'"
+        ).fetchone()[0] == 1
+        conn.execute(
+            "DELETE FROM basic_drugs_formulary WHERE formulary_id='FORM0001' AND rxcui='135805'"
+        )
+        assert conn.execute(
+            "SELECT COUNT(*) FROM basic_drugs_formulary WHERE formulary_id='FORM0001' AND rxcui='135805'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    ingest_spuf(
+        FIXTURE_DIR,
+        filters=filters,
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        merge_states=True,
+    )
+    conn = spuf_db.connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM basic_drugs_formulary WHERE formulary_id='FORM0001' AND rxcui='135805'"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM insulin_beneficiary_cost WHERE plan_key='S9999-001' AND tier=1"
+        ).fetchone()[0] == 4
     finally:
         conn.close()
 

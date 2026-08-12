@@ -112,3 +112,85 @@ def test_estimate_batch_requires_plan_id(client):
         json={"plan_id": "  ", "items": [{"drug": "metformin"}]},
     )
     assert resp.status_code == 400
+
+
+def _batch_item_bounds(data):
+    lows = [c["cost_low"] for c in data["channels"].values() if c["cost_low"] is not None]
+    highs = [
+        c["cost_high"] if c["cost_high"] is not None else c["cost_low"]
+        for c in data["channels"].values()
+        if c["cost_low"] is not None
+    ]
+    return min(lows), max(highs)
+
+
+def test_estimate_batch_insulin_plus_regular(client):
+    resp = client.post(
+        "/api/estimate-batch",
+        json={
+            "plan_id": PLAN_FL_PDP,
+            "items": [
+                {"drug": "metformin", "dosage": "500mg"},
+                {"drug": "lantus"},
+            ],
+            "days_supply": 30,
+            "ytd_oop_spend": 0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    by_drug = {item["drug"]: item for item in body["items"]}
+    assert by_drug["metformin"]["status"] == "ok"
+    assert by_drug["lantus"]["status"] == "ok"
+    assert by_drug["metformin"]["data"]["benefit_phase"] == "pre_deductible"
+    assert by_drug["metformin"]["data"]["effective_phase"] == "initial_coverage"
+    assert by_drug["lantus"]["data"]["benefit_phase"] == "insulin_cap"
+
+
+def test_estimate_batch_insulin_plus_regular_combined_total(client):
+    resp = client.post(
+        "/api/estimate-batch",
+        json={
+            "plan_id": PLAN_FL_PDP,
+            "items": [
+                {"drug": "metformin", "dosage": "500mg"},
+                {"drug": "lantus"},
+            ],
+        },
+    )
+    body = resp.json()
+    expected_low = 0.0
+    expected_high = 0.0
+    for item in body["items"]:
+        if item["status"] != "ok" or item["data"] is None:
+            continue
+        low, high = _batch_item_bounds(item["data"])
+        expected_low += low
+        expected_high += high
+    assert body["combined_total_low"] == pytest.approx(expected_low, abs=0.01)
+    assert body["combined_total_high"] == pytest.approx(expected_high, abs=0.01)
+    assert body["combined_total_low"] == pytest.approx(33.0, abs=0.01)
+
+
+def test_estimate_batch_insulin_data_gap_plus_regular(client):
+    resp = client.post(
+        "/api/estimate-batch",
+        json={
+            "plan_id": PLAN_FL_MAPD,
+            "items": [
+                {"drug": "lantus"},
+                {"drug": "metformin", "dosage": "500mg"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    statuses = {item["drug"]: item["status"] for item in body["items"]}
+    assert statuses["lantus"] == "insulin_out_of_scope"
+    assert statuses["metformin"] == "ok"
+    assert body["caveat"] is not None
+    metformin_item = next(item for item in body["items"] if item["drug"] == "metformin")
+    low, high = _batch_item_bounds(metformin_item["data"])
+    assert body["combined_total_low"] == pytest.approx(low, abs=0.01)
+    assert body["combined_total_high"] == pytest.approx(high, abs=0.01)

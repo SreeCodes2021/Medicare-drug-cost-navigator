@@ -1,0 +1,6 @@
+CONTRACT_ID|PLAN_ID|SEGMENT_ID|TIER|DAYS_SUPPLY|copay_amt_pref_insln|copay_amt_nonpref_insln|copay_amt_mail_pref_insln|copay_amt_mail_nonpref_insln|coin_amt_pref_insln|coin_amt_nonpref_insln|coin_amt_mail_pref_insln|coin_amt_mail_nonpref_insln
+S9999|001|000|1|1|10.00|10.00|10.00|10.00|0.20|0.20|0.20|0.20
+S9999|001|000|3|1|35.00|35.00|30.00|35.00|0.20|0.20|0.20|0.20
+S9999|001|000|3|4|70.00|70.00|60.00|70.00|0.20|0.20|0.20|0.20
+S9999|001|000|3|2|105.00|105.00|90.00|105.00|0.20|0.20|0.20|0.20
+S9999|004|000|.|1|12.00|12.00|12.00|12.00|0.20|0.20|0.20|0.20

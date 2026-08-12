@@ -23,7 +23,11 @@ from medicare_navigator.guardrails.source_catalog import (
 )
 from medicare_navigator.models.citation import Citation
 from medicare_navigator.models.response import DrugCostEstimate, MultiChannelDrugCostEstimate
-from medicare_navigator.tools.disclaimers import BUG2_CAVEAT, NO_COST_SHARE_DATA_MESSAGE
+from medicare_navigator.tools.disclaimers import (
+    BUG2_CAVEAT,
+    INSULIN_STATUTORY_CAP_CAVEAT,
+    NO_COST_SHARE_DATA_MESSAGE,
+)
 from medicare_navigator.tools.drug_lookup import COMMON_DRUGS_REQUIRING_DOSAGE
 from medicare_navigator.tools.normalize_drug import canonicalize_drug_name
 from medicare_navigator.tools.pharmacy_channels import channel_cost_bounds
@@ -37,7 +41,7 @@ _LLM_DISCLAIMER_TAIL_RE = re.compile(
     re.I,
 )
 # Routine estimate caveats shown in the structured estimate card — not duplicated in chat prose.
-_CARD_ONLY_CAVEATS = frozenset({BUG2_CAVEAT})
+_CARD_ONLY_CAVEATS = frozenset({BUG2_CAVEAT, INSULIN_STATUTORY_CAP_CAVEAT})
 _BUG2_PARAPHRASE_RE = re.compile(
     r"(?:\n\n|\n)?This estimate assumes the deductible[\s\S]*?Confirm with your plan\.\s*",
     re.I,
@@ -668,8 +672,8 @@ def apply_guardrails(
     if coverage_note and coverage_note not in out and not _prose_covers_channel_gaps(out):
         out = f"{out}\n\n{coverage_note}"
 
-    # Hard-stop messages (e.g. insulin's statutory $35/month cap) are pre-approved verbatim
-    # text, not LLM-invented figures — don't run the dollar-traceability check against them.
+    # Hard-stop messages (suppressed plan, insulin data-gap, quantity limit) are pre-approved
+    # verbatim text, not LLM-invented figures — don't run dollar-traceability against them.
     dollars_in_text = [] if is_hard_stop else _DOLLAR_RE.findall(out)
     if dollars_in_text:
         allowed = _allowed_dollar_amounts(tool_artifacts)
