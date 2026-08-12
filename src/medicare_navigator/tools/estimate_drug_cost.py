@@ -7,6 +7,7 @@ LLM's tool-call sequencing."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from math import ceil
 
 from medicare_navigator.ingestion.manifest import get_as_of, get_source_id
@@ -588,8 +589,9 @@ def _apply_annual_budget_fields(
     plan: dict,
     ytd_oop_spend: float,
     days_supply: int,
+    budget_start_date: date | None = None,
 ) -> None:
-    from medicare_navigator.agent.datetime_context import days_remaining_in_contract_year
+    from medicare_navigator.agent.datetime_context import window_days_remaining
     from medicare_navigator.agent.request_context import get_request_timezone
 
     contract_year = int(plan.get("contract_year") or 2026)
@@ -606,7 +608,13 @@ def _apply_annual_budget_fields(
     estimate.annual_budget_cost_low = budget_low
     estimate.annual_budget_cost_high = budget_high
 
-    days_remaining = days_remaining_in_contract_year(contract_year, get_request_timezone())
+    # budget_start_date overrides "from today" with an explicit start (e.g. "starting
+    # September 1") while still capping at the contract year end — see
+    # agent/datetime_context.py:window_days_remaining and agent/mediator.py for why the
+    # model is never trusted to compute this date itself.
+    days_remaining = window_days_remaining(
+        contract_year, get_request_timezone(), start=budget_start_date
+    )
     (
         _cap,
         _headroom,
@@ -638,7 +646,9 @@ def _display_phase(ctx: _EstimateContext) -> str:
     return "insulin_cap" if ctx.is_insulin else ctx.raw_phase
 
 
-def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEstimate:
+def _multi_channel_from_context(
+    ctx: _EstimateContext, *, budget_start_date: date | None = None
+) -> MultiChannelDrugCostEstimate:
     beneficiary_repo = BeneficiaryCostRepository()
     pricing_repo = PricingRepository()
     insulin_repo = InsulinBeneficiaryCostRepository()
@@ -709,6 +719,7 @@ def _multi_channel_from_context(ctx: _EstimateContext) -> MultiChannelDrugCostEs
         plan=ctx.plan,
         ytd_oop_spend=ctx.ytd_oop_spend,
         days_supply=ctx.days_supply,
+        budget_start_date=budget_start_date,
     )
     return result
 
@@ -720,6 +731,7 @@ async def estimate_drug_cost_all_channels(
     dosage: str | None = None,
     days_supply: int = 30,
     ytd_oop_spend: float = 0.0,
+    budget_start_date: date | None = None,
 ) -> ToolResult[MultiChannelDrugCostEstimate]:
     resolved = await _resolve_estimate_context(
         plan_key=plan_key,
@@ -731,7 +743,7 @@ async def estimate_drug_cost_all_channels(
     if isinstance(resolved, ToolResult):
         return resolved
 
-    data = _multi_channel_from_context(resolved)
+    data = _multi_channel_from_context(resolved, budget_start_date=budget_start_date)
     return ToolResult.ok(
         data,
         source_id=resolved.source_id,

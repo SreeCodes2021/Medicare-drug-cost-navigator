@@ -31,6 +31,15 @@ def test_efficacy_comparison_returns_medical_refusal():
     assert "medical advice" in explanation.lower()
 
 
+def test_pregnancy_safety_question_returns_medical_refusal():
+    resolved = resolve_medical_advice_question(
+        "Is metformin safe during pregnancy?"
+    )
+    assert resolved is not None
+    explanation, _, _ = resolved
+    assert "medical advice" in explanation.lower()
+
+
 def test_cost_compare_without_strength_not_intercepted():
     resolved = resolve_medical_advice_question(
         "Compare metformin and lisinopril costs on H1045-057"

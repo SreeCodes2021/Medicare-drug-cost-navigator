@@ -1,6 +1,9 @@
 import pytest
 
-from medicare_navigator.agent.insulin_requests import message_names_non_insulin_cost_drugs
+from medicare_navigator.agent.insulin_requests import (
+    mentioned_oral_drugs_with_strength,
+    message_names_non_insulin_cost_drugs,
+)
 from medicare_navigator.agent.navigator import navigator
 from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP
 
@@ -13,6 +16,30 @@ def _spuf(spuf_db):
 def test_message_names_non_insulin_cost_drugs():
     assert message_names_non_insulin_cost_drugs("metformin 500mg and lantus on S9999-001")
     assert not message_names_non_insulin_cost_drugs("lantus and humalog on S9999-001")
+
+
+def test_mentioned_oral_drugs_with_strength_ignores_duration_words():
+    """Regression: 'metformin 500mg for the next 3 months' previously matched the reversed
+    oral-strength regex and captured 'months' as a fake drug name, since it wasn't in the
+    stopword set — this fed straight into the mixed-basket pricer and produced 'Months has no
+    published CMS cost-share estimate'."""
+    found = mentioned_oral_drugs_with_strength(
+        "Budget lantus and metformin 500mg for the next 3 months on S9999-001"
+    )
+    names = [drug for drug, _ in found]
+    assert "months" not in names
+    assert "metformin" in names
+
+
+def test_mentioned_oral_drugs_with_strength_ignores_plan_sponsor_after_paired_strength():
+    """Regression: plan names like 'AARP Medicare Rx Preferred' sat within 24 chars of an oral
+    strength already paired forward ('metformin 500mg'), producing a phantom 'aarp' basket item."""
+    found = mentioned_oral_drugs_with_strength(
+        "How much would metformin 500mg and lantus cost on AARP Medicare Rx Preferred plan S5921-400?"
+    )
+    names = [drug for drug, _ in found]
+    assert "aarp" not in names
+    assert "metformin" in names
 
 
 @pytest.mark.asyncio

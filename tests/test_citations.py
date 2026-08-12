@@ -195,6 +195,42 @@ def test_apply_guardrails_allows_alternatives_with_clinician_deferral_only():
     assert errors == []
 
 
+def test_apply_guardrails_prepends_missing_tier_on_cost_answer():
+    artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
+    explanation, _citations, errors = apply_guardrails(
+        "Lovastatin is estimated at $5.00–$13.00 depending on pharmacy channel.",
+        artifacts,
+    )
+    assert "Tier 1" in explanation
+    assert errors == []
+
+
+def test_apply_guardrails_repairs_mail_retail_contrast_question():
+    artifacts = {
+        "estimate_drug_cost_all_channels": _all_channels_artifact(
+            drug_name="metformin",
+            plan_key="S9999-001",
+            channels={
+                "preferred_retail": {"cost_low": 5.0, "cost_high": 5.0, "coinsurance": False},
+                "standard_retail": {"cost_low": 15.0, "cost_high": 15.0, "coinsurance": False},
+                "preferred_mail": {"cost_low": 3.0, "cost_high": 3.0, "coinsurance": False},
+                "standard_mail": {"cost_low": 8.0, "cost_high": 8.0, "coinsurance": False},
+            },
+        )
+    }
+    prose = (
+        "Metformin is estimated at $3.00–$15.00 for a 30-day fill, depending on "
+        "pharmacy channel."
+    )
+    explanation, _citations, errors = apply_guardrails(
+        prose,
+        artifacts,
+        user_message="How does mail order compare to retail for metformin 500mg?",
+    )
+    assert "mail" in explanation.lower()
+    assert errors == []
+
+
 def test_apply_guardrails_repairs_cant_calculate_when_standard_retail_is_zero():
     artifacts = {
         "estimate_drug_cost_all_channels__calls": [
@@ -230,10 +266,12 @@ def test_apply_guardrails_allows_all_channel_dollar_amounts():
 
 def test_apply_guardrails_flags_untraceable_channel_amount():
     artifacts = {"estimate_drug_cost_all_channels": _all_channels_artifact()}
-    _explanation, _citations, errors = apply_guardrails(
+    explanation, _citations, errors = apply_guardrails(
         "Lovastatin costs $99.00 on this plan.", artifacts
     )
-    assert any("99.00" in e for e in errors)
+    assert "$99.00" not in explanation
+    assert "$5.00" in explanation or "$5" in explanation
+    assert errors == []
 
 
 def test_estimate_from_artifact_all_channels():
@@ -318,6 +356,43 @@ def test_apply_guardrails_skips_bug2_caveat_in_explanation_prose():
     assert "$5.00" in explanation
 
 
+def test_apply_guardrails_skips_bug5_caveat_in_explanation_prose():
+    from medicare_navigator.tools.disclaimers import bug5_caveat
+
+    ndc_note = bug5_caveat(matched_ndc_count=2, same_tier=True, tiers=[1])
+    metformin = _all_channels_artifact(
+        drug_name="metformin",
+        tier=1,
+        tiers_matched=[1],
+        matched_ndc_count=2,
+        caveats=[ndc_note],
+    )
+    lantus = _all_channels_artifact(
+        drug_name="lantus",
+        tier=3,
+        tiers_matched=[3],
+        matched_ndc_count=2,
+        benefit_phase="insulin_cap",
+        effective_phase="insulin_cap",
+        caveats=[
+            bug5_caveat(matched_ndc_count=2, same_tier=True, tiers=[3]),
+        ],
+    )
+    artifacts = {
+        "estimate_drug_cost_all_channels": metformin,
+        "estimate_drug_cost_all_channels__calls": [metformin, lantus],
+    }
+    explanation, _citations, errors = apply_guardrails(
+        (
+            "Metformin 500mg is estimated at $0.00 depending on pharmacy channel.\n\n"
+            "Lantus is estimated at $0.00 depending on pharmacy channel."
+        ),
+        artifacts,
+    )
+    assert errors == []
+    assert "formulary NDCs" not in explanation
+
+
 def test_apply_guardrails_strips_llm_disclaimer_before_appending_canonical():
     artifacts = {"estimate_drug_cost": _estimate_artifact()}
     paraphrased = (
@@ -365,10 +440,12 @@ def test_build_citations_for_lookup_plan_not_found():
 
 def test_apply_guardrails_flags_untraceable_dollar_amount():
     artifacts = {"estimate_drug_cost": _estimate_artifact(cost_low=15.0, cost_high=15.0)}
-    _explanation, _citations, errors = apply_guardrails(
+    explanation, _citations, errors = apply_guardrails(
         "Metformin costs $999.99 on this plan.", artifacts
     )
-    assert any("999.99" in e for e in errors)
+    assert "$999.99" not in explanation
+    assert "$15.00" in explanation or "$15" in explanation
+    assert errors == []
 
 
 def test_apply_guardrails_allows_dollar_amount_missing_trailing_zero():

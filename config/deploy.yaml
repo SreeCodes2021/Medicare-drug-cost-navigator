@@ -8,3 +8,28 @@ ingest:
 render:
   plan: starter
   disk_size_gb: 5
+
+# LLM model catalog. Changing a model here (or adding a new one) does not require a code
+# change — see src/medicare_navigator/llm/models.py, which loads this section (falling back
+# to a small hardcoded catalog only if this file is missing/unparseable).
+llm:
+  default_model: gpt-5.6-luna
+  mediator_default_model: gpt-5.6-luna
+  models:
+    - id: gpt-5.6-luna
+      label: GPT-5.6 Luna
+      provider: openai
+      input_per_mtok: 0.50
+      output_per_mtok: 2.00
+      # Reasoning models reject function tools on chat/completions unless effort is "none".
+      openai_reasoning_effort: none
+    - id: gpt-5.4-nano
+      label: GPT-5.4 Nano
+      provider: openai
+      input_per_mtok: 0.10
+      output_per_mtok: 0.40
+    - id: claude-haiku-4-5-20251001
+      label: Claude Haiku 4.5
+      provider: anthropic
+      input_per_mtok: 0.25
+      output_per_mtok: 1.25

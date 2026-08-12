@@ -1,7 +1,7 @@
 """Diff golden numeric-accuracy cases against the deterministic /api/estimate
 oracle (no LLM in the loop).
 
-Golden cases live in `.cursor/skills/numeric-accuracy/golden-cases.jsonl` —
+Golden cases live in `.cursor/skills/tests/utils/numeric-accuracy/golden-cases.jsonl` —
 each one either mirrors an offline fixture value (`requires_live_ingest: false`,
 runs against `tests/fixtures/spuf` data) or a value manually re-verified
 against a real CMS SPUF ingest (`requires_live_ingest: true`, see
@@ -35,7 +35,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-GOLDEN_CASES_PATH = PROJECT_ROOT / ".cursor" / "skills" / "numeric-accuracy" / "golden-cases.jsonl"
+GOLDEN_CASES_PATH = (
+    PROJECT_ROOT
+    / ".cursor"
+    / "skills"
+    / "tests"
+    / "utils"
+    / "numeric-accuracy"
+    / "golden-cases.jsonl"
+)
 
 
 def _load_cases() -> list[dict]:

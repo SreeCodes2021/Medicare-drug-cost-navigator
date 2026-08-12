@@ -415,9 +415,9 @@ async def query(req: QueryRequest):
 
 @app.get("/api/models")
 async def list_models():
-    from medicare_navigator.llm.models import DEFAULT_LLM_MODEL, list_available_models
+    from medicare_navigator.llm.models import default_llm_model, list_available_models
 
-    return {"default": DEFAULT_LLM_MODEL, "models": list_available_models()}
+    return {"default": default_llm_model(), "models": list_available_models()}
 
 
 @app.post("/api/chat")

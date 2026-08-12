@@ -56,6 +56,13 @@ _ALL_CHANNELS_PHRASES = (
     "all channels",
 )
 
+_MAIL_RETAIL_CONTRAST_RE = re.compile(
+    r"\bmail(?:[- ]order)?\b.*\bretail\b|\bretail\b.*\bmail(?:[- ]order)?\b",
+    re.I,
+)
+_MAIL_CHANNEL_KEYS = ("preferred_mail", "standard_mail")
+_RETAIL_CHANNEL_KEYS = ("preferred_retail", "standard_retail")
+
 
 def channel_has_estimate(channel: dict[str, Any] | None) -> bool:
     if not isinstance(channel, dict):
@@ -269,6 +276,52 @@ def prose_tied_lowest_warnings(
     return []
 
 
+def tier_from_estimate(est: dict[str, Any]) -> int | None:
+    tier = est.get("tier")
+    if tier is not None:
+        return int(tier)
+    tiers = est.get("tiers_matched") or []
+    if tiers:
+        return int(tiers[0])
+    return None
+
+
+def tier_mentioned_in_prose(text: str, tier: int) -> bool:
+    return bool(re.search(rf"\btier\s*{tier}\b", text, re.I))
+
+
+def _is_insulin_cap_estimate(est: dict[str, Any]) -> bool:
+    return est.get("benefit_phase") == "insulin_cap" or est.get("effective_phase") == "insulin_cap"
+
+
+def repair_missing_tier_in_prose(
+    explanation: str,
+    channel_estimates: list[dict[str, Any]] | None,
+) -> str:
+    """Prepend grounded tier labels when priced estimates have tier data but prose omits them."""
+    if not explanation or not channel_estimates:
+        return explanation
+
+    leads: list[str] = []
+    seen_tiers: set[int] = set()
+    for est in channel_estimates:
+        if not isinstance(est, dict) or _is_insulin_cap_estimate(est):
+            continue
+        tier = tier_from_estimate(est)
+        if tier is None or tier in seen_tiers:
+            continue
+        if tier_mentioned_in_prose(explanation, tier):
+            seen_tiers.add(tier)
+            continue
+        drug = est.get("drug_name") or "This drug"
+        leads.append(f"{str(drug).title()} is a Tier {tier} drug on this plan's formulary.")
+        seen_tiers.add(tier)
+
+    if not leads:
+        return explanation
+    return "\n\n".join(leads + [explanation.strip()])
+
+
 def cost_sentence_for_estimate(est: dict[str, Any]) -> str | None:
     """Deterministic one-line cost summary from a multi-channel estimate dict."""
     channels = est.get("channels")
@@ -291,8 +344,10 @@ def cost_sentence_for_estimate(est: dict[str, Any]) -> str | None:
     plan_key = est.get("plan_key") or est.get("plan_name") or "this plan"
     cost_text = f"${low:.2f}" if low == high else f"${low:.2f}–${high:.2f}"
     channel_note = channel_wording_for_channels(channels) if channels else ""
+    tier = tier_from_estimate(est)
+    tier_clause = f" (Tier {tier})" if tier is not None and not _is_insulin_cap_estimate(est) else ""
     return (
-        f"{drug_label.capitalize()} for a {days}-day supply on {plan_key} "
+        f"{drug_label.capitalize()}{tier_clause} for a {days}-day supply on {plan_key} "
         f"is estimated at {cost_text}{channel_note}."
     )
 
@@ -335,6 +390,88 @@ def repair_false_unavailable_prose(
         ):
             continue
         sentence = cost_sentence_for_estimate(est)
+        if sentence and sentence not in explanation:
+            leads.append(sentence)
+
+    if not leads:
+        return explanation
+    return "\n\n".join(leads + [explanation.strip()])
+
+
+def is_mail_retail_contrast_question(text: str) -> bool:
+    return bool(text and _MAIL_RETAIL_CONTRAST_RE.search(text))
+
+
+def _join_channel_price_parts(parts: list[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
+def channel_contrast_sentence_for_estimate(est: dict[str, Any]) -> str | None:
+    """Grounded mail-vs-retail breakdown when both channel types have CMS pricing."""
+    channels = est.get("channels")
+    if not isinstance(channels, dict):
+        return None
+    coverage = summarize_channels_dict(channels)
+    priced = set(coverage["priced_channels"])
+    mail_keys = [k for k in _MAIL_CHANNEL_KEYS if k in priced]
+    retail_keys = [k for k in _RETAIL_CHANNEL_KEYS if k in priced]
+    if not mail_keys or not retail_keys:
+        return None
+
+    parts: list[str] = []
+    for key in mail_keys + retail_keys:
+        channel = channels.get(key) or {}
+        low = channel.get("cost_low")
+        if low is None:
+            continue
+        label = PHARMACY_CHANNEL_LABELS.get(key, key)
+        parts.append(f"{label} is ${float(low):.2f}")
+
+    if not parts:
+        return None
+
+    drug = est.get("drug_name") or "This drug"
+    dosage = est.get("dosage")
+    drug_label = f"{drug} {dosage}".strip() if dosage else drug
+    days = est.get("days_supply", 30)
+    plan_key = est.get("plan_key") or est.get("plan_name") or "this plan"
+    tier = tier_from_estimate(est)
+    tier_clause = (
+        f" (Tier {tier})"
+        if tier is not None and not _is_insulin_cap_estimate(est)
+        else ""
+    )
+    joined = _join_channel_price_parts(parts)
+    return (
+        f"For {drug_label}{tier_clause} on {plan_key}, a {days}-day fill is estimated at "
+        f"{joined}."
+    )
+
+
+def repair_missing_mail_retail_contrast_in_prose(
+    explanation: str,
+    channel_estimates: list[dict[str, Any]] | None,
+    user_message: str | None,
+) -> str:
+    """Prepend mail/retail channel figures when the user asked for that contrast."""
+    if not explanation or not channel_estimates or not is_mail_retail_contrast_question(
+        user_message or ""
+    ):
+        return explanation
+    if "mail" in explanation.lower():
+        return explanation
+
+    leads: list[str] = []
+    for est in channel_estimates:
+        if not isinstance(est, dict):
+            continue
+        sentence = channel_contrast_sentence_for_estimate(est)
         if sentence and sentence not in explanation:
             leads.append(sentence)
 

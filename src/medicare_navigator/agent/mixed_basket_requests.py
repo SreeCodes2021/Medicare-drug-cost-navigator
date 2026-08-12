@@ -89,6 +89,17 @@ def _infer_default_dosage_trigger(message: str) -> bool:
     )
 
 
+def is_mixed_basket_price_injection(message: str) -> bool:
+    """Price-injection prompts naming insulin + oral drugs on a plan belong in mixed basket."""
+    if not _PRICE_INJECTION_RE.search(message):
+        return False
+    if not message_names_non_insulin_cost_drugs(message):
+        return False
+    if not _extract_products(message):
+        return False
+    return bool(_PLAN_RE.search(message))
+
+
 async def _default_oral_dosage(drug: str) -> str | None:
     options = await dosage_candidates_for_drug(drug)
     return options[0] if options else None

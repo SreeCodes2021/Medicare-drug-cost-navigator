@@ -1,7 +1,7 @@
 """Run fixed live-LLM scenario suites for quality-test sub-skills (no ad-hoc agent scripts).
 
 Suites live in `scripts/llm_scenario_suites/*.json` — mirrors the markdown catalogs in
-`.cursor/skills/quality-test/*/llm-scenarios.md`. Each scenario invokes the real
+`.cursor/skills/tests/T3/*/llm-scenarios.md`. Each scenario invokes the real
 `medicare-chat-invoke` CLI (never LLM_MOCK), optionally fetches batch/single estimate
 oracles, and applies lightweight automated checks. Full rubric grading still uses the
 printed JSON or `--output json` bundle.

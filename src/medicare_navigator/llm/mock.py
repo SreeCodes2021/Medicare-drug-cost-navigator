@@ -576,9 +576,142 @@ async def mock_chat_with_tools(
     return ChatWithToolsResult(content=content, usage=_mock_usage(content))
 
 
-def mock_structured_completion(
+_GREETING_RE = re.compile(
+    r"^(?:\s*(?:hey|hi|hello|yo|s+up|wa?s+up|what'?s\s*up)[!.,\s]*)+",
+    re.I,
+)
+# Deliberately narrow: fix a couple of common typos of ordinary words, never a specific
+# drug/plan name — mirrors the "fix obvious typos in ordinary English words" mediator rule
+# without ever guessing at what a garbled word "must have meant."
+_COMMON_WORD_TYPO_FIXES = {
+    "durg": "drug",
+    "medecine": "medicine",
+    "presciption": "prescription",
+}
+_DURATION_PHRASE_RE = re.compile(
+    # (?!\s*supply): "30 days supply"/"30day supply" is a fill size, not a date-range
+    # duration — never confuse the two, or every ordinary days-supply message would get a
+    # spurious duration window attached.
+    r"\b(?:next|for)?\s*(\d+)\s*(day|days|week|weeks|month|months|year|years)\b(?!\s*supply)",
+    re.I,
+)
+_UNIT_MAP = {
+    "day": "days", "days": "days",
+    "week": "weeks", "weeks": "weeks",
+    "month": "months", "months": "months",
+    "year": "years", "years": "years",
+}
+_MONTH_NAMES = {
+    name: i
+    for i, name in enumerate(
+        [
+            "january", "february", "march", "april", "may", "june", "july",
+            "august", "september", "october", "november", "december",
+        ],
+        start=1,
+    )
+}
+_MONTH_ABBR = {name[:3]: i for name, i in _MONTH_NAMES.items()}
+_EXPLICIT_DATE_RE = re.compile(
+    r"\b(?:starting|from|since)\s+"
+    r"([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?",
+    re.I,
+)
+
+
+def _month_number(token: str) -> int | None:
+    lower = token.lower()
+    return _MONTH_NAMES.get(lower) or _MONTH_ABBR.get(lower[:3])
+
+
+def _strip_greeting_and_fix_typos(message: str) -> str:
+    text = _GREETING_RE.sub("", message.strip()).strip()
+    if not text:
+        text = message.strip()
+    words = text.split(" ")
+    fixed = [
+        _COMMON_WORD_TYPO_FIXES.get(w.strip(".,!?").lower(), w) if w.strip(".,!?") else w
+        for w in words
+    ]
+    return " ".join(fixed)
+
+
+def _extract_duration_and_date(message: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "duration_count": None,
+        "duration_unit": None,
+        "anchor_today": False,
+        "explicit_month": None,
+        "explicit_day": None,
+        "explicit_year": None,
+    }
+    date_match = _EXPLICIT_DATE_RE.search(message)
+    if date_match:
+        month = _month_number(date_match.group(1))
+        if month is not None:
+            fields["explicit_month"] = month
+            fields["explicit_day"] = int(date_match.group(2))
+            if date_match.group(3):
+                fields["explicit_year"] = int(date_match.group(3))
+            return fields
+
+    duration_match = _DURATION_PHRASE_RE.search(message)
+    if duration_match:
+        fields["duration_count"] = int(duration_match.group(1))
+        fields["duration_unit"] = _UNIT_MAP.get(duration_match.group(2).lower())
+        fields["anchor_today"] = True
+    return fields
+
+
+async def mock_structured_completion(
     user_prompt: str,
     response_model: type[T],
-    agent_name: str = "agent",
-) -> T:
-    return response_model.model_validate({})
+    *,
+    model: str = "gpt-5.4-nano",
+) -> tuple[T, "TokenUsage"]:
+    """Light-touch, mostly-passthrough mock for the mediator's structured-output call.
+
+    Every existing golden/regression test message flows through this under LLM_MOCK=1 —
+    it must not aggressively rewrite input that was already fine (see
+    tests/test_mediator.py, which doubles as its fixture source). It never fabricates a
+    specific drug/plan/date that isn't in the message or in last_tool_call context, mirroring
+    the real mediator prompt's "never invent facts" rule.
+    """
+    from medicare_navigator.llm.types import TokenUsage
+
+    if "normalized_message" not in response_model.model_fields:
+        # Only the mediator uses structured_complete today; any other caller gets the old
+        # inert stub rather than behavior tailored to a schema this function doesn't know.
+        return response_model.model_validate({}), TokenUsage()
+
+    current_message = _current_message(user_prompt)
+    normalized = _strip_greeting_and_fix_typos(current_message)
+
+    has_own_signal = bool(
+        re.search(r"\b[A-Za-z]\d{4}-\d{3}\b", normalized) or re.search(r"\bmg\b", normalized, re.I)
+    )
+    if not has_own_signal:
+        # agent/mediator.py's prompt builder embeds a line like:
+        # "Last cost estimate call this session: drug_name=lantus, plan_key=H0270-001, ..."
+        context_line_match = re.search(
+            r"Last cost estimate call this session:\s*(.+)", user_prompt
+        )
+        if context_line_match:
+            context_line = context_line_match.group(1)
+            drug_match = re.search(r"drug_name=(\S+?)(?:,|$)", context_line)
+            plan_match = re.search(r"plan_key=(\S+?)(?:,|$)", context_line)
+            prefix_parts = [
+                drug_match.group(1) if drug_match else None,
+                f"on plan {plan_match.group(1)}" if plan_match else None,
+            ]
+            prefix = " ".join(p for p in prefix_parts if p)
+            if prefix:
+                normalized = f"{prefix}, {normalized}".strip()
+
+    fields = _extract_duration_and_date(current_message)
+    usage = TokenUsage(
+        input_tokens=max(len(user_prompt) // 4, 1),
+        output_tokens=max(len(normalized) // 4, 1),
+    )
+    result = response_model.model_validate({"normalized_message": normalized, **fields})
+    return result, usage

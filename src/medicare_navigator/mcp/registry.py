@@ -64,6 +64,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             dosage=args.get("dosage"),
             days_supply=int(args.get("days_supply", 30)),
             ytd_oop_spend=float(args.get("ytd_oop_spend", 0)),
+            budget_start_date=args.get("budget_start_date"),
         )
     elif name == "lookup_plan":
         result = lookup_plan(

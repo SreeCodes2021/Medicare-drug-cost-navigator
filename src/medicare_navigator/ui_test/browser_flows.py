@@ -17,6 +17,7 @@ from medicare_navigator.ui_test.checks import (
 #   UI_TEST_PLAN_PDP=S5921-400 UI_TEST_PLAN_MAPD=H0270-001
 PLAN_FL_PDP = os.environ.get("UI_TEST_PLAN_PDP", "S9999-001")
 PLAN_FL_MAPD = os.environ.get("UI_TEST_PLAN_MAPD", "H8888-001")
+TEST_STATE = os.environ.get("UI_TEST_STATE", "FL")
 DEFAULT_TIMEOUT_MS = 90_000
 
 
@@ -75,10 +76,50 @@ def _wait_for_plans(page, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
     raise TimeoutError("Plan list did not load within timeout")
 
 
-def _select_option_combobox(page, input_id: str, listbox_id: str, value: str) -> None:
+def _select_state_combobox(page, input_id: str, listbox_id: str, state: str) -> None:
     inp = page.locator(f"#{input_id}")
     inp.click()
-    inp.fill(value)
+    inp.fill(state)
+    page.wait_for_selector(f"#{listbox_id} .plan-option", timeout=DEFAULT_TIMEOUT_MS)
+    option = page.locator(f"#{listbox_id} .plan-option").filter(has_text=state)
+    option.first.click()
+
+
+def _select_option_combobox(
+    page,
+    input_id: str,
+    listbox_id: str,
+    value: str,
+    *,
+    filter_input_id: str | None = None,
+) -> None:
+    inp = page.locator(f"#{input_id}")
+    inp.click()
+    if filter_input_id:
+        page.locator(f"#{filter_input_id}").fill(value)
+        page.wait_for_timeout(350)
+    else:
+        inp.fill(value)
+    page.wait_for_selector(f"#{listbox_id} .plan-option", timeout=DEFAULT_TIMEOUT_MS)
+    option = page.locator(f"#{listbox_id} .plan-option").filter(has_text=value)
+    option.first.click()
+
+
+def _select_drug_combobox(
+    page, input_id: str, listbox_id: str, filter_input_id: str, value: str
+) -> None:
+    _select_option_combobox(
+        page,
+        input_id,
+        listbox_id,
+        value,
+        filter_input_id=filter_input_id,
+    )
+
+
+def _select_dosage_combobox(page, input_id: str, listbox_id: str, value: str) -> None:
+    inp = page.locator(f"#{input_id}")
+    inp.click()
     page.wait_for_selector(f"#{listbox_id} .plan-option", timeout=DEFAULT_TIMEOUT_MS)
     option = page.locator(f"#{listbox_id} .plan-option").filter(has_text=value)
     option.first.click()
@@ -162,9 +203,12 @@ def run_guided_single_flow(
 
         _wait_for_plans(page, timeout_ms)
         page.locator("#mode-tab-guided").click()
-        _select_option_combobox(page, "filter-drug-input", "filter-drug-listbox", "metformin")
-        _select_option_combobox(page, "filter-dosage-input", "filter-dosage-listbox", "500mg")
+        _select_state_combobox(page, "guided-state-input", "guided-state-listbox", TEST_STATE)
         _select_plan_combobox(page, "filter-plan-input", "filter-plan-listbox", PLAN_FL_PDP)
+        _select_drug_combobox(
+            page, "filter-drug-input", "filter-drug-listbox", "filter-drug-filter", "metformin"
+        )
+        _select_dosage_combobox(page, "filter-dosage-input", "filter-dosage-listbox", "500mg")
         page.locator("#guided-submit").click()
 
         page.wait_for_selector("#guided-chat-messages .message.assistant", timeout=timeout_ms)
@@ -203,13 +247,18 @@ def run_guided_multi_flow(
         _wait_for_plans(page, timeout_ms)
         page.locator("#mode-tab-guided").click()
         page.locator("#guided-mode-multidrug").click()
+        _select_state_combobox(page, "guided-state-input", "guided-state-listbox", TEST_STATE)
         _select_plan_combobox(page, "md-plan-input", "md-plan-listbox", PLAN_FL_PDP)
 
-        _select_option_combobox(page, "md-drug-input-1", "md-drug-listbox-1", "metformin")
-        _select_option_combobox(page, "md-dosage-input-1", "md-dosage-listbox-1", "500mg")
+        _select_drug_combobox(
+            page, "md-drug-input-1", "md-drug-listbox-1", "md-drug-filter-1", "metformin"
+        )
+        _select_dosage_combobox(page, "md-dosage-input-1", "md-dosage-listbox-1", "500mg")
         page.locator("#multidrug-add-row").click()
-        _select_option_combobox(page, "md-drug-input-2", "md-drug-listbox-2", "januvia")
-        _select_option_combobox(page, "md-dosage-input-2", "md-dosage-listbox-2", "100mg")
+        _select_drug_combobox(
+            page, "md-drug-input-2", "md-drug-listbox-2", "md-drug-filter-2", "januvia"
+        )
+        _select_dosage_combobox(page, "md-dosage-input-2", "md-dosage-listbox-2", "100mg")
         page.locator("#multidrug-submit").click()
 
         page.wait_for_selector("#guided-chat-messages .message.assistant", timeout=timeout_ms)
@@ -246,10 +295,13 @@ def run_guided_compare_plan_flow(
         _wait_for_plans(page, timeout_ms)
         page.locator("#mode-tab-guided").click()
         page.locator("#guided-mode-compareplans").click()
-        _select_option_combobox(page, "cp-drug-input", "cp-drug-listbox", "metformin")
-        _select_option_combobox(page, "cp-dosage-input", "cp-dosage-listbox", "500mg")
+        _select_state_combobox(page, "guided-state-input", "guided-state-listbox", TEST_STATE)
         _select_plan_combobox(page, "cp-plan-input-1", "cp-plan-listbox-1", PLAN_FL_PDP)
         _select_plan_combobox(page, "cp-plan-input-2", "cp-plan-listbox-2", PLAN_FL_MAPD)
+        _select_drug_combobox(
+            page, "cp-drug-input", "cp-drug-listbox", "cp-drug-filter", "metformin"
+        )
+        _select_dosage_combobox(page, "cp-dosage-input", "cp-dosage-listbox", "500mg")
         page.locator("#compareplans-submit").click()
 
         page.wait_for_selector("#guided-chat-messages .message.assistant", timeout=timeout_ms)

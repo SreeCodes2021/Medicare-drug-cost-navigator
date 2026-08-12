@@ -1,14 +1,17 @@
 # Medicare Drug Cost & Benefit-Transparency Navigator
 
-A Phase 6 system that computes the out-of-pocket cost of a specific prescription drug on a specific Medicare Part D / MA-PD plan from official CMS quarterly data — with every dollar figure traceable to a source record, and honest hard stops when the data can't support a reliable estimate. See [docs/business-solution.md](docs/business-solution.md) for the full problem statement and roadmap.
+A Phase 6 system that computes the out-of-pocket cost of one or more prescription drugs — including insulin and mixed insulin/oral baskets — on a specific Medicare Part D / MA-PD plan from official CMS quarterly data — with every dollar figure traceable to a source record, and honest hard stops when the data can't support a reliable estimate. See [docs/business-solution.md](docs/business-solution.md) for the full problem statement and roadmap.
 
 ## Features
 
 - **Chat-first UI** (plus a guided estimate form) with optional filters for drug, plan, dosage, and YTD spend
-- **`estimate_drug_cost`** — one consolidated, deterministic 8-step pipeline (plan resolution → drug normalization → formulary → days-supply mapping → benefit-phase → pricing/cost-share → output) that handles six named CMS data-correctness rules explicitly (see [docs/navigator-implementation-spec.md](docs/navigator-implementation-spec.md))
-- **Single Navigator agent** — one LLM tool-calling loop over 3 MCP tools (`estimate_drug_cost`, `lookup_plan`, `list_plans`); the LLM explains results in plain English but never computes a dollar amount itself
+- **`estimate_drug_cost`** — one consolidated, deterministic pipeline (plan resolution → drug normalization → formulary → days-supply mapping → benefit-phase → pricing/cost-share → output) that handles six named CMS data-correctness rules explicitly (see [docs/navigator-implementation-spec.md](docs/navigator-implementation-spec.md))
+- **Insulin priced via its own IRA $35-per-30-day statutory cap** (scaled for 60/90-day fills, no deductible phase, $0 once catastrophic coverage is reached) instead of a hard stop — see [docs/insulin-cost-estimation.md](docs/insulin-cost-estimation.md)
+- **Mixed baskets** — a single request naming both insulin and oral drugs on one plan is resolved as one estimate per drug plus a combined total
+- **Single Navigator agent** — one LLM tool-calling loop over MCP tools (`estimate_drug_cost`, `estimate_drug_cost_all_channels`, `lookup_plan`, `list_plans`, `get_part_d_benefit_params`); the LLM explains results in plain English but never computes a dollar amount itself
+- **Optional mediator pass** (`MEDIATOR_ENABLED`, off by default) — a second, independently-configured LLM call that runs before the main agent loop on every message, solely to normalize phrasing and extract date/duration components; it never routes requests, computes cost, or gives advice, always fails safe to the raw message, and never sees or affects the safety-gate refusal checks
 - **Mandatory guardrails** — every `$` figure in the LLM's answer is checked against the tool's `cost_low`/`cost_high`; safety-critical caveats are force-appended verbatim if the LLM drops or paraphrases them
-- **DuckDB** embedded store for CMS SPUF data (plans, formulary, pricing, cost-share) — no external database or vector store required
+- **DuckDB** embedded store for CMS SPUF data (plans, formulary, pricing, cost-share, insulin cost-share) — no external database or vector store required
 - **Fixed disclaimer banner** always visible on screen
 
 ## Quick start
@@ -79,12 +82,18 @@ medicare-eval
 | Variable | Description | Default |
 |---|---|---|
 | `LLM_PROVIDER` | `anthropic` or `openai` | `anthropic` |
-| `LLM_MODEL` | Model ID from `llm/models.py`'s catalog; overridable per chat turn | `gpt-5.4-nano` |
+| `LLM_MODEL` | Model ID; must exist in `config/deploy.yaml`'s `llm.models` catalog. Overridable per chat turn | empty → `config/deploy.yaml`'s `llm.default_model` (`gpt-5.6-luna` out of the box) |
 | `ANTHROPIC_API_KEY` | Claude API key | — |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `LLM_MOCK` | `1` for offline deterministic mock agent (no API key needed) | `0` |
+| `MEDIATOR_ENABLED` | `1` to run a second, upstream LLM call that normalizes phrasing and extracts dates before the main agent loop (off by default) | `0` |
+| `MEDIATOR_LLM_MODEL` | Model for the mediator call; independent of `LLM_MODEL` | empty → `config/deploy.yaml`'s `llm.mediator_default_model` (`gpt-5.6-luna` out of the box) |
 | `DUCKDB_PATH` | DuckDB file path | `./data/navigator.duckdb` |
 | `MAX_CHAT_TURNS` | Follow-up limit per session | `5` |
+
+**The model catalog itself is not hardcoded.** `llm/models.py` loads available models, pricing, and both defaults from [`config/deploy.yaml`](config/deploy.yaml)'s `llm:` section — adding, repricing, or re-defaulting a model is a YAML edit, not a code change. A small built-in catalog is used only if that file or section is missing/malformed.
+
+See [docs/technical-notes.md § Mediator](docs/technical-notes.md#125-mediator--a-second-upstream-llm-call-agentmediatorpy) for the full request lifecycle: the mediator only rewrites text and extracts dates (never routing, cost, or advice), runs after the safety gate and before extraction resolvers, is on a 4s timeout distinct from the main chat model's, and never raises — any failure falls back to the raw message for that turn. The full list of environment variables (including the rest of the mediator settings) is in [docs/developer-guide.md](docs/developer-guide.md#12-configuration).
 
 Without a configured API key **and** without `LLM_MOCK=1`, `/api/health` reports `degraded` (HTTP 503) and `/api/chat` returns HTTP 503 — there is no silent fallback. This is intentional: an earlier heuristic fallback that answered without a real LLM was removed so that every non-mock answer is either a real model response or an explicit, visible failure. See the full list of environment variables in [docs/developer-guide.md](docs/developer-guide.md#12-configuration).
 
@@ -98,12 +107,13 @@ Without a configured API key **and** without `LLM_MOCK=1`, `/api/health` reports
 | `GET` | `/api/plans` | Plan list (from SPUF-loaded DuckDB) |
 | `POST` | `/api/query` | Structured query |
 | `POST` | `/api/chat` | Conversational turn |
+| `POST` | `/api/estimate` | Structured, non-chat cost estimate (all pharmacy channels, no LLM call) |
 
 ## Project structure
 
 ```
 src/medicare_navigator/
-├── agent/          # Navigator agent (LLM tool-calling loop) + system prompt
+├── agent/          # Navigator agent (LLM tool-calling loop), mediator, insulin/mixed-basket resolvers, system prompt
 ├── api/             # FastAPI app and HTTP endpoints
 ├── eval/            # Offline evaluation suite (queries.jsonl, run_eval.py)
 ├── guardrails/      # Citation building + verbatim-caveat / dollar-traceability enforcement
@@ -129,6 +139,7 @@ Start at **[docs/README.md](docs/README.md)** for the full documentation index. 
 - [Developer Guide](docs/developer-guide.md) — stack, architecture, setup, testing, deployment, API reference
 - [Business Solution](docs/business-solution.md) — problem statement, capabilities, roadmap
 - [Navigator Implementation Spec](docs/navigator-implementation-spec.md) — the 8-step cost pipeline and the six CMS data-correctness rules it handles
+- [Insulin Cost Estimation](docs/insulin-cost-estimation.md) — the IRA $35/30-day statutory cap: CMS source docs, calculation methodology, implementation
 - [Phase 6 Implementation Plan](docs/phase-6-implementation-plan.md) — what shipped in the current release and why
 - [Deployment](docs/deployment.md) — Render, cron ingest, persistent disk
 - [Build Requirements](build-requirements.md) — long-term product vision (broader than the current release)

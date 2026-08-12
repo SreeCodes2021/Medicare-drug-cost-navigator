@@ -1,6 +1,6 @@
 # Medicare Drug Cost Navigator — Technical Notes
 
-Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope (see [navigator-implementation-spec.md](./navigator-implementation-spec.md) and [phase-6-implementation-plan.md](./phase-6-implementation-plan.md)).
+Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope plus the subsequent insulin-cap and mixed-basket work (see [navigator-implementation-spec.md](./navigator-implementation-spec.md), [phase-6-implementation-plan.md](./phase-6-implementation-plan.md), and [insulin-cost-estimation.md](./insulin-cost-estimation.md)).
 
 ---
 
@@ -31,18 +31,19 @@ Developer reference for running, developing, testing, and deploying the system. 
 
 ## 1. What this system does
 
-The Medicare Drug Cost Navigator estimates **out-of-pocket cost for a single drug fill on a single Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in the pre-deductible or initial-coverage phase.
+The Medicare Drug Cost Navigator estimates **out-of-pocket cost for one or more drug fills on a single Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in the pre-deductible, initial-coverage, insulin-cap, or catastrophic phase.
 
 | In scope | Out of scope |
 |---|---|
-| One drug, one plan, one fill (30/60/90-day) | Insulin, excluded-drug formulary |
+| One or more drugs, one plan, one fill each (30/60/90-day), including mixed insulin + oral baskets | Excluded-drug formulary |
 | Copay cost-sharing with dollar estimate, including catastrophic phase | Coinsurance dollar amounts (caveat only) |
-| Per-pharmacy-channel pricing (`estimate_drug_cost_all_channels`) | Un-ingested states |
-| AR, TX real CMS data (configurable) | LIS / Medicaid / enrollment advice |
-| Prior auth / step therapy as soft caveats | Policy Q&A, alternatives, cost trends (removed Phase 6) |
+| Insulin priced via its own IRA $35/30-day statutory cap (no deductible phase) — see [insulin-cost-estimation.md](./insulin-cost-estimation.md) | Un-ingested states |
+| Per-pharmacy-channel pricing (`estimate_drug_cost_all_channels`) | LIS / Medicaid / enrollment advice |
+| AR, TX real CMS data (configurable) | Policy Q&A, alternatives, cost trends (removed Phase 6) |
+| Prior auth / step therapy as soft caveats | |
 | Multi-NDC low–high cost range | |
 
-The LLM is a **conversational layer** over three deterministic MCP tools. Dollar figures always originate from `estimate_drug_cost`, not from model invention.
+The LLM is a **conversational layer** over deterministic MCP tools plus a stateless LLM mediator that only normalizes phrasing and extracts date/duration components (never computes cost or routes requests). Dollar figures always originate from `estimate_drug_cost` / `estimate_drug_cost_all_channels`, not from model invention.
 
 ---
 
@@ -129,9 +130,10 @@ flowchart TB
 
     subgraph Core
         Orch[OrchestratorRouter]
+        Med["Mediator — optional 2nd LLM call\n(MEDIATOR_ENABLED, rewrite + date extraction only)"]
         Nav[Navigator agent]
         LLM[LLM client — Anthropic / OpenAI / mock]
-        MCP[MCP registry — 3 tools]
+        MCP[MCP registry — 5 tools]
         Guard[Guardrails + citations]
         Session[Session manager — in-memory]
     end
@@ -150,6 +152,8 @@ flowchart TB
 
     Browser --> API
     Chat --> Orch --> Nav
+    Nav -.-> Med
+    Med -.-> LLM
     Nav --> LLM
     Nav --> MCP
     Nav --> Guard
@@ -168,6 +172,7 @@ flowchart TB
 
 - **Single agent, no multi-agent pipeline.** `orchestrator/router.py` delegates directly to `Navigator`.
 - **One consolidated cost tool.** The eight-step CMS pipeline runs inside `estimate_drug_cost` so hard-stop ordering cannot be skipped by LLM tool-call sequencing.
+- **Optional second LLM call ahead of the agent loop.** When `MEDIATOR_ENABLED=1`, every message is first passed through a stateless mediator (§12.5) that only normalizes phrasing and extracts date/duration components — never routing, never cost, never advice. It sits strictly after the raw-message safety gate and before the deterministic extraction resolvers, so it can be disabled without changing safety behavior. Off by default.
 - **API reads only DuckDB.** Ingestion is a separate scheduled job, not an app startup hook.
 - **Sessions are in-process memory.** Not persisted across restarts or horizontal scale-out.
 
@@ -183,9 +188,12 @@ sequenceDiagram
     participant API as FastAPI /api/chat
     participant S as SessionManager
     participant N as Navigator
-    participant L as LLM
+    participant Safe as Safety gate (raw msg)
+    participant Med as Mediator (optional)
+    participant R as Extraction resolvers
+    participant L as LLM (main loop)
     participant M as MCP registry
-    participant T as estimate_drug_cost
+    participant T as estimate_drug_cost family
     participant D as DuckDB
     participant G as Guardrails
 
@@ -197,27 +205,44 @@ sequenceDiagram
     alt limit reached
         N-->>API: status=limit_reached
     else continue
-        loop up to MAX_TOOL_ROUNDS (8)
-            N->>L: chat_with_tools(system, messages, tools)
-            alt tool_calls returned
-                L-->>N: tool_calls[]
-                N->>M: call_tool(name, args) per call
-                M->>T: estimate_drug_cost / lookup_plan / list_plans
-                T->>D: SQL queries
-                D-->>T: rows
-                T-->>M: ToolResult JSON
-                M-->>N: serialized artifact
-                N->>N: append tool results to messages
-            else text content
-                L-->>N: explanation text
+        N->>Safe: medical advice / enrollment / invalid input / conversation recall
+        Note over Safe: Always the raw message — never the mediator's rewrite
+        alt safety gate matched
+            Safe-->>N: canned response
+            N-->>API: QueryResponse (System/*)
+        else no match
+            opt MEDIATOR_ENABLED
+                N->>Med: rewrite_and_extract(message) — gpt-5.6-luna, 4s timeout, 1 retry
+                Med-->>N: normalized_message + date components, or None on any failure
+            end
+            N->>R: try mediator-normalized text (fallback: raw text if no match)
+            alt resolver matched (insulin/mixed-basket/dosage/oop/etc.)
+                R-->>N: response, no main LLM call needed
+                N-->>API: QueryResponse
+            else fall through to agent loop
+                loop up to MAX_TOOL_ROUNDS (8)
+                    N->>L: chat_with_tools(system, messages, tools)
+                    alt tool_calls returned
+                        L-->>N: tool_calls[]
+                        N->>M: call_tool(name, args) per call
+                        M->>T: estimate_drug_cost / estimate_drug_cost_all_channels / lookup_plan / list_plans / get_part_d_benefit_params
+                        T->>D: SQL queries
+                        D-->>T: rows
+                        T-->>M: ToolResult JSON
+                        M-->>N: serialized artifact
+                        N->>N: append tool results to messages
+                    else text content
+                        L-->>N: explanation text
+                    end
+                end
+                N->>G: build_citations + apply_guardrails
+                opt guardrail failure
+                    N->>L: retry rewrite prompt
+                end
+                N->>S: append_turn(user, assistant)
+                N-->>API: QueryResponse (mediator_llm_usage + total_llm_usage set if mediator ran)
             end
         end
-        N->>G: build_citations + apply_guardrails
-        opt guardrail failure
-            N->>L: retry rewrite prompt
-        end
-        N->>S: append_turn(user, assistant)
-        N-->>API: QueryResponse
     end
     API-->>U: ChatResponse {session_id, turn_count, response}
 ```
@@ -269,9 +294,11 @@ flowchart TD
     E -->|no| G[RxNorm rxcui.json exact match]
     G --> F
     F --> H{is_insulin?}
-    H -->|yes| I[Hard stop — insulin out of scope]
+    H -->|yes| I[Flag is_insulin — continue to formulary lookup]
     H -->|no| J[Continue formulary lookup]
 ```
+
+`is_insulin` is checked twice — once pre-RxNorm on the canonical name, once post-RxNorm on the resolved name + ingredient — but in both cases only sets a flag consumed later in the pipeline (§5); it no longer short-circuits resolution. See [insulin-cost-estimation.md](./insulin-cost-estimation.md) §6.
 
 ---
 
@@ -283,18 +310,25 @@ Implemented in `src/medicare_navigator/tools/estimate_drug_cost.py`. Full spec: 
 flowchart TD
     S1["1. Resolve plan"] --> S1a{plan_suppressed?}
     S1a -->|Y| STOP6["Hard stop — Bug 6"]
-    S1a -->|N| S2["2. normalize_drug + insulin check"]
-    S2 --> S2a{insulin?}
-    S2a -->|yes| STOPI["Hard stop — out of scope"]
-    S2a -->|no| S3["3. Formulary lookup by formulary_id + RxCUI"]
+    S1a -->|N| S2["2. normalize_drug + insulin flag (no short-circuit)"]
+    S2 --> S3["3. Formulary lookup by formulary_id + RxCUI"]
     S3 --> S3a{on formulary?}
     S3a -->|no| NC["not_covered"]
     S3a -->|yes| S3b["Bug 5b — quantity limit screen"]
     S3b --> S3c{any NDC survives?}
     S3c -->|no| QL["quantity_limit_blocked"]
     S3c -->|yes| S4["4. Map days_supply → CMS code"]
-    S4 --> S6["6. Phase: YTD vs deductible + DED_APPLIES_YN per tier"]
-    S6 --> S6a{phase per matched tier}
+    S4 --> S6{is_insulin?}
+    S6 -->|yes| SI1{insulin_beneficiary_cost row exists?}
+    SI1 -->|no| STOPI["Hard stop — insulin_out_of_scope (data gap)"]
+    SI1 -->|yes| SI2["Capped copay lookup — $35/30-day (scaled), ded_applies_yn=NA"]
+    SI2 --> SI3{YTD OOP ≥ annual cap?}
+    SI3 -->|yes| SI4["$0 — benefit_phase=catastrophic"]
+    SI3 -->|no| SI5["benefit_phase=insulin_cap"]
+    SI4 --> S8
+    SI5 --> S8
+    S6 -->|no| S6b["6b. Phase: YTD vs deductible + DED_APPLIES_YN per tier"]
+    S6b --> S6a{phase per matched tier}
     S6a -->|pre-deductible| S5["5. Price NDC — unit_cost × ceil(days/1)"]
     S6a -->|initial coverage or catastrophic| S7["7. beneficiary_cost lookup — copay only"]
     S5 --> S8["8. Assemble DrugCostEstimate low–high"]
@@ -349,7 +383,7 @@ class DrugCostEstimate(BaseModel):
     covered: bool
 ```
 
-`benefit_phase` may also be `"catastrophic"`. `estimate_drug_cost_all_channels` returns the richer `MultiChannelDrugCostEstimate` instead — same core fields plus `channels: dict[str, ChannelCost]` (one per CMS pharmacy channel), `tier`, `ded_applies_yn`, `effective_phase`, and annual-budget projection fields.
+`benefit_phase` may also be `"insulin_cap"` (insulin, pre-catastrophic) or `"catastrophic"`. `estimate_drug_cost_all_channels` returns the richer `MultiChannelDrugCostEstimate` instead — same core fields plus `channels: dict[str, ChannelCost]` (one per CMS pharmacy channel), `tier`, `ded_applies_yn` (`"NA"` for insulin), `effective_phase`, and annual-budget projection fields.
 
 ---
 
@@ -359,7 +393,7 @@ class DrugCostEstimate(BaseModel):
 Medicare-drug-cost-navigator/
 ├── src/medicare_navigator/
 │   ├── api/                 # FastAPI app, routes, static mount
-│   ├── agent/               # Navigator + system prompt
+│   ├── agent/               # Navigator, mediator, insulin/mixed-basket/dosage/oop resolvers, system prompt
 │   ├── orchestrator/        # Thin router → Navigator
 │   ├── mcp/                 # Tool schemas, registry, optional FastMCP server
 │   ├── tools/               # estimate_drug_cost, lookup_plan, normalize_drug, …
@@ -594,6 +628,13 @@ pharmacy_channel VARCHAR
 cost_type VARCHAR, copay DOUBLE, coinsurance_pct DOUBLE
 ded_applies_yn BOOLEAN, as_of_date VARCHAR
 
+-- insulin_beneficiary_cost (IRA $35/30-day cap; no coverage_level or cost_type — see insulin-cost-estimation.md §4)
+plan_key VARCHAR, segment_id VARCHAR, tier INTEGER  -- tier NULL for defined-standard plans
+days_supply_code INTEGER
+pharmacy_channel VARCHAR
+copay DOUBLE                 -- already-capped figure; coinsurance field discarded at ingest, never stored
+as_of_date VARCHAR
+
 -- drugs (RxNorm cache, optional)
 drug_name, rxcui, ndc, dosage, ingredient VARCHAR
 
@@ -691,8 +732,10 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
     "data_as_of": { "estimate": "2026-01-15" },
     "tools_invoked": ["estimate_drug_cost_all_channels"],
     "tool_statuses": { "estimate_drug_cost_all_channels": "ok" },
-    "response_source": "openai/gpt-5.4-nano",
-    "llm_usage": { "model": "gpt-5.4-nano", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 }
+    "response_source": "openai/gpt-5.6-luna",
+    "llm_usage": { "model": "gpt-5.6-luna", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 },
+    "mediator_llm_usage": { "model": "gpt-5.6-luna", "provider": "openai", "input_tokens": 180, "output_tokens": 40, "total_tokens": 220, "cost_usd": 0.000170 },
+    "total_llm_usage": { "input_tokens": 692, "output_tokens": 136, "total_tokens": 828, "cost_usd": 0.000260 }
   }
 }
 ```
@@ -719,11 +762,14 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 
 | Tool | LLM-visible | Implementation |
 |---|---|---|
-| `estimate_drug_cost` | Yes | `tools/estimate_drug_cost.py` (single pharmacy channel) |
+| `estimate_drug_cost` | Yes | `tools/estimate_drug_cost.py` (single pharmacy channel); insulin priced via the statutory $35/30-day cap instead of the tiered/deductible pipeline |
 | `estimate_drug_cost_all_channels` | Yes | `tools/estimate_drug_cost.py` — all four CMS channels in one call; default tool for general cost questions |
 | `lookup_plan` | Yes | `tools/lookup_plan.py` |
 | `list_plans` | Yes | `storage/repository.py` → `PlanRepository.list_plans` |
+| `get_part_d_benefit_params` | Yes | `tools/part_d_benefit_lookup.py` — annual Part D OOP cap and other statutory benefit parameters for a contract year; used to answer catastrophic-phase/cap questions without inventing figures |
 | `normalize_drug` | **No** | Called internally by `estimate_drug_cost` |
+
+Multi-product requests (e.g. an insulin + an oral drug in one message) are detected and resolved by the application layer (`agent/mixed_basket_requests.py`), which issues one `estimate_drug_cost`-family call per drug and combines the results — not a separate MCP tool.
 
 Tool JSON schemas: `mcp/schemas.py`. Dispatch: `mcp/registry.py`.
 
@@ -755,15 +801,17 @@ Requires `pip install mcp`.
 
 ### 12.1 Provider selection
 
-Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` — that setting only controls which provider's missing-key warning is logged at startup (`api/app.py` lifespan). The active model comes from `llm/models.py`'s `MODEL_CATALOG`:
+Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` — that setting only controls which provider's missing-key warning is logged at startup (`api/app.py` lifespan).
+
+**The model catalog is config-driven, not hardcoded.** `llm/models.py` loads it from `config/deploy.yaml`'s `llm:` section (`llm.models`, `llm.default_model`, `llm.mediator_default_model`) via `_load_deploy_llm_config()`, cached with `lru_cache`. Adding, repricing, or re-defaulting a model is a `config/deploy.yaml` edit, not a code change or redeploy of `llm/models.py` itself. A small hardcoded catalog inside `llm/models.py` is used **only** as a fallback if `config/deploy.yaml` is missing or its `llm:` section is malformed/empty — the same fail-safe pattern `tools/part_d_benefit_lookup.py` uses for `benefit_params.yaml`. Out of the box, `config/deploy.yaml` ships:
 
 | Model ID | Provider | SDK | Notes |
 |---|---|---|---|
-| `gpt-5.4-nano` | `openai` | `openai.AsyncOpenAI` | **Default** (`DEFAULT_LLM_MODEL`) |
-| `gpt-5.6-luna` | `openai` | `openai.AsyncOpenAI` | Reasoning model; forced `reasoning_effort="none"` so function tools work on chat/completions |
+| `gpt-5.6-luna` | `openai` | `openai.AsyncOpenAI` | **Default** (`llm.default_model` in `config/deploy.yaml`). Reasoning model; forced `reasoning_effort="none"` so function tools work on chat/completions. Also the mediator's default model (`llm.mediator_default_model`, §12.5) — the two are independent config keys that happen to point at the same model out of the box |
+| `gpt-5.4-nano` | `openai` | `openai.AsyncOpenAI` | Cheaper/faster alternative; select via `ChatRequest.model` or `LLM_MODEL` |
 | `claude-haiku-4-5-20251001` | `anthropic` | `anthropic.AsyncAnthropic` | |
 
-`GET /api/models` lists the catalog with a `configured` flag per provider's API key. `ChatRequest.model` lets a caller (or the frontend's `#model-select`) override the default per turn. Every response includes token usage and an estimated USD cost (`LlmUsage`, via `estimate_cost_usd()` using each model's `input_per_mtok`/`output_per_mtok`).
+`GET /api/models` lists the catalog with a `configured` flag per provider's API key. `ChatRequest.model` lets a caller (or the frontend's `#model-select`) override the default per turn — the ID must exist in the loaded catalog (`ValueError` otherwise, surfaced as an API error). `LLM_MODEL`/`MEDIATOR_LLM_MODEL` env vars, when set, must also name a model ID present in `config/deploy.yaml`; when unset, `Settings.llm_model`/`Settings.mediator_llm_model` default to empty string and the code falls back to the YAML's `default_model`/`mediator_default_model`. Every response includes token usage and an estimated USD cost (`LlmUsage`, via `estimate_cost_usd()` using each model's `input_per_mtok`/`output_per_mtok`, also sourced from `config/deploy.yaml`).
 
 ### 12.2 Reliability settings
 
@@ -785,6 +833,47 @@ Used by pytest (`conftest.py` sets `llm_mock_mode=True`). Parses user message fo
 |---|---|---|
 | `MAX_CHAT_TURNS` | `5` | Max user turns per session |
 | `SESSION_TTL_MINUTES` | `30` | In-memory session expiry |
+
+### 12.5 Mediator — a second, upstream LLM call (`agent/mediator.py`)
+
+The system is **not** a single-model pipeline once `MEDIATOR_ENABLED=1`. A second, independently-configured LLM call runs *before* the main Navigator tool-calling loop on every message that reaches it:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEDIATOR_ENABLED` | `false` | Feature flag — mediator is off by default; without it the pipeline behaves as a single-model system |
+| `MEDIATOR_LLM_MODEL` | empty → falls back to `config/deploy.yaml`'s `llm.mediator_default_model` (`gpt-5.6-luna` out of the box) | Independent from `LLM_MODEL`; can point at a different model than the main chat loop |
+| `MEDIATOR_TIMEOUT_SECONDS` | `4.0` | Deliberately tight — much shorter than `LLM_TIMEOUT_SECONDS` (60s), since a slow mediator should fail fast and fall back, not stall the turn |
+| `MEDIATOR_MAX_RETRIES` | `1` | Retry budget for the mediator's own structured-completion call |
+
+**What it does:** a single `structured_complete` call (Pydantic `MediatorRewrite`, not tool-calling) that (1) rewrites the raw message into normalized text — fixing typos, stripping filler, copying through anything already unambiguous — and (2) extracts date/duration components (`duration_count`, `duration_unit`, `anchor_today`, `explicit_month/day/year`) as raw fields only. It never computes a resulting date itself (that arithmetic stays in `agent/datetime_context.py`), never invents a drug/plan/dollar value, and never decides routing or answers the user.
+
+**Where it sits in `Navigator.run()` (`agent/navigator.py`):**
+
+```mermaid
+flowchart TD
+    MSG[Raw user message] --> GATE["Safety gate — medical advice / enrollment /\ninvalid input / conversation recall\n(always raw message, mediator never seen)"]
+    GATE -->|no match| PEND[Pending-clarification splice — deterministic, no LLM]
+    PEND --> MED{MEDIATOR_ENABLED?}
+    MED -->|no| RESOLVERS
+    MED -->|yes| CALL["rewrite_and_extract() — gpt-5.6-luna by default,\n4s timeout, 1 retry, never raises"]
+    CALL -->|success| NORM[normalized_message + date components]
+    CALL -->|any failure/timeout/empty output| RAW[Fall back to raw/spliced text unchanged]
+    NORM --> RESOLVERS["Extraction resolvers — try mediator-normalized\ntext first"]
+    RAW --> RESOLVERS
+    RESOLVERS -->|no match AND mediator rewrote the text| RETRY["Retry resolvers against pre-mediator text\n(free local regex pass, not another LLM call)"]
+    RESOLVERS -->|match| DONE[Return response]
+    RETRY -->|match| DONE
+    RETRY -->|no match| LOOP["Main agent loop — Navigator's own tool-calling\nLLM call (LLM_MODEL, default gpt-5.6-luna)"]
+    LOOP --> DONE
+```
+
+**Guarantees worth knowing:**
+
+- The safety gate (medical advice, enrollment, invalid input, conversation recall) runs **only on the raw message** — a refusal decision can never depend on how the mediator chose to rephrase input, even if the mediator is enabled and misbehaves.
+- `rewrite_and_extract()` is documented to **never raise** — every failure mode (timeout, API error, validation error, empty `normalized_message`) is caught inside it and degrades to "use the raw text for this turn," never a 500.
+- If the mediator rewrites the text but no extraction resolver matches the rewritten version, the resolvers are retried once more against the original pre-mediator text before falling through to the full agent loop — insurance against the mediator corrupting an otherwise-parseable message, at the cost of a local regex pass, not a second LLM call.
+- Mediator token usage is tracked separately (`mediator_llm_usage` on `ChatResponse`) and combined with the main call's usage into `total_llm_usage` (see §10.2) — a turn that uses the mediator makes **two** billed LLM calls, not one.
+- `llm/mock.py` provides a mock implementation of the mediator's structured-completion path for offline/pytest use, distinct from the mock chat-completion path used for the main loop.
 
 ---
 
@@ -1013,12 +1102,17 @@ medicare-ingest spuf --download --preserve-other
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_PROVIDER` | `anthropic` | Only affects the startup missing-key warning — does not select the active model/provider (see §12.1) |
-| `LLM_MODEL` | `gpt-5.4-nano` | Model ID from `llm/models.py`'s `MODEL_CATALOG`; overridable per chat turn via `ChatRequest.model` |
+| `LLM_MODEL` | empty → `config/deploy.yaml`'s `llm.default_model` (`gpt-5.6-luna` out of the box) | Model ID; must exist in `config/deploy.yaml`'s `llm.models` catalog. Overridable per chat turn via `ChatRequest.model` |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
-| `OPENAI_API_KEY` | — | OpenAI API key — required for the default model (`gpt-5.4-nano`) |
+| `OPENAI_API_KEY` | — | OpenAI API key — required for the default model (`gpt-5.6-luna` out of the box; see `config/deploy.yaml`) |
 | `LLM_MOCK` | `0` | `1` = offline mock LLM |
-| `LLM_TIMEOUT_SECONDS` | `60` | Request timeout |
-| `LLM_MAX_RETRIES` | `2` | Retry count |
+| `LLM_TIMEOUT_SECONDS` | `60` | Request timeout (main chat model) |
+| `LLM_MAX_RETRIES` | `2` | Retry count (main chat model) |
+| `MEDIATOR_ENABLED` | `0` | `1` = run the pre-processing mediator LLM call before the main loop (§12.5) |
+| `MEDIATOR_LLM_MODEL` | empty → `config/deploy.yaml`'s `llm.mediator_default_model` (`gpt-5.6-luna` out of the box) | Model for the mediator's structured-completion call; independent of `LLM_MODEL` |
+| `MEDIATOR_TIMEOUT_SECONDS` | `4.0` | Mediator request timeout — deliberately much shorter than `LLM_TIMEOUT_SECONDS` |
+| `MEDIATOR_MAX_RETRIES` | `1` | Retry count for the mediator's own call |
+| `DEFAULT_TIMEZONE` | `America/Chicago` | Timezone used for date/duration resolution when the client doesn't supply one |
 | `DATA_DIR` | `./data` | Data root |
 | `DUCKDB_PATH` | `./data/navigator.duckdb` | DuckDB file |
 | `PROJECT_ROOT` | auto-detected | Repo root (`/app` in Docker) |
@@ -1035,7 +1129,8 @@ medicare-ingest spuf --download --preserve-other
 | File | Purpose |
 |---|---|
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime via `INGEST_STATES` |
-| `config/deploy.yaml` | Cron schedule, Render plan hints |
+| `config/deploy.yaml` | Cron schedule, Render plan hints, **and the LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §12.1) |
+| `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
 | `config/disclaimer.txt` | Legal disclaimer served by API |
 
 ---
@@ -1077,6 +1172,7 @@ medicare-ingest spuf --source tests/fixtures/spuf -v  # if verbose flag exists; 
 | Document | Contents |
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | v1 product spec, pipeline, CMS bugs |
+| [insulin-cost-estimation.md](./insulin-cost-estimation.md) | IRA $35/30-day insulin cap: source docs, calculation methodology, implementation |
 | [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | What shipped in Phase 6 pivot |
 | [deployment.md](./deployment.md) | Render ops, cron, monitoring |
 | [data-sources.md](./data-sources.md) | External dataset URLs (some Phase 1 entries are historical) |
@@ -1085,4 +1181,4 @@ medicare-ingest spuf --source tests/fixtures/spuf -v  # if verbose flag exists; 
 
 ---
 
-*Last aligned with Phase 6 codebase. When README or older docs disagree with this file, treat this document and `navigator-implementation-spec.md` as authoritative for current behavior.*
+*Last aligned with the Phase 6 codebase plus the insulin-cap/mixed-basket work. When README or older docs disagree with this file, treat this document, `navigator-implementation-spec.md`, and `insulin-cost-estimation.md` as authoritative for current behavior.*

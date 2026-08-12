@@ -31,7 +31,7 @@ All pytest runs are offline — [`tests/conftest.py`](../../../tests/conftest.py
 | `tests/test_answer_consistency.py` | `pytest tests/test_answer_consistency.py -v` |
 | `tests/test_dosage_questions.py` | `pytest tests/test_dosage_questions.py -v` |
 | `tests/test_alternatives_questions.py` | `pytest tests/test_alternatives_questions.py -v` |
-| `.cursor/skills/quality-test/**` | `pytest tests/test_no_false_signals.py tests/test_answer_consistency.py tests/test_disclaimer_coverage.py tests/test_dosage_questions.py tests/test_alternatives_questions.py -v` |
+| `.cursor/skills/tests/T3/**` | `pytest tests/test_no_false_signals.py tests/test_answer_consistency.py tests/test_disclaimer_coverage.py tests/test_dosage_questions.py tests/test_alternatives_questions.py -v` |
 | `tests/test_smoke_fields.py` | `pytest tests/test_smoke_fields.py -v` |
 | `tests/**` (only test files staged) | `pytest <staged test paths> -v` |
 | `pyproject.toml`, `tests/conftest.py` | `pytest tests/ -v` |
@@ -40,7 +40,7 @@ All pytest runs are offline — [`tests/conftest.py`](../../../tests/conftest.py
 Rows are additive: multiple matches → union of commands, then dedupe.
 
 | `frontend/**` | `pytest tests/test_ui.py tests/test_smoke_fields.py tests/test_disclaimer_coverage.py tests/test_no_false_signals.py tests/test_answer_consistency.py -v` |
-| `.cursor/skills/numeric-accuracy/golden-cases.jsonl`, `scripts/run_golden_cases.py` | `python scripts/run_golden_cases.py` |
+| `.cursor/skills/tests/utils/numeric-accuracy/golden-cases.jsonl`, `scripts/run_golden_cases.py` | `python scripts/run_golden_cases.py` |
 
 ### Frontend only
 

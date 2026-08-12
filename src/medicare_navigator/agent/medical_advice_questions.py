@@ -18,6 +18,12 @@ _EFFICACY_COMPARE_RE = re.compile(
     r"\b(?:is|are)\s+.+\s+better\s+(?:than|for)\b",
     re.I,
 )
+_SAFETY_QUESTION_RE = re.compile(
+    r"\b(?:is|are)\s+.+\s+safe\b"
+    r"|\bsafe\s+(?:to\s+take|during|while|for)\b"
+    r"|\b(?:side\s+effects?|interact(?:s|ion)?|contraindicat\w*|pregnan\w*|breastfeed\w*|nursing)\b",
+    re.I,
+)
 _CONDITION_CONTEXT_RE = re.compile(
     r"\bfor\s+(?:my\s+)?(?:diabetes|blood\s+pressure|cholesterol|anxiety|depression|pain|heart|arthritis)\b",
     re.I,
@@ -45,6 +51,10 @@ def is_medical_advice_question(message: str) -> bool:
     if _SWITCH_FROM_TO_RE.search(message) and _mentions_common_drug(message):
         return True
     if _EFFICACY_COMPARE_RE.search(message) and (
+        _mentions_common_drug(message) or _CONDITION_CONTEXT_RE.search(message)
+    ):
+        return True
+    if _SAFETY_QUESTION_RE.search(message) and (
         _mentions_common_drug(message) or _CONDITION_CONTEXT_RE.search(message)
     ):
         return True
