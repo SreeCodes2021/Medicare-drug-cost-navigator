@@ -55,13 +55,21 @@ _ORAL_DRUG_STOPWORDS = frozenset(
     {
         "and",
         "cost",
+        "days",
         "each",
         "for",
+        "month",
+        "months",
+        "next",
         "plan",
         "supply",
         "total",
+        "week",
+        "weeks",
         "what",
         "with",
+        "year",
+        "years",
     }
 )
 _MET_OOP_AMOUNT_RE = re.compile(
@@ -70,6 +78,11 @@ _MET_OOP_AMOUNT_RE = re.compile(
 )
 _CATASTROPHIC_RE = re.compile(
     r"\b(?:catastrophic(?:\s+coverage)?|met\s+(?:my\s+)?(?:annual\s+)?(?:out[- ]of[- ]pocket|oop)\s+max(?:imum)?)\b",
+    re.I,
+)
+_REMAINING_YEAR_RE = re.compile(
+    r"\brest\s+of\s+(?:the\s+)?year\b|\bremainder\s+of\s+(?:the\s+)?year\b|"
+    r"\bremaining\s+(?:this\s+)?year\b|\bfor\s+the\s+rest\s+of\s+\d{4}\b",
     re.I,
 )
 _COMPARE_RE = re.compile(r"\bcompare|versus|vs\.?|between\b", re.I)
@@ -97,6 +110,7 @@ INSULIN_INTENT_POLICY_CATASTROPHIC = "policy_catastrophic"
 INSULIN_INTENT_TIER_LOOKUP = "tier_lookup"
 INSULIN_INTENT_CHANNEL_CONTRAST = "channel_contrast"
 INSULIN_INTENT_MULTI_PLAN_COMPARE = "multi_plan_compare"
+INSULIN_INTENT_REMAINING_YEAR = "remaining_year"
 
 
 @dataclass(frozen=True)
@@ -198,6 +212,8 @@ def _resolve_intent(
         return INSULIN_INTENT_POLICY_IRA
     if products and _POLICY_CEILING_RE.search(message):
         return INSULIN_INTENT_POLICY_CEILING
+    if _REMAINING_YEAR_RE.search(message):
+        return INSULIN_INTENT_REMAINING_YEAR
     return INSULIN_INTENT_COST
 
 
@@ -205,12 +221,20 @@ def mentioned_oral_drugs_with_strength(message: str) -> list[tuple[str, str]]:
     """Return (drug, dosage) pairs for explicit oral strengths, excluding insulin products."""
     insulin_products = set(_extract_products(message))
     found: dict[str, str] = {}
+    paired_strength_spans: list[tuple[int, int]] = []
     for match in _ORAL_STRENGTH_DRUG_RE.finditer(message):
         drug = match.group(1).lower()
         if drug in _ORAL_DRUG_STOPWORDS or drug in insulin_products:
             continue
         found.setdefault(drug, match.group(2).replace(" ", ""))
+        paired_strength_spans.append(match.span(2))
     for match in _ORAL_STRENGTH_DRUG_REVERSED_RE.finditer(message):
+        strength_span = match.span(1)
+        if any(
+            start <= strength_span[0] and strength_span[1] <= end
+            for start, end in paired_strength_spans
+        ):
+            continue
         drug = match.group(2).lower()
         if drug in _ORAL_DRUG_STOPWORDS or drug in insulin_products:
             continue
@@ -402,6 +426,24 @@ def format_insulin_estimate_sentence(
             return (
                 f"For a {days_supply}-day {product_title} fill on plan {plan_key}, "
                 f"{joined}."
+            )
+
+    if intent == INSULIN_INTENT_REMAINING_YEAR:
+        remaining_low = data.get("remaining_year_budget_cost_low")
+        remaining_high = data.get("remaining_year_budget_cost_high")
+        remaining_fills = data.get("remaining_year_fills")
+        remaining_days = data.get("remaining_year_days")
+        remaining_amount = _format_cost_amount(remaining_low, remaining_high)
+        if (
+            remaining_amount is not None
+            and remaining_fills is not None
+            and remaining_days is not None
+        ):
+            fill_word = "fill" if remaining_fills == 1 else "fills"
+            return (
+                f"{product_title} is estimated at {remaining_amount} for the remaining "
+                f"{remaining_days} days of the contract year on plan {plan_key} "
+                f"({remaining_fills} {fill_word} at a {days_supply}-day supply each)."
             )
 
     if channels:

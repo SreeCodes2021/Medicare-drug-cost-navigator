@@ -25,6 +25,7 @@ class SessionManager:
             "parsed_query": None,
             "tool_artifacts": {},
             "last_tool_calls": [],
+            "pending_clarification": None,
             "chat_history": [],
             "expires_at": datetime.utcnow() + timedelta(minutes=settings.session_ttl_minutes),
         }
@@ -54,6 +55,9 @@ class SessionManager:
 
     def set_last_tool_calls(self, session: dict, calls: list[dict]) -> None:
         session["last_tool_calls"] = calls
+
+    def set_pending_clarification(self, session: dict, payload: dict | None) -> None:
+        session["pending_clarification"] = payload
 
 
 session_manager = SessionManager()

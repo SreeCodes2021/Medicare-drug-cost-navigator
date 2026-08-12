@@ -10,8 +10,10 @@ a real cost estimate.
 
 import pytest
 
+from medicare_navigator.agent.mediator import MediatorRewrite
 from medicare_navigator.agent.navigator import navigator
 from medicare_navigator.llm.client import llm_client
+from medicare_navigator.llm.mock import mock_structured_completion
 from tests.spuf_fixture import PLAN_FL_PDP
 
 
@@ -37,3 +39,29 @@ async def test_mock_llm_openai_message_format_produces_real_cost_estimate(openai
     assert "estimate_drug_cost_all_channels" in response.tools_invoked
     assert response.estimate.cost_low == pytest.approx(3.00)
     assert response.estimate.cost_high == pytest.approx(15.00)
+
+
+@pytest.mark.asyncio
+async def test_mock_structured_completion_is_real_for_mediator_schema():
+    """Regression: mock_structured_completion used to be dead code that ignored its prompt
+    and always returned response_model.model_validate({}) — an empty, all-defaults object.
+    It must now actually read the prompt for any schema shaped like MediatorRewrite."""
+    result, usage = await mock_structured_completion(
+        "Current user message: Lantus 30day supply H0270-001",
+        MediatorRewrite,
+    )
+    assert result.normalized_message != ""
+    assert "Lantus" in result.normalized_message
+    assert usage.total_tokens > 0
+
+
+@pytest.mark.asyncio
+async def test_mock_structured_completion_falls_back_for_unknown_schema():
+    from pydantic import BaseModel
+
+    class _Unrelated(BaseModel):
+        foo: str = "bar"
+
+    result, usage = await mock_structured_completion("anything", _Unrelated)
+    assert result.foo == "bar"
+    assert usage.total_tokens == 0

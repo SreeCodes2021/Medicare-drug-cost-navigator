@@ -155,8 +155,9 @@ flowchart TB
 
     subgraph AgentLayer["Agent Layer"]
         Router["Orchestrator Router"]
+        Med["Mediator — optional, off by default:\nrewrites phrasing, extracts dates only"]
         Nav["Navigator Agent"]
-        LLM["Anthropic Claude / OpenAI / LLM_MOCK"]
+        LLM["OpenAI (default) / Anthropic / LLM_MOCK"]
     end
 
     subgraph ToolLayer["Deterministic Tools — MCP Registry"]
@@ -164,6 +165,7 @@ flowchart TB
         T1b["estimate_drug_cost_all_channels"]
         T2["lookup_plan"]
         T3["list_plans"]
+        T4["get_part_d_benefit_params"]
     end
 
     subgraph GuardrailLayer["Trust Layer"]
@@ -183,8 +185,10 @@ flowchart TB
         CMS["CMS SPUF quarterly ZIP"]
     end
 
-    UI1 & UI2 --> Chat --> Router --> Nav --> LLM
-    Nav --> T1 & T1b & T2 & T3 --> DuckDB
+    UI1 & UI2 --> Chat --> Router --> Nav
+    Nav -.-> Med -.-> LLM
+    Nav --> LLM
+    Nav --> T1 & T1b & T2 & T3 & T4 --> DuckDB
     T1 --> RxNorm
     T1b --> RxNorm
     Nav --> GR
@@ -259,7 +263,8 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 | `navigator.py` | LLM tool-calling loop; invokes MCP tools; extracts `DrugCostEstimate` |
 | `prompts.py` | Enforces scope, verbatim caveats, no plan-switching advice |
 | Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `enrollment_questions.py`, `invalid_input_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, missing dosage, enrollment asks, malformed numeric input) and either answer directly or call the estimate tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior |
-| LLM client | Anthropic Claude (default) or OpenAI; `LLM_MOCK=1` for offline use |
+| `mediator.py` | Optional pre-processing step (off unless `MEDIATOR_ENABLED=1`) that runs a second, separate LLM call before the routers/agent loop to normalize phrasing and pull out date/duration wording (e.g. "the next 3 months") into structured fields — it never answers, routes, or prices anything, and safety refusal checks always see the user's original wording regardless of whether this step is on |
+| LLM client | OpenAI (default model) or Anthropic Claude; `LLM_MOCK=1` for offline use. Which models are available, their pricing, and the default are configuration (`config/deploy.yaml`), not application code — switching or repricing a model doesn't require a code change |
 
 **Constraint:** The language model never computes dollar amounts. It relays only `cost_low` / `cost_high` from `estimate_drug_cost`.
 

@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_model: str = "gpt-5.6-luna"
+    # Empty = fall back to llm/models.py's default_llm_model(), sourced from
+    # config/deploy.yaml's `llm.default_model` (not hardcoded here).
+    llm_model: str = ""
 
     data_dir: Path = Path("./data")
     duckdb_path: Path = Path("./data/navigator.duckdb")
@@ -60,6 +62,15 @@ class Settings(BaseSettings):
     llm_mock_mode: bool = Field(default=False, validation_alias="LLM_MOCK")
     llm_timeout_seconds: float = Field(default=60.0, validation_alias="LLM_TIMEOUT_SECONDS")
     llm_max_retries: int = Field(default=2, validation_alias="LLM_MAX_RETRIES")
+
+    mediator_enabled: bool = Field(default=False, validation_alias="MEDIATOR_ENABLED")
+    # Empty = fall back to llm/models.py's default_mediator_llm_model(), sourced from
+    # config/deploy.yaml's `llm.mediator_default_model` (not hardcoded here).
+    mediator_llm_model: str = Field(default="", validation_alias="MEDIATOR_LLM_MODEL")
+    mediator_timeout_seconds: float = Field(
+        default=4.0, validation_alias="MEDIATOR_TIMEOUT_SECONDS"
+    )
+    mediator_max_retries: int = Field(default=1, validation_alias="MEDIATOR_MAX_RETRIES")
 
     # Comma-separated state codes; intersected with pdp_region_codes in ingest_filters.yaml.
     # Overrides yaml `states` default. Unset = use yaml defaults (local dev).

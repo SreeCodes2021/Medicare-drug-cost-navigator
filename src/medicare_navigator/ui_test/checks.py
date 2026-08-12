@@ -143,6 +143,8 @@ CHAT_RESPONSE_UI_FIELDS = [
     "tool_statuses",
     "response_source",
     "llm_usage",
+    "mediator_llm_usage",
+    "total_llm_usage",
     "drug_name",
     "rxcui",
     "channel_estimate",

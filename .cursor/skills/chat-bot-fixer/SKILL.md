@@ -140,4 +140,4 @@ After a **PASS**, end with a short summary of the full loop (starting verdict �
 - **Never fabricate grades** — only score real `medicare-chat-invoke send` output.
 - **Never skip re-grade** — implementing without verification is not done.
 - **Do not commit or push** unless the user explicitly asks (use `/commit-push` if they want that).
-- **chat-QA owns the rubric** — when grading, follow [chat-QA/SKILL.md](../chat-QA/SKILL.md) exactly; this skill owns implementation and the loop.
+- **chat-QA owns the rubric** — when grading, follow [chat-QA/SKILL.md](../tests/utils/chat-QA/SKILL.md) exactly; this skill owns implementation and the loop.

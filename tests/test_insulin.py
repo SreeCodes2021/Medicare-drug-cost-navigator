@@ -9,8 +9,10 @@ from medicare_navigator.agent.insulin_requests import (
     INSULIN_INTENT_POLICY_CEILING,
     INSULIN_INTENT_POLICY_DEDUCTIBLE,
     INSULIN_INTENT_POLICY_IRA,
+    INSULIN_INTENT_REMAINING_YEAR,
     INSULIN_INTENT_TIER_LOOKUP,
     _extract_ytd_oop_spend,
+    format_insulin_estimate_sentence,
     message_names_non_insulin_cost_drugs,
     resolve_insulin_request,
 )
@@ -116,6 +118,32 @@ def test_insulin_request_recognizes_preferred_mail_order_channel():
     assert request.pharmacy_channel == "preferred_mail"
 
 
+def test_format_insulin_estimate_sentence_names_pinned_channel_in_prose():
+    """Regression: navigator.py used to omit pharmacy_channel when calling the
+    formatter, so a single-channel-pinned ask (e.g. "preferred retail cost for
+    lantus") rendered the correct dollar amount but silently dropped the channel
+    label from the prose."""
+    artifact = {
+        "status": "ok",
+        "data": {
+            "cost_low": 35.0,
+            "cost_high": 35.0,
+            "channels": {
+                "preferred_retail": {"cost_low": 35.0, "cost_high": 35.0},
+                "preferred_mail": {"cost_low": 30.0, "cost_high": 30.0},
+            },
+        },
+    }
+    sentence = format_insulin_estimate_sentence(
+        product="lantus",
+        plan_key="S9999-001",
+        days_supply=30,
+        artifact=artifact,
+        pharmacy_channel="preferred_retail",
+    )
+    assert "preferred retail" in sentence.lower()
+
+
 def test_insulin_request_detects_named_product_policy_ceiling():
     request = resolve_insulin_request(
         "Is insulin always $35 per month on plan S9999-001 for Lantus?"
@@ -191,3 +219,73 @@ def test_insulin_request_detects_multi_plan_compare():
     assert request is not None
     assert request.intent == INSULIN_INTENT_MULTI_PLAN_COMPARE
     assert request.plan_keys == ("S9999-001", "H8888-001")
+
+
+def test_insulin_request_detects_remaining_year_intent():
+    request = resolve_insulin_request(
+        "What will Lantus cost me for the rest of the year on plan S9999-001?"
+    )
+    assert request is not None
+    assert request.intent == INSULIN_INTENT_REMAINING_YEAR
+
+
+def test_insulin_request_detects_remainder_of_year_wording():
+    request = resolve_insulin_request(
+        "How much for Humalog on S9999-001 for the remainder of the year?"
+    )
+    assert request is not None
+    assert request.intent == INSULIN_INTENT_REMAINING_YEAR
+
+
+def test_format_insulin_estimate_sentence_uses_remaining_year_total_not_single_fill():
+    """Regression for the $175-vs-$35 bug: the tool already computes the remaining-year
+    total via _apply_annual_budget_fields, but the formatter used to only ever render the
+    single-fill cost_low/cost_high, silently answering a "rest of year" question with one
+    month's price."""
+    artifact = {
+        "status": "ok",
+        "data": {
+            "cost_low": 35.0,
+            "cost_high": 35.0,
+            "channels": {
+                "preferred_retail": {"cost_low": 35.0, "cost_high": 35.0},
+            },
+            "remaining_year_budget_cost_low": 175.0,
+            "remaining_year_budget_cost_high": 175.0,
+            "remaining_year_fills": 5,
+            "remaining_year_days": 150,
+        },
+    }
+    sentence = format_insulin_estimate_sentence(
+        product="lantus",
+        plan_key="S9999-001",
+        days_supply=30,
+        artifact=artifact,
+        intent=INSULIN_INTENT_REMAINING_YEAR,
+    )
+    assert "$175.00" in sentence
+    assert "5 fills" in sentence
+    assert "$35.00" not in sentence
+
+
+def test_format_insulin_estimate_sentence_falls_back_when_remaining_year_data_missing():
+    """Single-channel estimate_drug_cost calls don't compute remaining_year_* fields —
+    the formatter must fall back to the normal single-fill sentence, not error or blank out."""
+    artifact = {
+        "status": "ok",
+        "data": {
+            "cost_low": 35.0,
+            "cost_high": 35.0,
+            "channels": {
+                "preferred_retail": {"cost_low": 35.0, "cost_high": 35.0},
+            },
+        },
+    }
+    sentence = format_insulin_estimate_sentence(
+        product="lantus",
+        plan_key="S9999-001",
+        days_supply=30,
+        artifact=artifact,
+        intent=INSULIN_INTENT_REMAINING_YEAR,
+    )
+    assert "$35.00" in sentence

@@ -135,12 +135,16 @@ No PostgreSQL, Redis, or vector store in Phase 6. Chroma and policy RAG were rem
 | Component | Package | Role |
 |---|---|---|
 | **Anthropic** | `anthropic>=0.39` | Used when the resolved model's provider is `anthropic` (e.g. `claude-haiku-4-5-20251001`) |
-| **OpenAI** | `openai>=1.54` | Used when the resolved model's provider is `openai` — this is also the **default model**: `DEFAULT_LLM_MODEL = "gpt-5.4-nano"` (`llm/models.py`) |
-| **Mock mode** | In-repo `llm/mock.py` | Offline deterministic agent when `LLM_MOCK=1` |
+| **OpenAI** | `openai>=1.54` | Used when the resolved model's provider is `openai` — this is also the **default model** out of the box: `gpt-5.6-luna`, a reasoning model forced to `reasoning_effort="none"` so function tools work on chat/completions. The default and the whole catalog are config, not code — see below |
+| **Mock mode** | In-repo `llm/mock.py` | Offline deterministic agent when `LLM_MOCK=1`; also provides a mock for the mediator's structured-completion call |
 
-Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` (that setting only affects which provider's missing-key warning is logged at startup — see `api/app.py` lifespan). `llm/models.py`'s `MODEL_CATALOG` (`gpt-5.4-nano`, `gpt-5.6-luna`, `claude-haiku-4-5-20251001`) maps each model ID to its provider and per-token pricing; `GET /api/models` lists all of them with a `configured` flag per provider's API key, and the frontend's model selector (`#model-select`) lets a user override the default per chat turn (`ChatRequest.model`).
+Provider is resolved **per model**, not from `LLM_PROVIDER`/`settings.llm_provider` (that setting only affects which provider's missing-key warning is logged at startup — see `api/app.py` lifespan).
+
+**The model catalog lives in `config/deploy.yaml`, not in Python.** `llm/models.py` reads `config/deploy.yaml`'s `llm:` section (`llm.models` — id/label/provider/pricing/reasoning-effort per model — plus `llm.default_model` and `llm.mediator_default_model`) and caches it with `lru_cache`. Adding a model, repricing one, or changing the default is a one-line YAML edit; it does not require touching `llm/models.py` or redeploying code separately from config. If `config/deploy.yaml` is missing or its `llm:` section is absent/malformed, `llm/models.py` falls back to a small hardcoded catalog (`gpt-5.6-luna` default, `gpt-5.4-nano`, `claude-haiku-4-5-20251001`) so a bad config file can't take the app down — the same fail-safe pattern used for `config/benefit_params.yaml` (§6). `GET /api/models` lists whichever catalog is actually active with a `configured` flag per provider's API key, and the frontend's model selector (`#model-select`) lets a user override the default per chat turn (`ChatRequest.model`) — the ID must exist in the catalog or the call fails with a clear error rather than silently substituting a different model.
 
 The `mcp` package (`mcp>=1.2`) is installed for schema/tool patterns; tool dispatch is implemented in `mcp/registry.py` (not a separate MCP server process).
+
+**Two LLM calls, not one, when the mediator is on.** `MEDIATOR_ENABLED` (default off) turns on a second, independently-configured LLM call (`agent/mediator.py`, model from `MEDIATOR_LLM_MODEL` or — when unset — `config/deploy.yaml`'s `llm.mediator_default_model`, `gpt-5.6-luna` out of the box) that runs before the main Navigator tool-calling loop on every message. It only rewrites phrasing and extracts date/duration components via a structured (non-tool-calling) completion — never routing, cost, or advice — runs on a much tighter timeout (`MEDIATOR_TIMEOUT_SECONDS`, default `4.0s`, vs. `LLM_TIMEOUT_SECONDS`'s `60s`), and is documented to never raise: any failure (timeout, API error, empty output) falls back to the raw message for that turn. It sits strictly after the raw-message safety gate (medical advice / enrollment / invalid input / conversation-recall checks always see the unmediated message) and before the deterministic extraction resolvers. See [technical-notes.md § Mediator](./technical-notes.md#125-mediator--a-second-upstream-llm-call-agentmediatorpy) for the full lifecycle diagram. Its token usage is tracked separately (`ChatResponse.mediator_llm_usage`) and summed into `total_llm_usage` alongside the main call's usage.
 
 ### 2.5 HTTP client and config
 
@@ -192,8 +196,9 @@ flowchart BT
     end
     subgraph Application
         API[FastAPI]
+        Med["Mediator (optional 2nd LLM call)"]
         Agent[Navigator + MCP]
-        Tools[estimate_drug_cost · lookup_plan]
+        Tools[estimate_drug_cost · insulin_cost · lookup_plan]
     end
     subgraph Data
         DDB[DuckDB]
@@ -210,6 +215,8 @@ flowchart BT
 
     FE --> API
     API --> Agent
+    Agent -.-> Med
+    Med -.-> LLM
     Agent --> LLM
     Agent --> Tools
     Tools --> DDB
@@ -233,9 +240,12 @@ sequenceDiagram
     participant API as FastAPI
     participant O as OrchestratorRouter
     participant N as Navigator
-    participant L as LLM
+    participant Safe as Safety gate (raw msg)
+    participant Med as Mediator (optional)
+    participant R as Extraction resolvers
+    participant L as LLM (main loop)
     participant M as MCP registry
-    participant T as estimate_drug_cost
+    participant T as estimate_drug_cost family
     participant DB as DuckDB
     participant G as Guardrails
 
@@ -243,26 +253,41 @@ sequenceDiagram
     API->>O: orchestrator.run()
     O->>N: navigator.run()
     N->>N: session check (max turns)
-    loop max_tool_rounds (default 8)
-        N->>L: chat_with_tools(system, messages, tools)
-        alt tool_calls returned
-            L-->>N: tool_calls[]
-            N->>M: call_tool(name, args)
-            M->>T: estimate_drug_cost(...)
-            T->>DB: SQL lookups
-            T-->>M: ToolResult JSON
-            M-->>N: serialized artifact
-            N->>N: append tool results to messages
-        else text response
-            L-->>N: explanation text
+    N->>Safe: medical advice / enrollment / invalid input / conversation recall
+    Note over Safe: Always the raw message, even when the mediator is enabled
+    alt safety gate matched
+        Safe-->>N: canned response
+    else no match
+        opt MEDIATOR_ENABLED
+            N->>Med: rewrite_and_extract() — separate model/timeout, never raises
+            Med-->>N: normalized text + date components, or None on failure
+        end
+        N->>R: try mediator-normalized text, then raw text if no match
+        alt resolver matched (e.g. insulin, mixed-basket, dosage, OOP)
+            R-->>N: response — no main LLM call needed
+        else fall through
+            loop max_tool_rounds (default 8)
+                N->>L: chat_with_tools(system, messages, tools)
+                alt tool_calls returned
+                    L-->>N: tool_calls[]
+                    N->>M: call_tool(name, args)
+                    M->>T: estimate_drug_cost / estimate_drug_cost_all_channels / get_part_d_benefit_params / ...
+                    T->>DB: SQL lookups
+                    T-->>M: ToolResult JSON
+                    M-->>N: serialized artifact
+                    N->>N: append tool results to messages
+                else text response
+                    L-->>N: explanation text
+                end
+            end
+            N->>G: build_citations + apply_guardrails
+            opt guardrail failure
+                N->>L: retry with validation errors
+            end
         end
     end
-    N->>G: build_citations + apply_guardrails
-    opt guardrail failure
-        N->>L: retry with validation errors
-    end
     N->>N: derive status, log query
-    N-->>API: QueryResponse
+    N-->>API: QueryResponse (mediator_llm_usage + total_llm_usage set if mediator ran)
     API-->>U: ChatResponse { session_id, turn_count, response }
 ```
 
@@ -699,9 +724,9 @@ class DrugCostEstimate(BaseModel):
 |---|---|---|
 | Timeout | 60s | `LLM_TIMEOUT_SECONDS` |
 | Retries | 2 | `LLM_MAX_RETRIES` |
-| Model | `gpt-5.4-nano` (`DEFAULT_LLM_MODEL` in `llm/models.py`) | `LLM_MODEL`, or per-request `ChatRequest.model` |
+| Model | `gpt-5.6-luna` out of the box (`llm.default_model` in `config/deploy.yaml`) | `LLM_MODEL`, or per-request `ChatRequest.model` |
 
-Every response also carries token usage and an estimated USD cost (`LlmUsage`, via `llm/models.py::estimate_cost_usd` using each model's `input_per_mtok`/`output_per_mtok`); the frontend shows a running session total.
+Every response also carries token usage and an estimated USD cost (`LlmUsage`, via `llm/models.py::estimate_cost_usd` using each model's `input_per_mtok`/`output_per_mtok`); the frontend shows a running session total. When the mediator is enabled it makes its own separate call with its own timeout/retry settings (§2.4) — `LLM_TIMEOUT_SECONDS`/`LLM_MAX_RETRIES` above govern only the main chat model.
 
 ### 7.4 Health check behavior
 
@@ -802,12 +827,16 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
     "data_as_of": { "estimate": "2026-01-15" },
     "tools_invoked": ["estimate_drug_cost_all_channels"],
     "tool_statuses": { "estimate_drug_cost_all_channels": "ok" },
-    "response_source": "openai/gpt-5.4-nano",
+    "response_source": "openai/gpt-5.6-luna",
     "channel_estimate": { "channels": { "preferred_retail": { "cost_low": 5.0, "cost_high": 5.0 }, "...": "..." } },
-    "llm_usage": { "model": "gpt-5.4-nano", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 }
+    "llm_usage": { "model": "gpt-5.6-luna", "provider": "openai", "input_tokens": 512, "output_tokens": 96, "total_tokens": 608, "cost_usd": 0.000089 },
+    "mediator_llm_usage": { "model": "gpt-5.6-luna", "provider": "openai", "input_tokens": 180, "output_tokens": 40, "total_tokens": 220, "cost_usd": 0.000170 },
+    "total_llm_usage": { "input_tokens": 692, "output_tokens": 136, "total_tokens": 828, "cost_usd": 0.000260 }
   }
 }
 ```
+
+`mediator_llm_usage` / `total_llm_usage` are only populated when `MEDIATOR_ENABLED=1` and the mediator actually ran for that turn.
 
 ### Error codes
 
@@ -870,9 +899,16 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 |---|---|---|---|
 | `LLM_PROVIDER` | No | `anthropic` | Only affects which provider's missing-key warning is logged at startup — does **not** select the active model/provider (see §2.4) |
 | `ANTHROPIC_API_KEY` | Prod yes* | — | Claude API key |
-| `OPENAI_API_KEY` | Prod yes* | — | OpenAI key — required for the default model (`gpt-5.4-nano`) |
-| `LLM_MODEL` | No | `gpt-5.4-nano` | Model identifier from `llm/models.py`'s `MODEL_CATALOG`; overridable per chat turn via `ChatRequest.model` |
+| `OPENAI_API_KEY` | Prod yes* | — | OpenAI key — required for the default model (`gpt-5.6-luna` out of the box; see `config/deploy.yaml`) |
+| `LLM_MODEL` | No | empty → `config/deploy.yaml`'s `llm.default_model` | Model identifier; must exist in `config/deploy.yaml`'s `llm.models` catalog. Overridable per chat turn via `ChatRequest.model` |
 | `LLM_MOCK` | No | `0` | Set `1` for offline mock LLM |
+| `LLM_TIMEOUT_SECONDS` | No | `60` | Per-request timeout (main chat model) |
+| `LLM_MAX_RETRIES` | No | `2` | Retry count on LLM failure (main chat model) |
+| `MEDIATOR_ENABLED` | No | `0` | Set `1` to run the pre-processing mediator LLM call (§2.4, §3.1) before the main agent loop |
+| `MEDIATOR_LLM_MODEL` | No | empty → `config/deploy.yaml`'s `llm.mediator_default_model` | Model for the mediator's structured-completion call; independent of `LLM_MODEL` |
+| `MEDIATOR_TIMEOUT_SECONDS` | No | `4.0` | Mediator request timeout — much tighter than `LLM_TIMEOUT_SECONDS` since a slow mediator should fail fast |
+| `MEDIATOR_MAX_RETRIES` | No | `1` | Retry count for the mediator's own call |
+| `DEFAULT_TIMEZONE` | No | `America/Chicago` | Timezone for date/duration resolution when the client doesn't supply one |
 | `DATA_DIR` | No | `./data` | Data root |
 | `DUCKDB_PATH` | No | `./data/navigator.duckdb` | DuckDB file |
 | `PROJECT_ROOT` | Docker | auto | Repo root for config resolution |
@@ -881,8 +917,6 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | `MAX_CHAT_TURNS` | No | `5` | Session turn limit |
 | `SESSION_TTL_MINUTES` | No | `30` | In-memory session expiry |
 | `MAX_TOOL_ROUNDS` | No | `8` | Agent tool loop cap |
-| `LLM_TIMEOUT_SECONDS` | No | `60` | Per-request timeout |
-| `LLM_MAX_RETRIES` | No | `2` | Retry count on LLM failure |
 | `INGEST_STATES` | No | yaml `states` | Comma-separated active ingest states; intersected with `pdp_region_codes` catalog |
 
 \*Production requires a real API key **or** intentional mock mode for demos only.
@@ -892,7 +926,8 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | File | Purpose |
 |---|---|
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
-| `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC) |
+| `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
+| `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
 | `config/disclaimer.txt` | UI disclaimer banner |
 
 ---

@@ -112,6 +112,16 @@ class LlmUsage(BaseModel):
     cost_usd: float = 0.0
 
 
+class CombinedUsage(BaseModel):
+    """Sum of mediator + primary-model usage. No model/provider identity — a total spanning
+    two different models has none, so this deliberately doesn't extend LlmUsage."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+
+
 class QueryResponse(BaseModel):
     query_id: str
     session_id: str | None = None
@@ -130,6 +140,8 @@ class QueryResponse(BaseModel):
     clarification_message: str | None = None
     response_source: str | None = None
     llm_usage: LlmUsage | None = None
+    mediator_llm_usage: LlmUsage | None = None
+    total_llm_usage: CombinedUsage | None = None
 
 
 class ChatResponse(BaseModel):

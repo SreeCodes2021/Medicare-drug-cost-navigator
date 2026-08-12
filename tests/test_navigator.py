@@ -1,6 +1,7 @@
 import pytest
 
 from medicare_navigator.agent.navigator import (
+    _extract_explicit_ytd_from_message,
     _format_last_tool_calls,
     _merge_last_tool_calls,
     navigator,
@@ -201,6 +202,21 @@ async def test_navigator_insulin_tier_lookup_mentions_tier():
 
 
 @pytest.mark.asyncio
+async def test_navigator_januvia_tier_lookup_matches_cost_ask_coverage():
+    """Tier-only ask must agree with the cost-ask path: januvia is covered, tier 2 on
+    PLAN_FL_PDP (S9999-001) — a tier-only question must not report false not-covered."""
+    tier_response = await navigator.run(f"What tier is januvia on plan {PLAN_FL_PDP}?")
+    assert tier_response.response_source == "System/Tier"
+    lower = tier_response.explanation.lower()
+    assert "tier 2" in lower
+    assert "not covered" not in lower
+
+    cost_response = await navigator.run(f"How much does januvia cost on plan {PLAN_FL_PDP}?")
+    assert cost_response.estimate is not None
+    assert cost_response.estimate.covered is True
+
+
+@pytest.mark.asyncio
 async def test_navigator_insulin_channel_contrast_lists_both_channels():
     response = await navigator.run(
         f"For plan {PLAN_FL_PDP}, how does mail-order cost compare to retail for a 30-day Lantus fill?"
@@ -210,6 +226,17 @@ async def test_navigator_insulin_channel_contrast_lists_both_channels():
     assert "$35.00" in response.explanation
     assert "mail" in lower
     assert "retail" in lower
+
+
+@pytest.mark.asyncio
+async def test_navigator_metformin_mail_retail_contrast_lists_both_channel_types():
+    response = await navigator.run(
+        f"How does mail order compare to retail for metformin 500mg on plan {PLAN_FL_PDP}?"
+    )
+    lower = response.explanation.lower()
+    assert "mail" in lower
+    assert "retail" in lower
+    assert "$3.00" in response.explanation or "$5.00" in response.explanation
 
 
 @pytest.mark.asyncio
@@ -327,6 +354,40 @@ async def test_navigator_multi_drug_turn_retains_all_drugs_in_session_last_tool_
     context = _format_last_tool_calls(last_calls)
     assert "metformin" in context.lower()
     assert "lisinopril" in context.lower()
+
+
+def test_extract_explicit_ytd_from_message_parses_natural_language_follow_up():
+    assert _extract_explicit_ytd_from_message(
+        "what if I've already spent $800 on prescriptions this year?"
+    ) == 800.0
+    assert _extract_explicit_ytd_from_message("how much for metformin") is None
+
+
+@pytest.mark.asyncio
+async def test_navigator_ytd_follow_up_without_drug_name_updates_recalculation():
+    """Regression: a drug-less follow-up stating an explicit YTD dollar amount used to be
+    silently ignored (ytd_oop_spend stayed 0.0) because only the insulin/mixed-basket
+    resolvers ran deterministic YTD extraction. It must now flow into filter_slots for
+    every turn, including the general single-drug agent-loop path — verified here via the
+    mixed-basket resolver, which reads filter_slots.ytd_oop_spend downstream of the merge."""
+    session_id = "test-ytd-follow-up-session"
+    opener = f"What's the cost for metformin 500mg and lantus on plan {PLAN_FL_PDP}?"
+    await navigator.run(opener, session_id=session_id)
+
+    from medicare_navigator.models.query import QuerySlots
+
+    follow_up = (
+        f"what if I've already spent $800 on prescriptions this year? "
+        f"metformin 500mg and lantus on plan {PLAN_FL_PDP}"
+    )
+    response = await navigator.run(
+        follow_up,
+        filter_slots=QuerySlots(raw_message=follow_up),
+        session_id=session_id,
+    )
+    assert response.status == "ok"
+    assert response.channel_estimates
+    assert all(e.ytd_oop_spend == 800.0 for e in response.channel_estimates)
 
 
 def test_format_last_tool_calls_single_call_uses_singular_phrasing():
@@ -478,3 +539,15 @@ async def test_navigator_off_topic_weather_includes_disclaimer_inline():
     response = await navigator.run("What's the weather in Miami today?")
     assert response.response_source == "System"
     assert settings.disclaimer_text in response.explanation
+
+
+def test_format_history_includes_all_max_chat_turns():
+    from medicare_navigator.agent.navigator import _format_history
+
+    history = []
+    for turn in range(1, 6):
+        history.append({"role": "user", "content": f"user turn {turn}"})
+        history.append({"role": "assistant", "content": f"assistant turn {turn}"})
+    formatted = _format_history(history)
+    assert "user turn 1" in formatted
+    assert "user turn 5" in formatted

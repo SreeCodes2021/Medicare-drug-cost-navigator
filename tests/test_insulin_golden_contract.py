@@ -20,6 +20,8 @@ GOLDEN_PATH = (
     Path(__file__).resolve().parent.parent
     / ".cursor"
     / "skills"
+    / "tests"
+    / "utils"
     / "numeric-accuracy"
     / "golden-cases.jsonl"
 )

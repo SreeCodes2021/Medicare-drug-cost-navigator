@@ -10,6 +10,8 @@ from medicare_navigator.guardrails.channel_parity import (
     prose_false_unavailable_warnings,
     prose_tied_lowest_warnings,
     repair_false_unavailable_prose,
+    repair_missing_mail_retail_contrast_in_prose,
+    repair_missing_tier_in_prose,
     summarize_channel_coverage,
     text_claims_no_estimate,
     deterministic_cost_explanation,
@@ -42,6 +44,14 @@ _LLM_DISCLAIMER_TAIL_RE = re.compile(
 )
 # Routine estimate caveats shown in the structured estimate card — not duplicated in chat prose.
 _CARD_ONLY_CAVEATS = frozenset({BUG2_CAVEAT, INSULIN_STATUTORY_CAP_CAVEAT})
+_BUG5_CAVEAT_RE = re.compile(
+    r"This estimate is based on \d+ formulary NDCs for this drug",
+    re.I,
+)
+
+
+def _is_card_only_caveat(caveat: str) -> bool:
+    return caveat in _CARD_ONLY_CAVEATS or bool(_BUG5_CAVEAT_RE.search(caveat))
 _BUG2_PARAPHRASE_RE = re.compile(
     r"(?:\n\n|\n)?This estimate assumes the deductible[\s\S]*?Confirm with your plan\.\s*",
     re.I,
@@ -324,6 +334,26 @@ def _add_estimate_dollar_amounts(
     return fill_bounds, remaining_bounds
 
 
+def _estimate_phases(tool_artifacts: dict[str, dict[str, Any]]) -> set[str]:
+    phases: set[str] = set()
+    calls = tool_artifacts.get("estimate_drug_cost_all_channels__calls")
+    if calls:
+        artifacts = calls
+    else:
+        primary = _primary_estimate_artifact(tool_artifacts)
+        artifacts = [primary] if primary else []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        data = artifact.get("data")
+        if not isinstance(data, dict):
+            continue
+        phase = data.get("effective_phase") or data.get("benefit_phase")
+        if phase:
+            phases.add(str(phase))
+    return phases
+
+
 def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[float]:
     amounts: set[float] = set()
 
@@ -351,6 +381,11 @@ def _allowed_dollar_amounts(tool_artifacts: dict[str, dict[str, Any]]) -> set[fl
             item_bounds.append(fill_bounds)
         if period_bounds:
             remaining_year_bounds.append(period_bounds)
+
+    # Deterministic insulin prose cites the federal statutory cap; it is not a tool-computed
+    # figure but must not trigger repair_untraceable_dollar_prose on policy-ceiling answers.
+    if "insulin_cap" in _estimate_phases(tool_artifacts):
+        amounts.add(35.0)
 
     # A combined total (sum of each item's low/high) is only "traceable" when it's exactly the
     # sum this module itself computes — the LLM is never allowed to invent its own arithmetic.
@@ -401,7 +436,7 @@ def _enforced_texts(tool_artifacts: dict[str, dict[str, Any]]) -> list[str]:
         data = artifact.get("data")
         if isinstance(data, dict):
             for caveat in data.get("caveats") or []:
-                if caveat in _CARD_ONLY_CAVEATS:
+                if _is_card_only_caveat(caveat):
                     continue
                 if caveat not in seen:
                     texts.append(caveat)
@@ -580,6 +615,48 @@ def repair_false_not_covered_for_missing_dosage(
     )
 
 
+def _untraceable_dollar_amounts(
+    explanation: str,
+    tool_artifacts: dict[str, dict[str, Any]],
+) -> list[str]:
+    allowed = _allowed_dollar_amounts(tool_artifacts)
+    untraceable: list[str] = []
+    for amount in _DOLLAR_RE.findall(explanation):
+        digits = amount.replace("$", "").replace(" ", "")
+        try:
+            value = round(float(digits), 2)
+        except ValueError:
+            value = None
+        if value is None or value not in allowed:
+            untraceable.append(amount)
+    return untraceable
+
+
+def repair_untraceable_dollar_prose(
+    explanation: str,
+    tool_artifacts: dict[str, dict[str, Any]],
+    channel_estimates: list[dict[str, Any]] | None = None,
+) -> str:
+    """Replace prose that cites invented dollar amounts with deterministic tool-backed text."""
+    if not _untraceable_dollar_amounts(explanation, tool_artifacts):
+        return explanation
+    channel_estimates = channel_estimates or [
+        est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
+    ]
+    deterministic = deterministic_cost_explanation(channel_estimates)
+    if deterministic:
+        return deterministic
+    sentences: list[str] = []
+    for artifact in _covered_estimate_calls(tool_artifacts):
+        data = artifact.get("data") or {}
+        sentence = cost_sentence_for_estimate(data)
+        if sentence and sentence not in sentences:
+            sentences.append(sentence)
+    if sentences:
+        return "\n\n".join(sentences)
+    return explanation
+
+
 def repair_false_not_covered_when_covered(
     explanation: str,
     tool_artifacts: dict[str, dict[str, Any]],
@@ -612,6 +689,7 @@ def apply_guardrails(
     citations: list[Citation] | None = None,
     *,
     channel_estimates: list[dict[str, Any]] | None = None,
+    user_message: str | None = None,
 ) -> tuple[str, list[Citation], list[str]]:
     """Validate and fix explanation. Returns (explanation, citations, errors)."""
     errors: list[str] = []
@@ -619,6 +697,9 @@ def apply_guardrails(
     channel_estimates = channel_estimates or [
         est.model_dump() for est in channel_estimates_from_artifact(tool_artifacts)
     ]
+    explanation = repair_untraceable_dollar_prose(
+        explanation, tool_artifacts, channel_estimates
+    )
     repaired_not_covered = repair_false_not_covered_when_covered(
         explanation, tool_artifacts, channel_estimates
     )
@@ -642,6 +723,11 @@ def apply_guardrails(
     out = _strip_card_only_caveat_paraphrases(repaired)
     if had_repair:
         out = _drop_contradictory_unavailable_paragraphs(out)
+    if _has_formulary_evidence(tool_artifacts):
+        out = repair_missing_tier_in_prose(out, channel_estimates)
+    out = repair_missing_mail_retail_contrast_in_prose(
+        out, channel_estimates, user_message
+    )
     cites = list(citations or build_citations_from_artifacts(tool_artifacts))
 
     valid_source_ids = extract_source_ids(tool_artifacts)
@@ -674,17 +760,9 @@ def apply_guardrails(
 
     # Hard-stop messages (suppressed plan, insulin data-gap, quantity limit) are pre-approved
     # verbatim text, not LLM-invented figures — don't run dollar-traceability against them.
-    dollars_in_text = [] if is_hard_stop else _DOLLAR_RE.findall(out)
-    if dollars_in_text:
-        allowed = _allowed_dollar_amounts(tool_artifacts)
-        for amount in dollars_in_text:
-            digits = amount.replace("$", "").replace(" ", "")
-            try:
-                value = round(float(digits), 2)
-            except ValueError:
-                value = None
-            if value is None or value not in allowed:
-                errors.append(f"Dollar amount {amount} not traceable to tool results.")
+    if not is_hard_stop:
+        for amount in _untraceable_dollar_amounts(out, tool_artifacts):
+            errors.append(f"Dollar amount {amount} not traceable to tool results.")
 
     # Safety-critical caveats/hard-stop messages must reach the user verbatim, not just be
     # requested via the system prompt — force-append any the LLM dropped or paraphrased away.

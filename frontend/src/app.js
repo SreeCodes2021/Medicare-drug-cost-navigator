@@ -7,6 +7,10 @@ let resultsComparison = null;
 let allPlans = [];
 let currentDataRelease = null;
 let sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+// Mediator usage is zero on the majority of turns (it only ran, in mock/live terms, when
+// MEDIATOR_ENABLED is on) — tracked separately so the primary total is never double-counted
+// with the combined total.
+let sessionMediatorUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 let cachedDisclaimerText = "";
 let cachedPrivacyText = "";
 let emptyStateHtml = "";
@@ -81,7 +85,7 @@ function formatCostUsd(amount) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
 }
 
-function formatUsageMeta(usage) {
+function formatSingleUsage(usage) {
   if (!usage) return "";
   const parts = [];
   if (usage.total_tokens != null) {
@@ -93,9 +97,39 @@ function formatUsageMeta(usage) {
   return parts.join(" · ");
 }
 
+// resp-shaped usage: { llm_usage, mediator_llm_usage, total_llm_usage }. When the mediator
+// didn't run this turn (the common case today), this renders exactly as before — a single
+// "N tokens · $X" line — since mediator_llm_usage is absent. Only turns where it did run
+// show the three-way breakdown.
+function formatUsageMeta(usage) {
+  if (!usage) return "";
+  if (!usage.mediator_llm_usage) {
+    return formatSingleUsage(usage.llm_usage || usage);
+  }
+  const parts = [];
+  const mediatorText = formatSingleUsage(usage.mediator_llm_usage);
+  if (mediatorText) parts.push(`Mediator: ${mediatorText}`);
+  const primaryText = formatSingleUsage(usage.llm_usage);
+  if (primaryText) parts.push(`Response: ${primaryText}`);
+  const combinedText = formatSingleUsage(usage.total_llm_usage);
+  if (combinedText) parts.push(`Combined: ${combinedText}`);
+  return parts.join(" · ");
+}
+
 function updateSessionUsageDisplay() {
   const totalTokens = sessionUsage.inputTokens + sessionUsage.outputTokens;
-  el("session-usage").textContent = `${formatTokenCount(totalTokens)} tokens · ${formatCostUsd(sessionUsage.costUsd)}`;
+  const el_ = el("session-usage");
+  el_.textContent = `${formatTokenCount(totalTokens)} tokens · ${formatCostUsd(sessionUsage.costUsd)}`;
+  const mediatorTokens = sessionMediatorUsage.inputTokens + sessionMediatorUsage.outputTokens;
+  if (mediatorTokens > 0) {
+    const combinedTokens = totalTokens + mediatorTokens;
+    const combinedCost = sessionUsage.costUsd + sessionMediatorUsage.costUsd;
+    el_.title = `Mediator: ${formatTokenCount(mediatorTokens)} tokens · ${formatCostUsd(sessionMediatorUsage.costUsd)} — ` +
+      `Response: ${formatTokenCount(totalTokens)} tokens · ${formatCostUsd(sessionUsage.costUsd)} — ` +
+      `Combined: ${formatTokenCount(combinedTokens)} tokens · ${formatCostUsd(combinedCost)}`;
+  } else {
+    el_.title = "Session token and cost totals";
+  }
 }
 
 function accumulateSessionUsage(usage) {
@@ -103,6 +137,14 @@ function accumulateSessionUsage(usage) {
   sessionUsage.inputTokens += usage.input_tokens || 0;
   sessionUsage.outputTokens += usage.output_tokens || 0;
   sessionUsage.costUsd += usage.cost_usd || 0;
+  updateSessionUsageDisplay();
+}
+
+function accumulateMediatorUsage(usage) {
+  if (!usage) return;
+  sessionMediatorUsage.inputTokens += usage.input_tokens || 0;
+  sessionMediatorUsage.outputTokens += usage.output_tokens || 0;
+  sessionMediatorUsage.costUsd += usage.cost_usd || 0;
   updateSessionUsageDisplay();
 }
 
@@ -673,6 +715,7 @@ function resetChat() {
   resultsBatch = null;
   resultsComparison = null;
   sessionUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  sessionMediatorUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
   el("turn-counter").textContent = "0/5 turns";
   updateSessionUsageDisplay();
@@ -3002,7 +3045,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       explanation,
       resp.channel_estimate ? resp.response_source || "CMS data" : resp.response_source,
       resp.citations,
-      resp.llm_usage
+      { llm_usage: resp.llm_usage, mediator_llm_usage: resp.mediator_llm_usage, total_llm_usage: resp.total_llm_usage }
     );
     if (resp.status === "ok") {
       const key = drugKeyFromResp(resp);
@@ -3020,6 +3063,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       dataAsOf: resp.data_as_of,
     });
     accumulateSessionUsage(resp.llm_usage);
+    accumulateMediatorUsage(resp.mediator_llm_usage);
     if (switchToChat) {
       switchMode("chat");
     }
@@ -3164,11 +3208,12 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
         ? resp.response_source || "CMS data"
         : resp.response_source,
       resp.citations,
-      resp.llm_usage,
+      { llm_usage: resp.llm_usage, mediator_llm_usage: resp.mediator_llm_usage, total_llm_usage: resp.total_llm_usage },
       "guided-chat-messages"
     );
     renderGuidedResponse(resp);
     accumulateSessionUsage(resp.llm_usage);
+    accumulateMediatorUsage(resp.mediator_llm_usage);
   } catch (err) {
     appendMessage("assistant", "Sorry, something went wrong. Please try again.", null, null, null, "guided-chat-messages");
     console.error(err);

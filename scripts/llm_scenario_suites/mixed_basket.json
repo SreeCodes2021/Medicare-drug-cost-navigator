@@ -1,6 +1,6 @@
 {
   "suite": "mixed-basket",
-  "description": "20 live LLM scenarios — mirrors .cursor/skills/quality-test/mixed-basket/llm-scenarios.md",
+  "description": "20 live LLM scenarios — mirrors .cursor/skills/tests/T3/mixed-basket/llm-scenarios.md",
   "default_model": "gpt-5.6-luna",
   "scenarios": [
     {

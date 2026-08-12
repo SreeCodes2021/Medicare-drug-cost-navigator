@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import calendar
+from datetime import date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from medicare_navigator.config import settings
@@ -38,6 +39,62 @@ def days_remaining_in_contract_year(contract_year: int, tz: str | None = None) -
             - datetime(contract_year, 1, 1, tzinfo=zone).date()
         ).days
     return _days_remaining_in_year(now)
+
+
+def add_months(start: date, months: int) -> date:
+    """Calendar month addition with day-of-month clamping (Jan 31 + 1 month -> Feb 28/29).
+
+    Deterministic, stdlib-only — the model never computes this; see agent/mediator.py."""
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day_of_month = calendar.monthrange(year, month)[1]
+    day = min(start.day, last_day_of_month)
+    return date(year, month, day)
+
+
+def window_days_remaining(
+    contract_year: int,
+    tz: str | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> int:
+    """Generalizes days_remaining_in_contract_year to an explicit (start, end) window,
+    always capped at the contract year's end — CMS benefit design (deductible/cap) resets
+    each January 1, so a window can never correctly extend past the current contract year
+    with the benefit data this app has. With no start/end, delegates directly to
+    days_remaining_in_contract_year so that call site's behavior is untouched."""
+    if start is None and end is None:
+        return days_remaining_in_contract_year(contract_year, tz)
+    zone = resolve_timezone(tz)
+    window_start = start if start is not None else datetime.now(zone).date()
+    year_end = datetime(contract_year, 12, 31, tzinfo=zone).date()
+    window_end = min(end, year_end) if end is not None else year_end
+    if window_start.year > contract_year or window_start > window_end:
+        return 0
+    if window_start.year < contract_year:
+        window_start = datetime(contract_year, 1, 1, tzinfo=zone).date()
+    return (window_end - window_start).days
+
+
+def resolve_explicit_start_date(
+    month: int | None, day: int | None, year: int | None, tz: str | None = None
+) -> date | None:
+    """Resolve an explicit month/day (optionally year) mediator extraction into a concrete
+    date, applying a fixed, testable roll-forward rule when no year was stated ("starting
+    September 1" means the next such date, not a guess) — never a model guess. Returns
+    None when month/day aren't both given."""
+    if month is None or day is None:
+        return None
+    if year is not None:
+        return date(year, month, day)
+    zone = resolve_timezone(tz)
+    today = datetime.now(zone).date()
+    candidate = date(today.year, month, day)
+    if candidate < today:
+        return date(today.year + 1, month, day)
+    return candidate
 
 
 def build_datetime_context(tz: str | None = None) -> str:
