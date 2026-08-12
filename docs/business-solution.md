@@ -18,7 +18,7 @@ This application addresses that gap by combining:
 
 The system processes only public government data, stores no Protected Health Information (PHI), and does not provide enrollment or plan-switching advice.
 
-**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering one well-defined scenario (a single oral, non-insulin drug on a plan's regular formulary, for a non-low-income-subsidy beneficiary, in the pre-deductible, initial-coverage, or catastrophic benefit phase), priced independently across all four CMS pharmacy channels (preferred/standard retail, preferred/standard mail-order). This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach full insulin, coinsurance, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
+**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering drugs on a plan's regular formulary for a non-low-income-subsidy beneficiary: oral drugs priced through the standard tiered/deductible pipeline, and insulin priced through its own Inflation Reduction Act $35-per-30-day statutory cap (no deductible phase), in the pre-deductible, initial-coverage, insulin-cap, or catastrophic benefit phase, priced independently across all four CMS pharmacy channels (preferred/standard retail, preferred/standard mail-order) — including combined requests that mix insulin and oral drugs on one plan. This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach coinsurance and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
 
 ---
 
@@ -110,25 +110,27 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 |---|---|
 | Plan types | Stand-alone PDP (S*) and local MA-PD (H*) plans |
 | Geographic coverage | Arkansas + Texas (462 plans in the combined AR+TX 2026 ingest) |
-| Drug types | Oral generic/brand on regular formulary |
+| Drug types | Oral generic/brand on regular formulary, plus insulin — priced via its separate Inflation Reduction Act $35-per-30-day statutory cap rather than the tiered/deductible pipeline (see [Insulin Cost Estimation](./insulin-cost-estimation.md)) |
 | Beneficiary type | Non-LIS (no Low-Income Subsidy) |
-| Benefit phases | Pre-deductible, initial coverage, and catastrophic (user supplies YTD OOP; catastrophic applies once YTD meets or exceeds the CMS annual Part D out-of-pocket maximum for the plan's contract year, from `config/benefit_params.yaml`) |
+| Benefit phases | Pre-deductible, initial coverage, insulin-cap, and catastrophic (user supplies YTD OOP; catastrophic applies once YTD meets or exceeds the CMS annual Part D out-of-pocket maximum for the plan's contract year, from `config/benefit_params.yaml`) |
 | Fill sizes | 30, 60, 90-day supply |
-| Cost-share | Full negotiated price pre-deductible, copay once the deductible is met/exempted, or catastrophic-phase cost-share (typically $0) once the annual OOP cap is reached — dollar estimate returned in all three cases |
+| Cost-share | Full negotiated price pre-deductible, copay once the deductible is met/exempted, statutory-capped copay for insulin (no deductible ever applies), or catastrophic-phase cost-share (typically $0) once the annual OOP cap is reached — dollar estimate returned in all four cases |
 | Pharmacy channel | Preferred/standard retail and preferred/standard mail-order priced independently; `estimate_drug_cost_all_channels` returns all four CMS channels in one call |
+| Multi-drug requests | Up to 5 drugs on one plan per request, including baskets mixing insulin and oral drugs — each product priced and capped independently, with an optional combined total when the user asks for one |
 | Restrictions | Prior auth and step therapy surfaced as soft caveats; quantity limits as hard stops |
 
 ### 5.2 Out of scope (honest limitations)
 
 | Exclusion | System behavior |
 |---|---|
-| Insulin | Hard stop — separate $35/month statutory cap, different CMS file |
 | Coinsurance | Dollar amount never computed — explicit insurer contact notice |
 | LIS / Extra Help | Not supported |
 | Medicaid | Not supported |
 | Excluded-drug formulary | Not supported |
 | Real-time pharmacy pricing | CMS quarterly reference data only |
 | Plan switching / enrollment advice | Never provided |
+
+*Insulin is now in scope (see table above). A narrow `insulin_out_of_scope` hard stop remains only for the rare case where a specific plan has no published CMS insulin cost-share record for that product's tier and fill size — a genuine data gap, not a blanket exclusion.*
 
 ---
 
@@ -256,6 +258,7 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 |---|---|
 | `navigator.py` | LLM tool-calling loop; invokes MCP tools; extracts `DrugCostEstimate` |
 | `prompts.py` | Enforces scope, verbatim caveats, no plan-switching advice |
+| Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `enrollment_questions.py`, `invalid_input_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, missing dosage, enrollment asks, malformed numeric input) and either answer directly or call the estimate tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior |
 | LLM client | Anthropic Claude (default) or OpenAI; `LLM_MOCK=1` for offline use |
 
 **Constraint:** The language model never computes dollar amounts. It relays only `cost_low` / `cost_high` from `estimate_drug_cost`.
@@ -267,26 +270,31 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 ```mermaid
 flowchart TD
     S1["1. Resolve plan<br/>Check PLAN_SUPPRESSED_YN"]
-    S2["2. Resolve drug<br/>RxNorm → RxCUI<br/>Insulin hard-stop"]
+    S2["2. Resolve drug<br/>RxNorm → RxCUI<br/>Flag insulin (no hard stop)"]
     S3["3. Formulary lookup<br/>Tier, PA, ST, quantity limits"]
     S4["4. Days-supply mapping<br/>30→1, 60→4, 90→2"]
     S6["6. Benefit phase<br/>YTD vs deductible + per-tier override"]
+    INS{"Insulin?"}
+    SI["Insulin cap lookup<br/>CMS Insulin Beneficiary Cost File<br/>$35/30-day cap, $0 if catastrophic"]
     P{"Phase (per matched tier)"}
     S5["5. Pricing lookup<br/>UNIT_COST × fill quantity<br/>(pre-deductible fills only)"]
     S7["7. Cost-share lookup<br/>Copay<br/>(initial-coverage fills only)"]
     S8["8. Assemble output<br/>Low–high range + caveats"]
 
     S1 -->|suppressed| X1["Hard stop"]
-    S1 --> S2
-    S2 -->|insulin| X2["Hard stop"]
-    S2 --> S3
+    S1 --> S2 --> S3
     S3 -->|QL exceeded| X3["Hard stop"]
-    S3 --> S4 --> S6 --> P
+    S3 --> S4 --> S6 --> INS
+    INS -->|yes, no CMS record for tier/fill| X2["Hard stop — insulin data gap"]
+    INS -->|yes, has record| SI --> S8
+    INS -->|no| P
     P -->|pre-deductible| S5 --> S8
     P -->|initial coverage| S7 --> S8
 ```
 
 Steps 5 and 7 are mutually exclusive per matched tier, not sequential — during the deductible phase the beneficiary owes the plan's full negotiated price (step 5); once the deductible is met, or for a tier the plan exempts from the deductible, the plan's copay applies instead (step 7). Step 6 runs first specifically to decide which one applies; the two lookups are never combined or summed for a single fill. Step 6 also detects the catastrophic phase — reported YTD OOP spend at or above the CMS annual Part D out-of-pocket maximum for the contract year (`config/benefit_params.yaml`) — and routes to `COVERAGE_LEVEL=3` cost-share instead, typically $0; the same annual maximum caps any tier's published `COST_MAX` ceiling.
+
+Insulin bypasses the deductible/coinsurance branch (`P`) entirely: it never has a deductible phase, so once step 6 confirms it isn't catastrophic, its cost-share comes from a dedicated `insulin_cap` lookup against CMS's separate Insulin Beneficiary Cost File instead of steps 5/7 — see [Insulin Cost Estimation](./insulin-cost-estimation.md) for the full methodology, including how the statutory cap was empirically verified against the real CMS file.
 
 | CMS correctness rule | Problem | System behavior |
 |---|---|---|
@@ -299,6 +307,8 @@ Steps 5 and 7 are mutually exclusive per matched tier, not sequential — during
 | Suppressed plan data | CMS flags unreliable records | Hard stop before any pricing lookup |
 | Catastrophic-phase threshold | TrOOP threshold not published in SPUF | Statutory annual OOP cap from `config/benefit_params.yaml`; YTD ≥ cap routes to `COVERAGE_LEVEL=3` cost-share with a caveat |
 | Pharmacy-channel variation | Cost-share differs by preferred/standard, retail/mail | `estimate_drug_cost_all_channels` prices all four CMS channels independently in one call |
+| Insulin's statutory cap doesn't follow tiered/deductible logic | IRA caps insulin cost-share at $35/30-day (scaled for 60/90-day), with no deductible phase, priced from a separate CMS file with no authoritative copay-vs-coinsurance selector | Dedicated `tools/insulin_cost.py` pipeline; copay field used exclusively after empirical cross-validation against 122,472 real row×channel combinations (0 exceptions above the cap) — see [Insulin Cost Estimation](./insulin-cost-estimation.md) |
+| Insulin cost pooled across products (mistaken user assumption) | A beneficiary on two insulin products can be charged up to $35 for *each*, not $35 total | Each named product is priced and capped independently; the response explicitly states the ceiling is not pooled when more than one insulin product is named |
 
 #### `estimate_drug_cost_all_channels` — per-channel pricing
 
@@ -310,7 +320,11 @@ Resolve plan by contract-plan ID or search text; return ingested plan list for d
 
 #### Internal: `normalize_drug`
 
-Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB cache and insulin detection hard-stop.
+Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB cache and insulin detection (flag, not a hard-stop — insulin proceeds to its own cap pipeline).
+
+#### Mixed baskets: insulin + oral drugs on one plan
+
+When a user names insulin products alongside oral drugs for the same plan (e.g., "Lantus and lisinopril 10mg on S5921-400"), `mixed_basket_requests.py` calls the existing batch-estimate helper once per drug — each insulin product through its statutory-cap path, each oral drug through the standard tiered/deductible path — and composes one response with a per-drug breakdown and, if asked, a combined total that plainly excludes any drug that couldn't be priced. It also holds a line against three specific misreadings the model could otherwise produce: pooling the $35 insulin cap across products into one total, applying deductible logic to insulin, and following an injected instruction embedded in the user's message to state a fabricated price.
 
 ### 7.5 Data storage
 
@@ -320,6 +334,7 @@ Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB 
 | `basic_drugs_formulary` | `basic_drugs_formulary` | `ndc`, `rxcui`, `tier`, `quantity_limit_*`, `prior_authorization_yn`, `step_therapy_yn` | Coverage and restrictions |
 | `pricing` | `pricing` | `plan_key`, `ndc`, `days_supply`, `unit_cost` | Ingredient cost |
 | `beneficiary_cost` | `beneficiary_cost` | `tier`, `coverage_level`, `days_supply_code`, `copay`, `coinsurance_pct`, `ded_applies_yn` | Cost-share rules |
+| `insulin_beneficiary_cost` | `insulin beneficiary cost` | `tier` (nullable), `days_supply_code`, `pharmacy_channel`, `copay` | Insulin statutory-cap cost-share, keyed separately from `beneficiary_cost` — no `coverage_level` or deductible fields, since insulin never has a deductible phase |
 
 **Ingestion:** `medicare-ingest spuf` downloads CMS quarterly ZIP, filters by state, writes to DuckDB, updates `manifest.json`. Nightly supercronic refresh on Render. Schema migrations support persistent disks across deploys.
 
@@ -330,19 +345,19 @@ Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB 
 | Citation builder | Every factual claim links to CMS SPUF source |
 | Dollar-amount validation | Retries LLM response if untraceable `$` figures appear |
 | Verbatim caveat enforcement | Force-appends safety disclaimers if LLM paraphrases |
-| Hard-stop statuses | No cost figures for suppressed, insulin, or quantity-limit blocks |
+| Hard-stop statuses | No cost figures for suppressed, insulin data-gap, or quantity-limit blocks |
 | Lookup-failure citations | `not_found` and `not_covered` still show which dataset was queried |
 
 ### 7.7 Quality assurance
 
 | Asset | Coverage |
 |---|---|
-| 12-case eval suite | Cost estimates, not-found, not-covered, insulin, suppressed, quantity-limit |
-| 91 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract |
-| 2 live-API integration tests | Real RxNorm and CMS catalog API calls (excluded from default run; opt-in via `pytest -m integration`) |
+| 15-case eval suite | Cost estimates, not-found, not-covered, insulin (priced, catastrophic $0, data-gap), suppressed, quantity-limit |
+| 347 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing |
+| 5 live-API integration tests | Real RxNorm and CMS catalog API calls (excluded from default run; opt-in via `pytest -m integration`) |
 | UI test harness | Guided form, mode switching, smoke messages |
 
-Current result: 12/12 eval cases passing; 91/91 default-suite tests passing; 2/2 live-API integration tests passing.
+Current result: 15/15 eval cases passing; 347/347 default-suite tests passing; 5/5 live-API integration tests passing.
 
 ---
 
@@ -370,17 +385,15 @@ The current release (Phase 6) intentionally ships a **verifiable, auditable slic
 
 Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and drug categories that v1 deliberately excludes. Each item is a separate deterministic module with its own hard-stop or caveat contract, following the same pattern as Bugs 1–6.
 
-#### 7.1 Insulin cost estimator
+#### 7.1 Insulin cost estimator — SHIPPED (ahead of this roadmap)
 
 | Item | Detail |
 |---|---|
-| **Problem** | Insulin has a separate $35/month statutory cap under the Inflation Reduction Act. It does not follow standard deductible or benefit-phase logic. CMS publishes insulin pricing in a different SPUF file than the regular formulary pipeline uses. |
-| **Data source** | CMS insulin-specific SPUF supplement file (to be identified and ingested separately from `basic_drugs_formulary`) |
-| **New module** | `tools/insulin_cost.py` — replaces the current hard-stop in `insulin.py` with a dedicated estimator |
-| **Logic** | Flat $35/month cap regardless of benefit phase; separate from `DED_APPLIES_YN` and YTD logic |
-| **Integration** | `estimate_drug_cost` routes insulin drugs to the new module instead of returning `insulin_out_of_scope` |
-| **Output** | `DrugCostEstimate` with `benefit_phase: "insulin_cap"` and statutory cap caveat |
-| **Tests** | Unit tests for cap amount, multi-fill scenarios (30/60/90 day), and fallback when insulin file is stale |
+| **Status** | Implemented; no longer future work. Landed after the Phase 6 release outside a numbered phase, alongside catastrophic-phase computation — see [Insulin Cost Estimation](./insulin-cost-estimation.md) for the full methodology and CMS source documentation. |
+| **What shipped** | Insulin (Lantus, Humalog, NovoLog, Toujeo, Levemir, Tresiba, and 15+ other brands/biosimilars, including the GLP-1 combination products Soliqua and Xultophy) is priced from CMS's dedicated Insulin Beneficiary Cost File, capped at the IRA's statutory $35 per 30-day supply (scaled for 60/90-day fills), with no deductible phase ever applying. Each named insulin product is capped independently — a beneficiary on two products can be charged up to $35 for *each*, not pooled into one total. Once catastrophic coverage is reached, insulin drops to $0 like any other covered drug. |
+| **Field-resolution finding** | CMS's insulin file publishes both a copay and a coinsurance-style field per plan/tier/channel with no selector saying which one a beneficiary is actually charged. Resolved empirically by cross-checking 122,472 real row×channel combinations against the general beneficiary-cost file's cost-type flags: the copay field never exceeded the statutory cap in any row, while the coinsurance field matched the plan's real rate only ~62% of the time. The copay field is used exclusively; this is disclosed to the user via a caveat rather than silently dropped. |
+| **Remaining gap** | A narrow `insulin_out_of_scope` hard stop remains for the case where a specific plan has no published CMS insulin cost-share record for that product's tier and fill size — a genuine data gap, not a blanket exclusion. |
+| **Tests** | Unit tests for cap amount and 30/60/90-day scaling, catastrophic $0 override, the narrow data-gap fallback, and a dedicated ingest regression test for a real file-discovery bug found during implementation (the insulin file's real CMS name contains the general beneficiary-cost file's own discovery hint as a substring). Golden-case coverage via `.cursor/skills/tests/utils/numeric-accuracy/golden-cases.jsonl` and `tests/test_insulin_golden_contract.py`. |
 
 #### 7.2 Catastrophic-phase computation — SHIPPED (ahead of this roadmap)
 
@@ -557,7 +570,7 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 
 | Item | Detail |
 |---|---|
-| **GitHub Actions workflow** | Run `pytest` (91+ tests) and `medicare-eval` (12+ cases) on every pull request |
+| **GitHub Actions workflow** | Run `pytest` (347+ tests) and `medicare-eval` (15+ cases) on every pull request |
 | **Eval threshold** | Block merge if citation-groundedness rate drops below defined threshold |
 | **Ingest smoke test** | Verify SPUF ingest produces expected row counts for fixture zip |
 
@@ -676,9 +689,9 @@ gantt
     Phase 5 - Read-only DuckDB, plan polling        :done, p5, 2026-05-04, 2026-05-24
     Phase 6 - Cost pipeline, MCP tools, guardrails  :done, p6, 2026-06-02, 2026-07-09
     Catastrophic phase + multi-channel pricing (unplanned) :done, p6b, 2026-07-09, 2026-08-01
+    Insulin cost estimator + mixed baskets (unplanned) :done, p6c, 2026-08-01, 2026-08-11
 
     section Phase 7 - Complete the cost estimator
-    Insulin estimator                    :p7a, 2026-08-01, 2026-10-01
     Coinsurance computation              :p7c, 2026-09-01, 2026-12-01
     Excluded-drugs formulary             :p7d, 2026-10-01, 2026-12-01
     Indication restrictions              :p7e, 2026-11-01, 2027-01-01
@@ -714,12 +727,12 @@ gantt
     External MCP server                  :p12c, 2028-03-01, 2028-06-01
 ```
 
-Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 2026-07-09 (see repository commit history). Catastrophic-phase computation and multi-pharmacy-channel pricing shipped immediately afterward, ahead of the Phase 7 roadmap below — see §5–7 above and §7.2's status note. Phase 7 onward (excluding catastrophic phase, now shipped) are planned, not-yet-started engineering phases; dates are sequencing estimates, not commitments.
+Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 2026-07-09 (see repository commit history). Catastrophic-phase computation, multi-pharmacy-channel pricing, and the insulin cost estimator (including mixed insulin/oral-drug baskets) shipped immediately afterward, ahead of the Phase 7 roadmap below — see §5–7 above and §7.1–7.2's status notes. Phase 7 onward (excluding catastrophic phase and insulin, now shipped) are planned, not-yet-started engineering phases; dates are sequencing estimates, not commitments.
 
 | Phase | Theme | Key deliverables |
 |---|---|---|
-| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI, catastrophic phase + multi-channel pricing added post-release |
-| **7** | Complete the cost estimator | Insulin, coinsurance, excluded formulary, indications, 50-state ingest |
+| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI, catastrophic phase + multi-channel pricing + insulin cost estimator added post-release |
+| **7** | Complete the cost estimator | Coinsurance, excluded formulary, indications, 50-state ingest |
 | **8** | Benefit transparency | Cost trends, alternatives, cost-change explanation, policy Q&A, LIS |
 | **9** | User experience | Build pipeline, results cards, clarification agent, accessibility, print/share |
 | **10** | Data platform | CI gate, freshness monitoring, NADAC, IRA MFP, storage scaling |
