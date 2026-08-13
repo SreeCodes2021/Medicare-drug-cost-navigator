@@ -14,9 +14,13 @@ fi
 mkdir -p "$DIST/icons"
 cp "$SRC/index.html" "$SRC/app.js" "$SRC/styles.css" "$SRC/manifest.json" "$DIST/"
 cp "$SRC"/icons/*.png "$DIST/icons/"
+if [[ -d "$SRC/admin" ]]; then
+  mkdir -p "$DIST/admin"
+  cp "$SRC"/admin/*.html "$DIST/admin/"
+fi
 
 echo "Built frontend → $DIST"
-echo "  index.html  app.js  styles.css  manifest.json  icons/"
+echo "  index.html  app.js  styles.css  manifest.json  icons/  admin/*.html"
 echo ""
 echo "Serve locally (pick a free port if 8000 is taken):"
 echo "  uvicorn medicare_navigator.api.app:app --reload --host 0.0.0.0 --port 8001"

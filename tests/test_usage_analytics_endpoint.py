@@ -260,3 +260,160 @@ def test_admin_usage_404_when_token_unset(tmp_path, monkeypatch):
 
     with TestClient(app) as client:
         assert client.get("/api/admin/usage").status_code == 404
+
+
+def test_admin_usage_since_until_overrides_default(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from medicare_navigator.storage.connection import DuckDBConnection
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
+    monkeypatch.setattr(settings, "admin_token", "test-secret")
+    monkeypatch.setattr(settings, "admin_usage_hours", 200)
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    recent = now.replace(tzinfo=None)
+    stale = (now - timedelta(hours=48)).replace(tzinfo=None)
+
+    db = DuckDBConnection()
+    conn = db.connect()
+    try:
+        for hour_bucket in (recent, stale):
+            conn.execute(
+                """
+                INSERT INTO usage_hourly (
+                    hour_bucket, region, mode, model, requests_total
+                ) VALUES (?, 'FL', 'chat', 'test-model', 1)
+                """,
+                [hour_bucket],
+            )
+    finally:
+        conn.close()
+
+    since = (now - timedelta(hours=24)).isoformat()
+    until = (now + timedelta(hours=1)).isoformat()
+
+    with TestClient(app) as client:
+        usage = client.get(
+            "/api/admin/usage",
+            params={"since": since, "until": until},
+            headers={"X-Admin-Token": "test-secret"},
+        )
+        assert usage.status_code == 200
+        body = usage.json()
+        assert body["default_timezone"] == settings.default_timezone
+        buckets = {row["hour_bucket"] for row in body["rows"]}
+        assert str(recent) in buckets or recent.isoformat() in str(buckets)
+        assert stale not in buckets and str(stale) not in str(buckets)
+
+
+def test_admin_usage_rejects_since_after_until(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
+    monkeypatch.setattr(settings, "admin_token", "test-secret")
+
+    now = datetime.now(timezone.utc)
+    since = now.isoformat()
+    until = (now - timedelta(hours=1)).isoformat()
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/admin/usage",
+            params={"since": since, "until": until},
+            headers={"X-Admin-Token": "test-secret"},
+        )
+        assert response.status_code == 400
+
+
+def test_admin_usage_filters_by_default_window(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from medicare_navigator.storage.connection import DuckDBConnection
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
+    monkeypatch.setattr(settings, "admin_token", "test-secret")
+    monkeypatch.setattr(settings, "admin_usage_hours", 24)
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    recent = now.replace(tzinfo=None)
+    stale = (now - timedelta(hours=48)).replace(tzinfo=None)
+
+    db = DuckDBConnection()
+    conn = db.connect()
+    try:
+        for hour_bucket in (recent, stale):
+            conn.execute(
+                """
+                INSERT INTO usage_hourly (
+                    hour_bucket, region, mode, model, requests_total
+                ) VALUES (?, 'FL', 'chat', 'test-model', 1)
+                """,
+                [hour_bucket],
+            )
+    finally:
+        conn.close()
+
+    with TestClient(app) as client:
+        usage = client.get("/api/admin/usage", headers={"X-Admin-Token": "test-secret"})
+        assert usage.status_code == 200
+        body = usage.json()
+        assert "since" in body and "until" in body
+        buckets = {row["hour_bucket"] for row in body["rows"]}
+        assert str(recent) in buckets or recent.isoformat() in str(buckets)
+        assert stale not in buckets and str(stale) not in str(buckets)
+
+
+def test_record_request_tracks_prompt_len_sum_and_requests_with_tokens(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
+    monkeypatch.setattr(settings, "admin_token", "test-secret")
+    collector.drain()
+
+    collector.record_request(
+        prompt_len=100, ok=True, latency_ms=10, region="FL", mode="chat",
+        model="test-model", tokens_in=5, tokens_out=3, cost_usd=0.01,
+    )
+    collector.record_request(
+        prompt_len=40, ok=True, latency_ms=5, region="FL", mode="chat",
+        model="test-model", tokens_in=0, tokens_out=0, cost_usd=0.0,
+    )
+    flush_now()
+
+    with TestClient(app) as client:
+        usage = client.get("/api/admin/usage", headers={"X-Admin-Token": "test-secret"})
+        row = next(r for r in usage.json()["rows"] if r["region"] == "FL")
+        assert row["requests_total"] == 2
+        assert row["prompt_len_sum"] == 140
+        assert row["requests_with_tokens"] == 1
+
+
+def test_chat_request_exposes_prompt_len_sum_and_requests_with_tokens(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    patch_settings(monkeypatch, data_dir)
+    monkeypatch.setattr(settings, "llm_mock_mode", True)
+    monkeypatch.setattr(settings, "admin_token", "test-secret")
+    collector.drain()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={"message": "What's the cost for metformin 500mg?"},
+        )
+        assert response.status_code == 200
+
+        flush_now()
+
+        usage = client.get("/api/admin/usage", headers={"X-Admin-Token": "test-secret"})
+        rows = usage.json()["rows"]
+        request_row = next(r for r in rows if r["requests_total"] >= 1)
+        assert request_row["prompt_len_sum"] > 0
+        assert request_row["requests_with_tokens"] == 1

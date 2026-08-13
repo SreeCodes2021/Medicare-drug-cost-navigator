@@ -25,8 +25,10 @@
     padding: 24px;
   }
   h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 12px; }
+  h3 { font-size: 12px; margin: 0 0 8px; color: var(--muted); font-weight: 500; }
   .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
-  .gate, .content { max-width: 960px; margin: 0 auto; }
+  .gate, .content { max-width: 1040px; margin: 0 auto; }
   .gate {
     max-width: 380px; margin-top: 15vh; background: var(--surface);
     border: 1px solid var(--border); border-radius: 10px; padding: 24px;
@@ -36,23 +38,87 @@
     width: 100%; padding: 8px 10px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px;
   }
-  .gate button, .toolbar button {
-    margin-top: 12px; padding: 8px 14px; border: none; border-radius: 6px;
+  .gate button, .toolbar button, .filters button {
+    padding: 8px 14px; border: none; border-radius: 6px;
     background: var(--accent); color: white; font-size: 13px; cursor: pointer;
   }
+  .gate button { margin-top: 12px; }
   .error { color: var(--error); font-size: 13px; margin-top: 10px; display: none; }
-  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-  .toolbar button { margin-top: 0; background: transparent; color: var(--muted); border: 1px solid var(--border); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; gap: 16px; }
+  .toolbar > .refresh-btn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .filters {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  }
+  .filters label { font-size: 12px; color: var(--muted); }
+  .filters input[type="datetime-local"] {
+    padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  .preset-btn {
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
+  }
+  .preset-btn:hover { background: var(--accent-soft); }
+  .filters .divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-  .card .n { font-size: 22px; font-weight: 600; }
+  .card .n { font-size: 20px; font-weight: 600; }
   .card .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .chart-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .chart-card select {
+    padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 12px;
+  }
+  .bar-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 720px) { .bar-row { grid-template-columns: 1fr; } }
+  .chart-svg { width: 100%; height: auto; overflow: visible; }
+  .chart-empty { color: var(--muted); font-size: 12px; padding: 24px 0; text-align: center; }
+  .axis-line { stroke: var(--border); stroke-width: 1; }
+  .axis-text { fill: var(--muted); font-size: 10px; }
+  .gridline { stroke: var(--border); stroke-width: 1; }
+  .mark-line { stroke: var(--accent); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .mark-area { fill: var(--accent); opacity: 0.1; }
+  .mark-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+  .crosshair { stroke: var(--muted); stroke-width: 1; opacity: 0; pointer-events: none; }
+  .bar-rect { fill: var(--accent); }
+  .bar-rect:hover, .bar-rect.hovered { opacity: 0.8; }
+  .hit-layer { fill: transparent; }
+  .tooltip {
+    position: fixed; pointer-events: none; background: var(--text); color: var(--bg);
+    padding: 6px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4;
+    display: none; z-index: 10; max-width: 220px;
+  }
+  .tooltip .tv { font-weight: 600; }
+  .tooltip .tl { opacity: 0.75; }
+  .tooltip .ts { display: flex; justify-content: space-between; gap: 12px; }
+  .tooltip .ts + .ts { margin-top: 2px; }
+  .tooltip .ts-name { opacity: 0.85; }
   table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; font-variant-numeric: tabular-nums; }
   th { color: var(--muted); font-weight: 500; background: var(--card-bg); }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable .arrow { display: inline-block; width: 10px; opacity: 0.5; }
+  th.sortable.sorted .arrow { opacity: 1; }
   tr:last-child td { border-bottom: none; }
   .hidden { display: none; }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
+  .series-legend {
+    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 20px;
+    margin-bottom: 12px; font-size: 12px;
+  }
+  .series-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .series-group-title { color: var(--muted); font-weight: 500; margin-right: 2px; }
+  .series-legend label {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap;
+  }
+  .series-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .series-swatch.total { border: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -70,14 +136,83 @@
   <div class="toolbar">
     <div>
       <h1>Usage Stats</h1>
-      <p class="sub">Hourly rollups (UTC), last 200 buckets. No message content is ever recorded.</p>
+      <p id="subtitle" class="sub">Loading…</p>
     </div>
-    <button id="refresh">Refresh</button>
+    <button id="refresh" type="button" class="refresh-btn">Refresh</button>
   </div>
+
+  <div class="filters">
+    <button type="button" class="preset-btn" data-hours="24">Last 24h</button>
+    <button type="button" class="preset-btn" data-hours="168">Last 7d</button>
+    <button type="button" class="preset-btn" data-hours="720">Last 30d</button>
+    <button type="button" class="preset-btn" data-hours="2160">Last 3mo</button>
+    <div class="divider"></div>
+    <label for="sinceInput">From</label>
+    <input id="sinceInput" type="datetime-local" />
+    <label for="untilInput">To</label>
+    <input id="untilInput" type="datetime-local" />
+    <button id="applyRange" type="button">Apply</button>
+  </div>
+
   <div id="cards" class="cards"></div>
-  <div id="tableWrap"></div>
+
+  <div id="charts">
+    <div class="chart-card">
+      <div class="chart-card-head"><h2>Requests over time</h2></div>
+      <div class="series-legend" id="legendRequests"></div>
+      <div id="chartRequests"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-head"><h2>Cost over time</h2></div>
+      <div class="series-legend" id="legendCost"></div>
+      <div id="chartCost"></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-head"><h2>Error rate over time</h2></div>
+      <div id="chartErrorRate"></div>
+    </div>
+    <div class="chart-card">
+      <h2>Region</h2>
+      <div class="bar-row">
+        <div><h3>Requests</h3><div id="barRegionRequests"></div></div>
+        <div><h3>Cost</h3><div id="barRegionCost"></div></div>
+        <div><h3>Error rate</h3><div id="barRegionErrorRate"></div></div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h2>Mode</h2>
+      <div class="bar-row">
+        <div><h3>Requests</h3><div id="barModeRequests"></div></div>
+        <div><h3>Cost</h3><div id="barModeCost"></div></div>
+        <div><h3>Error rate</h3><div id="barModeErrorRate"></div></div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h2>Model</h2>
+      <div class="bar-row">
+        <div><h3>Requests</h3><div id="barModelRequests"></div></div>
+        <div><h3>Cost</h3><div id="barModelCost"></div></div>
+        <div><h3>Error rate</h3><div id="barModelErrorRate"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>By state</h2>
+    <div id="tableWrapRegion"></div>
+  </div>
+  <div class="chart-card">
+    <h2>By mode</h2>
+    <div id="tableWrapMode"></div>
+  </div>
+  <div class="chart-card">
+    <h2>By model</h2>
+    <div id="tableWrapModel"></div>
+  </div>
   <p id="contentError" class="error"></p>
 </div>
+
+<div id="tooltip" class="tooltip"></div>
 
 <script>
 (function () {
@@ -87,7 +222,78 @@
   const gateError = document.getElementById('gateError');
   const contentError = document.getElementById('contentError');
   const cardsEl = document.getElementById('cards');
-  const tableWrap = document.getElementById('tableWrap');
+  const subtitleEl = document.getElementById('subtitle');
+  const sinceInput = document.getElementById('sinceInput');
+  const untilInput = document.getElementById('untilInput');
+  const tooltipEl = document.getElementById('tooltip');
+
+  const RANGE_KEY = 'admin_usage_range';
+  const SERIES_COLORS = ['#dc2626', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#65a30d', '#4f46e5', '#ea580c', '#0d9488'];
+  const DIMENSION_KEYS = ['region', 'mode', 'model'];
+  const DIMENSION_LABELS = { region: 'Region', mode: 'Mode', model: 'Model' };
+  const SERIES_CAP = 8;
+  let currentTz = 'UTC';
+  let currentRows = [];
+  let requestsVisibility = { total: true };
+  let costVisibility = { total: true };
+  let requestsChartData = null;
+  let costChartData = null;
+  let requestsColorMap = {};
+  let costColorMap = {};
+
+  // ---------- time helpers ----------
+
+  function formatHourBucket(utcNaiveString, tz) {
+    // DuckDB TIMESTAMP text like "2026-08-13 14:00:00" — naive, always UTC.
+    const iso = String(utcNaiveString).replace(' ', 'T') + (String(utcNaiveString).includes('Z') ? '' : 'Z');
+    const d = new Date(iso);
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, year: 'numeric', month: 'short', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }).format(d);
+  }
+
+  function toEpochMs(utcNaiveString) {
+    const iso = String(utcNaiveString).replace(' ', 'T') + (String(utcNaiveString).includes('Z') ? '' : 'Z');
+    return new Date(iso).getTime();
+  }
+
+  function toDatetimeLocalValue(isoString) {
+    const d = new Date(isoString);
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // ---------- range persistence ----------
+
+  function getStoredRange() {
+    const raw = sessionStorage.getItem(RANGE_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.since && parsed.until) return parsed;
+    } catch (e) { /* ignore malformed storage */ }
+    return null;
+  }
+
+  function setStoredRange(since, until) {
+    sessionStorage.setItem(RANGE_KEY, JSON.stringify({ since, until }));
+    sinceInput.value = toDatetimeLocalValue(since);
+    untilInput.value = toDatetimeLocalValue(until);
+  }
+
+  function readRangeInputs() {
+    if (!sinceInput.value || !untilInput.value) {
+      throw new Error('Both From and To are required.');
+    }
+    const since = new Date(sinceInput.value).toISOString();
+    const until = new Date(untilInput.value).toISOString();
+    if (since >= until) {
+      throw new Error('"From" must be before "To".');
+    }
+    return { since, until };
+  }
 
   function getToken() {
     return sessionStorage.getItem('admin_token') || '';
@@ -97,15 +303,25 @@
     sessionStorage.setItem('admin_token', t);
   }
 
-  async function fetchUsage(token) {
-    const res = await fetch('/api/admin/usage', {
-      headers: { 'X-Admin-Token': token },
-    });
+  // ---------- data fetch ----------
+
+  async function fetchUsage(token, since, until) {
+    let url = '/api/admin/usage';
+    if (since && until) {
+      url += '?since=' + encodeURIComponent(since) + '&until=' + encodeURIComponent(until);
+    }
+    const res = await fetch(url, { headers: { 'X-Admin-Token': token } });
     if (res.status === 403) throw new Error('Invalid token.');
     if (res.status === 404) throw new Error('Admin endpoint is not enabled (ADMIN_TOKEN not set on the server).');
+    if (res.status === 400) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || 'Invalid date range.');
+    }
     if (!res.ok) throw new Error('Request failed (' + res.status + ').');
     return res.json();
   }
+
+  // ---------- summary cards ----------
 
   function renderCards(rows) {
     const totals = rows.reduce((acc, r) => {
@@ -116,54 +332,870 @@
       acc.costUsd += r.cost_usd_sum || 0;
       acc.tokensIn += r.tokens_in_sum || 0;
       acc.tokensOut += r.tokens_out_sum || 0;
+      acc.promptLenSum += r.prompt_len_sum || 0;
+      acc.requestsWithTokens += r.requests_with_tokens || 0;
       return acc;
-    }, { sessions: 0, requests: 0, errors: 0, latencySum: 0, costUsd: 0, tokensIn: 0, tokensOut: 0 });
+    }, {
+      sessions: 0, requests: 0, errors: 0, latencySum: 0, costUsd: 0,
+      tokensIn: 0, tokensOut: 0, promptLenSum: 0, requestsWithTokens: 0,
+    });
 
+    const totalTokens = totals.tokensIn + totals.tokensOut;
     const avgLatency = totals.requests ? Math.round(totals.latencySum / totals.requests) : 0;
     const errorRate = totals.requests ? ((totals.errors / totals.requests) * 100).toFixed(1) : '0.0';
+    const avgPromptLen = totals.requests ? Math.round(totals.promptLenSum / totals.requests) : 0;
+    const avgTokensPerRequest = totals.requests ? Math.round(totalTokens / totals.requests) : 0;
+    const avgTokensPerTokenBearingRequest = totals.requestsWithTokens
+      ? Math.round(totalTokens / totals.requestsWithTokens) : 0;
+    const avgCostPerRequest = totals.requests ? totals.costUsd / totals.requests : 0;
+    const avgCostPerTokenBearingRequest = totals.requestsWithTokens
+      ? totals.costUsd / totals.requestsWithTokens : 0;
 
     const cards = [
       ['New sessions', totals.sessions],
       ['Requests', totals.requests],
       ['Error rate', errorRate + '%'],
       ['Avg latency', avgLatency + ' ms'],
-      ['Total tokens', (totals.tokensIn + totals.tokensOut).toLocaleString()],
+      ['Avg prompt length', avgPromptLen + ' chars'],
       ['Total cost', '$' + totals.costUsd.toFixed(2)],
+      ['Avg tokens/request', avgTokensPerRequest.toLocaleString()],
+      ['Avg tokens/request (token-bearing)', avgTokensPerTokenBearingRequest.toLocaleString()],
+      ['Avg cost/request', '$' + avgCostPerRequest.toFixed(4)],
+      ['Avg cost/request (token-bearing)', '$' + avgCostPerTokenBearingRequest.toFixed(4)],
     ];
-    cardsEl.innerHTML = cards.map(([label, value]) =>
-      '<div class="card"><div class="n">' + value + '</div><div class="l">' + label + '</div></div>'
-    ).join('');
+    cardsEl.innerHTML = '';
+    cards.forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const n = document.createElement('div');
+      n.className = 'n';
+      n.textContent = String(value);
+      const l = document.createElement('div');
+      l.className = 'l';
+      l.textContent = label;
+      card.appendChild(n);
+      card.appendChild(l);
+      cardsEl.appendChild(card);
+    });
+  }
+
+  // ---------- raw table ----------
+
+  function dimensionTableColumns(dimensionLabel) {
+    return [
+      { key: 'key', label: dimensionLabel, format: (v) => v },
+      { key: 'requests', label: 'Requests', format: (v) => v.toLocaleString() },
+      { key: 'errorRate', label: 'Error rate', format: (v) => v.toFixed(1) + '%' },
+      { key: 'avgLatency', label: 'Avg latency', format: (v) => Math.round(v) + ' ms' },
+      { key: 'avgPromptLen', label: 'Avg prompt length', format: (v) => Math.round(v) + ' chars' },
+      { key: 'totalCost', label: 'Total cost', format: (v) => '$' + v.toFixed(2) },
+      { key: 'avgTokensPerRequest', label: 'Avg tokens/request', format: (v) => Math.round(v).toLocaleString() },
+      { key: 'avgTokensPerTokenBearingRequest', label: 'Avg tokens/request (token-bearing)', format: (v) => Math.round(v).toLocaleString() },
+      { key: 'avgCostPerRequest', label: 'Avg cost/request', format: (v) => '$' + v.toFixed(4) },
+    ];
+  }
+
+  const DIMENSION_TABLES = [
+    { dimension: 'region', label: 'Region', containerId: 'tableWrapRegion', sort: { key: 'requests', dir: 'desc' } },
+    { dimension: 'mode', label: 'Mode', containerId: 'tableWrapMode', sort: { key: 'requests', dir: 'desc' } },
+    { dimension: 'model', label: 'Model', containerId: 'tableWrapModel', sort: { key: 'requests', dir: 'desc' } },
+  ];
+
+  function aggregateByDimension(rows, dimension) {
+    const groups = new Map();
+    // Exclude session-creation rows (requests_total=0, see groupByDimension) —
+    // this table reports per-request metrics, and a session-only row has none.
+    rows.filter((r) => r.requests_total > 0).forEach((r) => {
+      const key = r[dimension] || 'unknown';
+      const existing = groups.get(key) || {
+        requests: 0, errors: 0, latencySum: 0, promptLenSum: 0, costUsd: 0,
+        tokensIn: 0, tokensOut: 0, requestsWithTokens: 0,
+      };
+      existing.requests += r.requests_total;
+      existing.errors += r.requests_error;
+      existing.latencySum += r.latency_ms_sum;
+      existing.promptLenSum += r.prompt_len_sum || 0;
+      existing.costUsd += r.cost_usd_sum || 0;
+      existing.tokensIn += r.tokens_in_sum || 0;
+      existing.tokensOut += r.tokens_out_sum || 0;
+      existing.requestsWithTokens += r.requests_with_tokens || 0;
+      groups.set(key, existing);
+    });
+    return [...groups.entries()].map(([key, g]) => {
+      const totalTokens = g.tokensIn + g.tokensOut;
+      return {
+        key,
+        requests: g.requests,
+        errorRate: g.requests ? (g.errors / g.requests) * 100 : 0,
+        avgLatency: g.requests ? g.latencySum / g.requests : 0,
+        avgPromptLen: g.requests ? g.promptLenSum / g.requests : 0,
+        totalCost: g.costUsd,
+        avgTokensPerRequest: g.requests ? totalTokens / g.requests : 0,
+        avgTokensPerTokenBearingRequest: g.requestsWithTokens ? totalTokens / g.requestsWithTokens : 0,
+        avgCostPerRequest: g.requests ? g.costUsd / g.requests : 0,
+      };
+    });
+  }
+
+  function renderDimensionTable(table) {
+    const container = document.getElementById(table.containerId);
+    const columns = dimensionTableColumns(table.label);
+    const dimRows = aggregateByDimension(currentRows, table.dimension);
+    if (!dimRows.length) {
+      container.innerHTML = '<div class="empty">No usage recorded yet.</div>';
+      return;
+    }
+    const sortCol = columns.find((c) => c.key === table.sort.key);
+    const dirMul = table.sort.dir === 'asc' ? 1 : -1;
+    dimRows.sort((a, b) => {
+      const av = a[sortCol.key], bv = b[sortCol.key];
+      if (typeof av === 'string') return av.localeCompare(bv) * dirMul;
+      return (av - bv) * dirMul;
+    });
+
+    const el = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    columns.forEach((col) => {
+      const th = document.createElement('th');
+      th.className = 'sortable' + (col.key === table.sort.key ? ' sorted' : '');
+      th.tabIndex = 0;
+      const label = document.createElement('span');
+      label.textContent = col.label + ' ';
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow';
+      arrow.textContent = col.key === table.sort.key ? (table.sort.dir === 'asc' ? '▲' : '▼') : '↕';
+      th.appendChild(label);
+      th.appendChild(arrow);
+      const activate = () => {
+        table.sort = {
+          key: col.key,
+          dir: table.sort.key === col.key && table.sort.dir === 'desc' ? 'asc' : 'desc',
+        };
+        renderDimensionTable(table);
+      };
+      th.addEventListener('click', activate);
+      th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } });
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    el.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    dimRows.forEach((row) => {
+      const tr = document.createElement('tr');
+      columns.forEach((col) => {
+        const td = document.createElement('td');
+        td.textContent = col.format(row[col.key]);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    el.appendChild(tbody);
+    container.innerHTML = '';
+    container.appendChild(el);
   }
 
   function renderTable(rows) {
-    if (!rows.length) {
-      tableWrap.innerHTML = '<div class="empty">No usage recorded yet.</div>';
-      return;
-    }
-    const head = [
-      'Hour (UTC)', 'Region', 'Mode', 'Model', 'New sessions', 'Requests', 'OK', 'Errors',
-      'Clarify', 'Not found', 'Limit', 'Short', 'Medium', 'Long', 'Avg latency (ms)',
-      'Tokens in', 'Tokens out', 'Cost ($)',
-    ];
-    const body = rows.map((r) => {
-      const avg = r.requests_total ? Math.round(r.latency_ms_sum / r.requests_total) : 0;
-      return '<tr>' + [
-        r.hour_bucket, r.region, r.mode, r.model, r.sessions_new, r.requests_total, r.requests_ok,
-        r.requests_error, r.requests_clarification, r.requests_not_found, r.requests_limit_reached,
-        r.prompt_len_short, r.prompt_len_medium, r.prompt_len_long, avg,
-        r.tokens_in_sum, r.tokens_out_sum, (r.cost_usd_sum || 0).toFixed(4),
-      ].map((v) => '<td>' + v + '</td>').join('') + '</tr>';
-    }).join('');
-    tableWrap.innerHTML =
-      '<table><thead><tr>' + head.map((h) => '<th>' + h + '</th>').join('') +
-      '</tr></thead><tbody>' + body + '</tbody></table>';
+    currentRows = rows;
+    DIMENSION_TABLES.forEach(renderDimensionTable);
   }
 
-  async function load(token) {
+  // ---------- tooltip ----------
+
+  function showTooltip(x, y, labelText, valueText) {
+    tooltipEl.innerHTML = '';
+    const v = document.createElement('div');
+    v.className = 'tv';
+    v.textContent = valueText;
+    const l = document.createElement('div');
+    l.className = 'tl';
+    l.textContent = labelText;
+    tooltipEl.appendChild(v);
+    tooltipEl.appendChild(l);
+    tooltipEl.style.left = (x + 14) + 'px';
+    tooltipEl.style.top = (y + 14) + 'px';
+    tooltipEl.style.display = 'block';
+  }
+
+  function hideTooltip() {
+    tooltipEl.style.display = 'none';
+  }
+
+  function showMultiTooltip(x, y, timeLabel, entries) {
+    tooltipEl.innerHTML = '';
+    const timeEl = document.createElement('div');
+    timeEl.className = 'tl';
+    timeEl.textContent = timeLabel;
+    tooltipEl.appendChild(timeEl);
+    entries.forEach(({ label, value }) => {
+      const row = document.createElement('div');
+      row.className = 'ts';
+      const name = document.createElement('span');
+      name.className = 'ts-name';
+      name.textContent = label;
+      const val = document.createElement('span');
+      val.className = 'tv';
+      val.textContent = value;
+      row.appendChild(name);
+      row.appendChild(val);
+      tooltipEl.appendChild(row);
+    });
+    tooltipEl.style.left = (x + 14) + 'px';
+    tooltipEl.style.top = (y + 14) + 'px';
+    tooltipEl.style.display = 'block';
+  }
+
+  // ---------- chart: line (time series) ----------
+
+  function niceMax(value) {
+    if (value <= 0) return 1;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
+    const normalized = value / magnitude;
+    let niceNormalized;
+    if (normalized <= 1) niceNormalized = 1;
+    else if (normalized <= 2) niceNormalized = 2;
+    else if (normalized <= 5) niceNormalized = 5;
+    else niceNormalized = 10;
+    return niceNormalized * magnitude;
+  }
+
+  function renderLineChart(container, points, opts) {
+    container.innerHTML = '';
+    if (!points.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chart-empty';
+      empty.textContent = 'No data in this range.';
+      container.appendChild(empty);
+      return;
+    }
+    const W = 760, H = 200;
+    const margin = { top: 10, right: 16, bottom: 26, left: 48 };
+    const plotW = W - margin.left - margin.right;
+    const plotH = H - margin.top - margin.bottom;
+
+    const tMin = points[0].t, tMax = points[points.length - 1].t;
+    const vMaxRaw = Math.max(...points.map((p) => p.v));
+    const vMax = niceMax(vMaxRaw || 1);
+    const xScale = (t) => margin.left + (tMax > tMin ? (t - tMin) / (tMax - tMin) : 0.5) * plotW;
+    const yScale = (v) => margin.top + plotH - (v / vMax) * plotH;
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('class', 'chart-svg');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', opts.label);
+
+    // gridlines (0/50/100%)
+    [0, 0.5, 1].forEach((frac) => {
+      const y = margin.top + plotH - frac * plotH;
+      const line = document.createElementNS(svg.namespaceURI, 'line');
+      line.setAttribute('x1', margin.left); line.setAttribute('x2', W - margin.right);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('class', 'gridline');
+      svg.appendChild(line);
+      const text = document.createElementNS(svg.namespaceURI, 'text');
+      text.setAttribute('x', margin.left - 6); text.setAttribute('y', y + 3);
+      text.setAttribute('text-anchor', 'end'); text.setAttribute('class', 'axis-text');
+      text.textContent = opts.formatValue(frac * vMax);
+      svg.appendChild(text);
+    });
+
+    // area + line
+    const linePath = points.map((p, i) => (i === 0 ? 'M' : 'L') + xScale(p.t) + ',' + yScale(p.v)).join(' ');
+    const areaPath = linePath +
+      ' L' + xScale(tMax) + ',' + yScale(0) + ' L' + xScale(tMin) + ',' + yScale(0) + ' Z';
+    const area = document.createElementNS(svg.namespaceURI, 'path');
+    area.setAttribute('d', areaPath); area.setAttribute('class', 'mark-area');
+    svg.appendChild(area);
+    const line = document.createElementNS(svg.namespaceURI, 'path');
+    line.setAttribute('d', linePath); line.setAttribute('class', 'mark-line');
+    svg.appendChild(line);
+
+    // end dot + direct label
+    const last = points[points.length - 1];
+    const dot = document.createElementNS(svg.namespaceURI, 'circle');
+    dot.setAttribute('cx', xScale(last.t)); dot.setAttribute('cy', yScale(last.v));
+    dot.setAttribute('r', 4); dot.setAttribute('class', 'mark-dot');
+    svg.appendChild(dot);
+
+    // x-axis ticks: first, middle, last — drop the middle tick if it would
+    // render too close to either edge label to read cleanly.
+    const MIN_TICK_GAP_PX = 90;
+    let tickIdxs = [0, points.length - 1];
+    if (points.length > 2) {
+      const midIdx = Math.floor(points.length / 2);
+      const midX = xScale(points[midIdx].t);
+      if (midX - xScale(points[0].t) >= MIN_TICK_GAP_PX && xScale(points[points.length - 1].t) - midX >= MIN_TICK_GAP_PX) {
+        tickIdxs = [0, midIdx, points.length - 1];
+      }
+    }
+    [...new Set(tickIdxs)].forEach((idx) => {
+      const p = points[idx];
+      const text = document.createElementNS(svg.namespaceURI, 'text');
+      text.setAttribute('x', xScale(p.t)); text.setAttribute('y', H - 6);
+      text.setAttribute('text-anchor', idx === 0 ? 'start' : idx === points.length - 1 ? 'end' : 'middle');
+      text.setAttribute('class', 'axis-text');
+      text.textContent = opts.formatTime(p.t);
+      svg.appendChild(text);
+    });
+
+    // crosshair
+    const crosshair = document.createElementNS(svg.namespaceURI, 'line');
+    crosshair.setAttribute('y1', margin.top); crosshair.setAttribute('y2', margin.top + plotH);
+    crosshair.setAttribute('class', 'crosshair');
+    svg.appendChild(crosshair);
+
+    // hit layer
+    const hitLayer = document.createElementNS(svg.namespaceURI, 'rect');
+    hitLayer.setAttribute('x', margin.left); hitLayer.setAttribute('y', margin.top);
+    hitLayer.setAttribute('width', plotW); hitLayer.setAttribute('height', plotH);
+    hitLayer.setAttribute('class', 'hit-layer');
+    svg.appendChild(hitLayer);
+
+    function nearestPoint(clientX, svgEl) {
+      const rect = svgEl.getBoundingClientRect();
+      const relX = ((clientX - rect.left) / rect.width) * W;
+      let nearest = points[0], bestDist = Infinity;
+      for (const p of points) {
+        const dist = Math.abs(xScale(p.t) - relX);
+        if (dist < bestDist) { bestDist = dist; nearest = p; }
+      }
+      return nearest;
+    }
+
+    hitLayer.addEventListener('pointermove', (e) => {
+      const p = nearestPoint(e.clientX, svg);
+      crosshair.setAttribute('x1', xScale(p.t));
+      crosshair.setAttribute('x2', xScale(p.t));
+      crosshair.style.opacity = '1';
+      showTooltip(e.clientX, e.clientY, opts.formatTime(p.t, true), opts.formatValue(p.v));
+    });
+    hitLayer.addEventListener('pointerleave', () => {
+      crosshair.style.opacity = '0';
+      hideTooltip();
+    });
+
+    container.appendChild(svg);
+  }
+
+  function getVisibleSeries(data, visibility, colorMap) {
+    const series = [];
+    if (visibility.total && data.total.length) {
+      series.push({
+        id: 'total',
+        label: 'Total',
+        points: data.total,
+        color: colorMap.total || 'var(--accent)',
+        strokeWidth: 2.5,
+      });
+    }
+    DIMENSION_KEYS.forEach((dim) => {
+      (data.groups[dim] || []).forEach((s) => {
+        if (visibility[s.id]) {
+          series.push({
+            id: s.id,
+            label: DIMENSION_LABELS[dim] + ': ' + s.label,
+            points: s.points,
+            color: colorMap[s.id],
+            strokeWidth: 2,
+          });
+        }
+      });
+    });
+    return series;
+  }
+
+  function renderMultiLineChart(container, data, visibility, colorMap, opts) {
+    container.innerHTML = '';
+    if (!data.total.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chart-empty';
+      empty.textContent = 'No data in this range.';
+      container.appendChild(empty);
+      return;
+    }
+    const visible = getVisibleSeries(data, visibility, colorMap);
+    if (!visible.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chart-empty';
+      empty.textContent = 'Select at least one series.';
+      container.appendChild(empty);
+      return;
+    }
+
+    const W = 760, H = 200;
+    const margin = { top: 10, right: 16, bottom: 26, left: 48 };
+    const plotW = W - margin.left - margin.right;
+    const plotH = H - margin.top - margin.bottom;
+
+    const pointsRef = data.total;
+    const tMin = pointsRef[0].t;
+    const tMax = pointsRef[pointsRef.length - 1].t;
+    let vMaxRaw = 0;
+    visible.forEach((s) => {
+      s.points.forEach((p) => { if (p.v > vMaxRaw) vMaxRaw = p.v; });
+    });
+    const vMax = niceMax(vMaxRaw || 1);
+    const xScale = (t) => margin.left + (tMax > tMin ? (t - tMin) / (tMax - tMin) : 0.5) * plotW;
+    const yScale = (v) => margin.top + plotH - (v / vMax) * plotH;
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('class', 'chart-svg');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', opts.label);
+
+    [0, 0.5, 1].forEach((frac) => {
+      const y = margin.top + plotH - frac * plotH;
+      const line = document.createElementNS(svg.namespaceURI, 'line');
+      line.setAttribute('x1', margin.left); line.setAttribute('x2', W - margin.right);
+      line.setAttribute('y1', y); line.setAttribute('y2', y);
+      line.setAttribute('class', 'gridline');
+      svg.appendChild(line);
+      const text = document.createElementNS(svg.namespaceURI, 'text');
+      text.setAttribute('x', margin.left - 6); text.setAttribute('y', y + 3);
+      text.setAttribute('text-anchor', 'end'); text.setAttribute('class', 'axis-text');
+      text.textContent = opts.formatValue(frac * vMax);
+      svg.appendChild(text);
+    });
+
+    const showTotalArea = visible.length === 1 && visible[0].id === 'total';
+    visible.forEach((s) => {
+      const linePath = s.points.map((p, i) => (i === 0 ? 'M' : 'L') + xScale(p.t) + ',' + yScale(p.v)).join(' ');
+      if (showTotalArea && s.id === 'total') {
+        const areaPath = linePath +
+          ' L' + xScale(tMax) + ',' + yScale(0) + ' L' + xScale(tMin) + ',' + yScale(0) + ' Z';
+        const area = document.createElementNS(svg.namespaceURI, 'path');
+        area.setAttribute('d', areaPath);
+        area.setAttribute('class', 'mark-area');
+        svg.appendChild(area);
+      }
+      const line = document.createElementNS(svg.namespaceURI, 'path');
+      line.setAttribute('d', linePath);
+      line.setAttribute('fill', 'none');
+      line.setAttribute('stroke', s.color);
+      line.setAttribute('stroke-width', s.strokeWidth);
+      line.setAttribute('stroke-linejoin', 'round');
+      line.setAttribute('stroke-linecap', 'round');
+      svg.appendChild(line);
+    });
+
+    const MIN_TICK_GAP_PX = 90;
+    let tickIdxs = [0, pointsRef.length - 1];
+    if (pointsRef.length > 2) {
+      const midIdx = Math.floor(pointsRef.length / 2);
+      const midX = xScale(pointsRef[midIdx].t);
+      if (midX - xScale(pointsRef[0].t) >= MIN_TICK_GAP_PX &&
+          xScale(pointsRef[pointsRef.length - 1].t) - midX >= MIN_TICK_GAP_PX) {
+        tickIdxs = [0, midIdx, pointsRef.length - 1];
+      }
+    }
+    [...new Set(tickIdxs)].forEach((idx) => {
+      const p = pointsRef[idx];
+      const text = document.createElementNS(svg.namespaceURI, 'text');
+      text.setAttribute('x', xScale(p.t)); text.setAttribute('y', H - 6);
+      text.setAttribute('text-anchor', idx === 0 ? 'start' : idx === pointsRef.length - 1 ? 'end' : 'middle');
+      text.setAttribute('class', 'axis-text');
+      text.textContent = opts.formatTime(p.t);
+      svg.appendChild(text);
+    });
+
+    const crosshair = document.createElementNS(svg.namespaceURI, 'line');
+    crosshair.setAttribute('y1', margin.top); crosshair.setAttribute('y2', margin.top + plotH);
+    crosshair.setAttribute('class', 'crosshair');
+    svg.appendChild(crosshair);
+
+    const hitLayer = document.createElementNS(svg.namespaceURI, 'rect');
+    hitLayer.setAttribute('x', margin.left); hitLayer.setAttribute('y', margin.top);
+    hitLayer.setAttribute('width', plotW); hitLayer.setAttribute('height', plotH);
+    hitLayer.setAttribute('class', 'hit-layer');
+    svg.appendChild(hitLayer);
+
+    function nearestTime(clientX, svgEl) {
+      const rect = svgEl.getBoundingClientRect();
+      const relX = ((clientX - rect.left) / rect.width) * W;
+      let nearestT = pointsRef[0].t;
+      let bestDist = Infinity;
+      for (const p of pointsRef) {
+        const dist = Math.abs(xScale(p.t) - relX);
+        if (dist < bestDist) { bestDist = dist; nearestT = p.t; }
+      }
+      return nearestT;
+    }
+
+    function valueAtTime(points, t) {
+      const pt = points.find((p) => p.t === t);
+      return pt ? pt.v : 0;
+    }
+
+    hitLayer.addEventListener('pointermove', (e) => {
+      const t = nearestTime(e.clientX, svg);
+      crosshair.setAttribute('x1', xScale(t));
+      crosshair.setAttribute('x2', xScale(t));
+      crosshair.style.opacity = '1';
+      const entries = visible.map((s) => ({
+        label: s.label,
+        value: opts.formatValue(valueAtTime(s.points, t)),
+      }));
+      showMultiTooltip(e.clientX, e.clientY, opts.formatTime(t, true), entries);
+    });
+    hitLayer.addEventListener('pointerleave', () => {
+      crosshair.style.opacity = '0';
+      hideTooltip();
+    });
+
+    container.appendChild(svg);
+  }
+
+  // ---------- chart: bar ----------
+
+  function renderBarChart(container, categories, opts) {
+    container.innerHTML = '';
+    if (!categories.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chart-empty';
+      empty.textContent = 'No data.';
+      container.appendChild(empty);
+      return;
+    }
+    const W = 240, H = 160;
+    const margin = { top: 10, right: 8, bottom: 34, left: 40 };
+    const plotW = W - margin.left - margin.right;
+    const plotH = H - margin.top - margin.bottom;
+    const vMax = niceMax(Math.max(...categories.map((c) => c.v)) || 1);
+    const yScale = (v) => margin.top + plotH - (v / vMax) * plotH;
+
+    const n = categories.length;
+    const slot = plotW / n;
+    const barWidth = Math.min(24, slot - 4);
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('class', 'chart-svg');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', opts.label);
+
+    // baseline
+    const baseline = document.createElementNS(svg.namespaceURI, 'line');
+    baseline.setAttribute('x1', margin.left); baseline.setAttribute('x2', W - margin.right);
+    baseline.setAttribute('y1', yScale(0)); baseline.setAttribute('y2', yScale(0));
+    baseline.setAttribute('class', 'axis-line');
+    svg.appendChild(baseline);
+
+    categories.forEach((c, i) => {
+      const cx = margin.left + slot * i + slot / 2;
+      const barH = Math.max(0, yScale(0) - yScale(c.v));
+      const rect = document.createElementNS(svg.namespaceURI, 'rect');
+      rect.setAttribute('x', cx - barWidth / 2);
+      rect.setAttribute('y', yScale(c.v));
+      rect.setAttribute('width', barWidth);
+      rect.setAttribute('height', barH);
+      rect.setAttribute('rx', 4);
+      rect.setAttribute('class', 'bar-rect');
+      rect.setAttribute('tabindex', '0');
+      const showBarTooltip = (e) => {
+        showTooltip(e.clientX, e.clientY, c.label, opts.formatValue(c.v));
+        rect.classList.add('hovered');
+      };
+      const hideBarTooltip = () => {
+        hideTooltip();
+        rect.classList.remove('hovered');
+      };
+      rect.addEventListener('pointermove', showBarTooltip);
+      rect.addEventListener('pointerleave', hideBarTooltip);
+      rect.addEventListener('focus', (e) => {
+        const r = rect.getBoundingClientRect();
+        showTooltip(r.left, r.top, c.label, opts.formatValue(c.v));
+      });
+      rect.addEventListener('blur', hideBarTooltip);
+      svg.appendChild(rect);
+
+      const text = document.createElementNS(svg.namespaceURI, 'text');
+      text.setAttribute('x', cx); text.setAttribute('y', H - margin.bottom + 14);
+      text.setAttribute('text-anchor', 'middle'); text.setAttribute('class', 'axis-text');
+      text.textContent = c.label.length > 10 ? c.label.slice(0, 9) + '…' : c.label;
+      svg.appendChild(text);
+    });
+
+    container.appendChild(svg);
+  }
+
+  // ---------- chart data prep ----------
+
+  function chooseBucketMs(sinceMs, untilMs) {
+    const spanHours = (untilMs - sinceMs) / 3600000;
+    return spanHours <= 72 ? 3600000 : 86400000;
+  }
+
+  function buildTimeSeries(rows, sinceMs, untilMs, metricFn) {
+    const bucketMs = chooseBucketMs(sinceMs, untilMs);
+    const buckets = new Map();
+    rows.forEach((r) => {
+      const t = toEpochMs(r.hour_bucket);
+      const bucketT = Math.floor(t / bucketMs) * bucketMs;
+      const existing = buckets.get(bucketT) || { requests: 0, errors: 0, cost: 0 };
+      existing.requests += r.requests_total;
+      existing.errors += r.requests_error;
+      existing.cost += r.cost_usd_sum || 0;
+      buckets.set(bucketT, existing);
+    });
+    // Fill empty buckets with zero so the line reflects real gaps in activity
+    // instead of interpolating a slope across missing hours, and so ticks
+    // (picked by array index) land at evenly time-spaced positions.
+    const firstBucket = Math.floor(sinceMs / bucketMs) * bucketMs;
+    const lastBucket = Math.floor((untilMs - 1) / bucketMs) * bucketMs;
+    for (let t = firstBucket; t <= lastBucket; t += bucketMs) {
+      if (!buckets.has(t)) buckets.set(t, { requests: 0, errors: 0, cost: 0 });
+    }
+    return [...buckets.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([t, agg]) => ({ t, v: metricFn(agg) }));
+  }
+
+  function buildMultiSeriesTimeData(rows, sinceMs, untilMs, metric) {
+    const bucketMs = chooseBucketMs(sinceMs, untilMs);
+    const firstBucket = Math.floor(sinceMs / bucketMs) * bucketMs;
+    const lastBucket = Math.floor((untilMs - 1) / bucketMs) * bucketMs;
+    const bucketTimes = [];
+    for (let t = firstBucket; t <= lastBucket; t += bucketMs) {
+      bucketTimes.push(t);
+    }
+
+    const metricValue = metric === 'cost'
+      ? (r) => r.cost_usd_sum || 0
+      : (r) => r.requests_total;
+
+    const totalBuckets = new Map();
+    rows.forEach((r) => {
+      const t = toEpochMs(r.hour_bucket);
+      const bucketT = Math.floor(t / bucketMs) * bucketMs;
+      totalBuckets.set(bucketT, (totalBuckets.get(bucketT) || 0) + metricValue(r));
+    });
+    const total = bucketTimes.map((t) => ({ t, v: totalBuckets.get(t) || 0 }));
+
+    const groups = {};
+    DIMENSION_KEYS.forEach((dimension) => {
+      const dimBuckets = new Map();
+      const dimTotals = new Map();
+
+      rows.filter((r) => r.requests_total > 0).forEach((r) => {
+        const key = r[dimension] || 'unknown';
+        const t = toEpochMs(r.hour_bucket);
+        const bucketT = Math.floor(t / bucketMs) * bucketMs;
+        const v = metricValue(r);
+        if (!dimBuckets.has(key)) dimBuckets.set(key, new Map());
+        const bmap = dimBuckets.get(key);
+        bmap.set(bucketT, (bmap.get(bucketT) || 0) + v);
+        dimTotals.set(key, (dimTotals.get(key) || 0) + v);
+      });
+
+      const ranked = [...dimTotals.entries()].sort((a, b) => b[1] - a[1]);
+      const seriesList = [];
+
+      ranked.slice(0, SERIES_CAP).forEach(([key]) => {
+        const bmap = dimBuckets.get(key) || new Map();
+        seriesList.push({
+          id: dimension + ':' + key,
+          label: key,
+          points: bucketTimes.map((t) => ({ t, v: bmap.get(t) || 0 })),
+        });
+      });
+
+      if (ranked.length > SERIES_CAP) {
+        const otherKeys = ranked.slice(SERIES_CAP).map(([k]) => k);
+        seriesList.push({
+          id: dimension + ':Other',
+          label: 'Other',
+          points: bucketTimes.map((t) => {
+            let v = 0;
+            otherKeys.forEach((key) => {
+              const bmap = dimBuckets.get(key);
+              if (bmap) v += bmap.get(t) || 0;
+            });
+            return { t, v };
+          }),
+        });
+      }
+
+      groups[dimension] = seriesList;
+    });
+
+    return { total, groups };
+  }
+
+  function buildSeriesColorMap(data) {
+    const colors = { total: 'var(--accent)' };
+    let idx = 0;
+    DIMENSION_KEYS.forEach((dim) => {
+      (data.groups[dim] || []).forEach((s) => {
+        colors[s.id] = SERIES_COLORS[idx % SERIES_COLORS.length];
+        idx += 1;
+      });
+    });
+    return colors;
+  }
+
+  function resetSeriesVisibility(data) {
+    const vis = { total: true };
+    DIMENSION_KEYS.forEach((dim) => {
+      (data.groups[dim] || []).forEach((s) => { vis[s.id] = false; });
+    });
+    return vis;
+  }
+
+  function renderSeriesLegend(container, data, visibility, colorMap, onChange) {
+    container.innerHTML = '';
+
+    function addCheckbox(parent, id, label, color, isTotal) {
+      const lbl = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!visibility[id];
+      cb.addEventListener('change', () => {
+        visibility[id] = cb.checked;
+        onChange();
+      });
+      const swatch = document.createElement('span');
+      swatch.className = 'series-swatch' + (isTotal ? ' total' : '');
+      swatch.style.background = color;
+      lbl.appendChild(cb);
+      lbl.appendChild(swatch);
+      lbl.appendChild(document.createTextNode(label));
+      parent.appendChild(lbl);
+    }
+
+    const totalGroup = document.createElement('div');
+    totalGroup.className = 'series-group';
+    addCheckbox(totalGroup, 'total', 'Total', colorMap.total, true);
+    container.appendChild(totalGroup);
+
+    DIMENSION_KEYS.forEach((dim) => {
+      const series = data.groups[dim] || [];
+      if (!series.length) return;
+      const group = document.createElement('div');
+      group.className = 'series-group';
+      const title = document.createElement('span');
+      title.className = 'series-group-title';
+      title.textContent = DIMENSION_LABELS[dim] + ':';
+      group.appendChild(title);
+      series.forEach((s) => addCheckbox(group, s.id, s.label, colorMap[s.id], false));
+      container.appendChild(group);
+    });
+  }
+
+  function renderMultiSeriesChart(chartId, legendId, data, visibility, colorMap, opts) {
+    renderSeriesLegend(
+      document.getElementById(legendId),
+      data,
+      visibility,
+      colorMap,
+      () => renderMultiLineChart(document.getElementById(chartId), data, visibility, colorMap, opts)
+    );
+    renderMultiLineChart(document.getElementById(chartId), data, visibility, colorMap, opts);
+  }
+
+  function groupByDimension(rows, dimension, metric) {
+    const groups = new Map();
+    // Session-creation rows (region/mode/model all "unknown" by design, see
+    // collector.record_new_session) carry requests_total=0 — they'd otherwise
+    // show up as a meaningless "unknown" sliver on every request/cost/error chart.
+    rows.filter((r) => r.requests_total > 0).forEach((r) => {
+      const key = r[dimension] || 'unknown';
+      const existing = groups.get(key) || { requests: 0, errors: 0, cost: 0 };
+      existing.requests += r.requests_total;
+      existing.errors += r.requests_error;
+      existing.cost += r.cost_usd_sum || 0;
+      groups.set(key, existing);
+    });
+    const metricFn = metric === 'cost_usd_sum'
+      ? (agg) => agg.cost
+      : metric === 'error_rate'
+        ? (agg) => (agg.requests ? (agg.errors / agg.requests) * 100 : 0)
+        : (agg) => agg.requests;
+    let entries = [...groups.entries()].map(([label, agg]) => ({ label, v: metricFn(agg) }));
+    entries.sort((a, b) => b.v - a.v);
+    const CAP = 8;
+    if (entries.length > CAP) {
+      const kept = entries.slice(0, CAP);
+      const rest = entries.slice(CAP);
+      const restSum = rest.reduce((s, e) => s + e.v, 0);
+      kept.push({ label: 'Other', v: restSum });
+      entries = kept;
+    }
+    return entries;
+  }
+
+  function formatCount(v) { return Math.round(v).toLocaleString(); }
+  function formatCost(v) { return '$' + v.toFixed(2); }
+  function formatPercent(v) { return v.toFixed(1) + '%'; }
+
+  function renderCharts(rows, sinceIso, untilIso, tz) {
+    const sinceMs = new Date(sinceIso).getTime();
+    const untilMs = new Date(untilIso).getTime();
+    const formatTime = (t) => formatHourBucket(new Date(t).toISOString().replace('T', ' ').slice(0, 19), tz);
+
+    requestsChartData = buildMultiSeriesTimeData(rows, sinceMs, untilMs, 'requests');
+    requestsVisibility = resetSeriesVisibility(requestsChartData);
+    requestsColorMap = buildSeriesColorMap(requestsChartData);
+    renderMultiSeriesChart(
+      'chartRequests', 'legendRequests',
+      requestsChartData, requestsVisibility, requestsColorMap,
+      { label: 'Requests over time', formatValue: formatCount, formatTime }
+    );
+
+    costChartData = buildMultiSeriesTimeData(rows, sinceMs, untilMs, 'cost');
+    costVisibility = resetSeriesVisibility(costChartData);
+    costColorMap = buildSeriesColorMap(costChartData);
+    renderMultiSeriesChart(
+      'chartCost', 'legendCost',
+      costChartData, costVisibility, costColorMap,
+      { label: 'Cost over time', formatValue: formatCost, formatTime }
+    );
+
+    renderLineChart(
+      document.getElementById('chartErrorRate'),
+      buildTimeSeries(rows, sinceMs, untilMs, (agg) => (agg.requests ? (agg.errors / agg.requests) * 100 : 0)),
+      { label: 'Error rate over time', formatValue: formatPercent, formatTime }
+    );
+
+    renderDimensionBars(rows);
+  }
+
+  const DIMENSION_BAR_CONFIG = [
+    { dimension: 'region', prefix: 'Region' },
+    { dimension: 'mode', prefix: 'Mode' },
+    { dimension: 'model', prefix: 'Model' },
+  ];
+  const METRIC_BAR_CONFIG = [
+    { metric: 'requests_total', suffix: 'Requests', format: formatCount },
+    { metric: 'cost_usd_sum', suffix: 'Cost', format: formatCost },
+    { metric: 'error_rate', suffix: 'ErrorRate', format: formatPercent },
+  ];
+
+  function renderDimensionBars(rows) {
+    DIMENSION_BAR_CONFIG.forEach(({ dimension, prefix }) => {
+      METRIC_BAR_CONFIG.forEach(({ metric, suffix, format }) => {
+        const container = document.getElementById('bar' + prefix + suffix);
+        const label = prefix + ' — ' + suffix.replace('ErrorRate', 'Error rate');
+        renderBarChart(container, groupByDimension(rows, dimension, metric), { label, formatValue: format });
+      });
+    });
+  }
+
+  // ---------- load / apply ----------
+
+  async function load(token, since, until) {
     contentError.style.display = 'none';
     try {
-      const data = await fetchUsage(token);
+      const data = await fetchUsage(token, since, until);
+      currentTz = data.default_timezone || 'UTC';
+      currentRows = data.rows;
+      setStoredRange(data.since, data.until);
+      subtitleEl.textContent =
+        'Hourly rollups, shown in ' + currentTz + '. No message content is ever recorded.';
       renderCards(data.rows);
+      renderCharts(data.rows, data.since, data.until, currentTz);
       renderTable(data.rows);
     } catch (err) {
       contentError.textContent = err.message;
@@ -174,16 +1206,40 @@
   async function tryEnter(token) {
     gateError.style.display = 'none';
     try {
-      const data = await fetchUsage(token);
+      const stored = getStoredRange();
+      const data = await fetchUsage(token, stored ? stored.since : null, stored ? stored.until : null);
       setToken(token);
+      currentTz = data.default_timezone || 'UTC';
+      currentRows = data.rows;
+      setStoredRange(data.since, data.until);
       gate.classList.add('hidden');
       content.classList.remove('hidden');
+      subtitleEl.textContent =
+        'Hourly rollups, shown in ' + currentTz + '. No message content is ever recorded.';
       renderCards(data.rows);
+      renderCharts(data.rows, data.since, data.until, currentTz);
       renderTable(data.rows);
     } catch (err) {
       gateError.textContent = err.message;
       gateError.style.display = 'block';
     }
+  }
+
+  function applyRange() {
+    contentError.style.display = 'none';
+    try {
+      const { since, until } = readRangeInputs();
+      load(getToken(), since, until);
+    } catch (err) {
+      contentError.textContent = err.message;
+      contentError.style.display = 'block';
+    }
+  }
+
+  function applyPreset(hours) {
+    const until = new Date();
+    const since = new Date(until.getTime() - hours * 3600000);
+    load(getToken(), since.toISOString(), until.toISOString());
   }
 
   document.getElementById('submit').addEventListener('click', () => {
@@ -193,7 +1249,17 @@
   tokenInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('submit').click();
   });
-  document.getElementById('refresh').addEventListener('click', () => load(getToken()));
+  document.getElementById('refresh').addEventListener('click', () => {
+    const stored = getStoredRange();
+    load(getToken(), stored ? stored.since : null, stored ? stored.until : null);
+  });
+  document.getElementById('applyRange').addEventListener('click', applyRange);
+  [sinceInput, untilInput].forEach((el) => el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') applyRange();
+  }));
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => applyPreset(Number(btn.dataset.hours)));
+  });
 
   const existing = getToken();
   if (existing) {

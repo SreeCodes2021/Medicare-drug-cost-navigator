@@ -20,9 +20,14 @@ class HourlyCounters:
     prompt_len_short: int = 0
     prompt_len_medium: int = 0
     prompt_len_long: int = 0
+    prompt_len_sum: int = 0
     latency_ms_sum: float = 0.0
     tokens_in_sum: int = 0
     tokens_out_sum: int = 0
+    # Request-scoped (not session-scoped) by design: the collector never retains
+    # session identity, so this approximates "avg tokens per session" via
+    # requests that produced tokens, keeping the aggregate-only privacy model intact.
+    requests_with_tokens: int = 0
     cost_usd_sum: float = 0.0
 
 
@@ -97,9 +102,12 @@ class UsageCollector:
                 counters.prompt_len_medium += 1
             else:
                 counters.prompt_len_long += 1
+            counters.prompt_len_sum += prompt_len
             counters.latency_ms_sum += latency_ms
             counters.tokens_in_sum += tokens_in
             counters.tokens_out_sum += tokens_out
+            if tokens_in > 0 or tokens_out > 0:
+                counters.requests_with_tokens += 1
             counters.cost_usd_sum += cost_usd
 
     def record_query_log(

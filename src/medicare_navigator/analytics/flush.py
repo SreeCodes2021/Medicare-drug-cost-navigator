@@ -21,8 +21,9 @@ def _write_rows(acc: _Accumulator) -> None:
                     hour_bucket, region, mode, model, sessions_new, requests_total,
                     requests_ok, requests_error, requests_clarification, requests_not_found,
                     requests_limit_reached, prompt_len_short, prompt_len_medium, prompt_len_long,
-                    latency_ms_sum, tokens_in_sum, tokens_out_sum, cost_usd_sum
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prompt_len_sum, latency_ms_sum, tokens_in_sum, tokens_out_sum,
+                    requests_with_tokens, cost_usd_sum
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (hour_bucket, region, mode, model) DO UPDATE SET
                     sessions_new = usage_hourly.sessions_new + excluded.sessions_new,
                     requests_total = usage_hourly.requests_total + excluded.requests_total,
@@ -34,9 +35,11 @@ def _write_rows(acc: _Accumulator) -> None:
                     prompt_len_short = usage_hourly.prompt_len_short + excluded.prompt_len_short,
                     prompt_len_medium = usage_hourly.prompt_len_medium + excluded.prompt_len_medium,
                     prompt_len_long = usage_hourly.prompt_len_long + excluded.prompt_len_long,
+                    prompt_len_sum = usage_hourly.prompt_len_sum + excluded.prompt_len_sum,
                     latency_ms_sum = usage_hourly.latency_ms_sum + excluded.latency_ms_sum,
                     tokens_in_sum = usage_hourly.tokens_in_sum + excluded.tokens_in_sum,
                     tokens_out_sum = usage_hourly.tokens_out_sum + excluded.tokens_out_sum,
+                    requests_with_tokens = usage_hourly.requests_with_tokens + excluded.requests_with_tokens,
                     cost_usd_sum = usage_hourly.cost_usd_sum + excluded.cost_usd_sum
                 """,
                 [
@@ -54,9 +57,11 @@ def _write_rows(acc: _Accumulator) -> None:
                     counters.prompt_len_short,
                     counters.prompt_len_medium,
                     counters.prompt_len_long,
+                    counters.prompt_len_sum,
                     counters.latency_ms_sum,
                     counters.tokens_in_sum,
                     counters.tokens_out_sum,
+                    counters.requests_with_tokens,
                     counters.cost_usd_sum,
                 ],
             )

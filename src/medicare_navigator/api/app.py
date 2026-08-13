@@ -6,9 +6,10 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -323,10 +324,16 @@ async def get_disclaimer():
 
 
 @app.get("/api/admin/usage")
-async def admin_usage(x_admin_token: str | None = Header(default=None)):
+async def admin_usage(
+    x_admin_token: str | None = Header(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+):
     """Aggregate-only usage rollups (no message text, no per-user identity).
     Off by default: returns 404 unless ADMIN_TOKEN is set, and requires a
-    matching X-Admin-Token header."""
+    matching X-Admin-Token header. Optional `since`/`until` query params
+    (ISO-8601) select the window; if omitted, defaults to the last
+    ADMIN_USAGE_HOURS hours ending now."""
     if not settings.admin_token:
         raise HTTPException(status_code=404, detail="Not found")
     if x_admin_token != settings.admin_token:
@@ -334,11 +341,12 @@ async def admin_usage(x_admin_token: str | None = Header(default=None)):
 
     from medicare_navigator.storage.connection import DuckDBConnection
 
-    db = DuckDBConnection()
-    rows = await asyncio.to_thread(
-        db.fetchall,
-        "SELECT * FROM usage_hourly ORDER BY hour_bucket DESC LIMIT 200",
-    )
+    now = datetime.now(timezone.utc)
+    resolved_since = since if since is not None else now - timedelta(hours=settings.admin_usage_hours)
+    resolved_until = until if until is not None else now
+    if resolved_since >= resolved_until:
+        raise HTTPException(status_code=400, detail="since must be before until")
+
     columns = [
         "hour_bucket",
         "region",
@@ -354,12 +362,31 @@ async def admin_usage(x_admin_token: str | None = Header(default=None)):
         "prompt_len_short",
         "prompt_len_medium",
         "prompt_len_long",
+        "prompt_len_sum",
         "latency_ms_sum",
         "tokens_in_sum",
         "tokens_out_sum",
+        "requests_with_tokens",
         "cost_usd_sum",
     ]
-    return {"rows": [dict(zip(columns, row, strict=True)) for row in rows]}
+    db = DuckDBConnection()
+    rows = await asyncio.to_thread(
+        db.fetchall,
+        # Explicit column list (not SELECT *): ALTER TABLE ADD COLUMN appends new
+        # columns to the end of the physical row on disk, which would silently
+        # desync a SELECT *-based positional zip() from the `columns` list below
+        # on any DB that picked up prompt_len_sum/requests_with_tokens via migration
+        # rather than a fresh CREATE TABLE.
+        f"SELECT {', '.join(columns)} FROM usage_hourly "
+        "WHERE hour_bucket >= ? AND hour_bucket < ? ORDER BY hour_bucket DESC",
+        [resolved_since.replace(tzinfo=None), resolved_until.replace(tzinfo=None)],
+    )
+    return {
+        "since": resolved_since.isoformat(),
+        "until": resolved_until.isoformat(),
+        "default_timezone": settings.default_timezone,
+        "rows": [dict(zip(columns, row, strict=True)) for row in rows],
+    }
 
 
 @app.get("/api/privacy")
@@ -662,5 +689,12 @@ if _frontend.exists():
     @app.get("/", include_in_schema=False)
     async def serve_index():
         return FileResponse(_frontend / "index.html", media_type="text/html", headers=_no_cache)
+
+    _admin_usage = _frontend / "admin" / "usage.html"
+    if _admin_usage.is_file():
+
+        @app.get("/admin/usage", include_in_schema=False)
+        async def serve_admin_usage():
+            return FileResponse(_admin_usage, media_type="text/html", headers=_no_cache)
 
     app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")

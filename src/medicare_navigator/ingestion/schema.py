@@ -86,9 +86,11 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
             prompt_len_short INTEGER DEFAULT 0,
             prompt_len_medium INTEGER DEFAULT 0,
             prompt_len_long INTEGER DEFAULT 0,
+            prompt_len_sum INTEGER DEFAULT 0,
             latency_ms_sum DOUBLE DEFAULT 0,
             tokens_in_sum INTEGER DEFAULT 0,
             tokens_out_sum INTEGER DEFAULT 0,
+            requests_with_tokens INTEGER DEFAULT 0,
             cost_usd_sum DOUBLE DEFAULT 0,
             PRIMARY KEY (hour_bucket, region, mode, model)
         )
@@ -110,6 +112,8 @@ SCHEMA_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
     ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
     ("beneficiary_cost", "cost_max", "DOUBLE"),
+    ("usage_hourly", "prompt_len_sum", "INTEGER DEFAULT 0"),
+    ("usage_hourly", "requests_with_tokens", "INTEGER DEFAULT 0"),
 )
 
 

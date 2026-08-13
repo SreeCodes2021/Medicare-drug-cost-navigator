@@ -745,11 +745,20 @@ function updateChatComposerHint() {
 
 function updatePlanLoadHint(count, message) {
   const hint = el("plan-load-hint");
+  if (!hint) return;
   if (message) {
     hint.textContent = message;
     return;
   }
-  hint.textContent = count > 0 ? `${count} plan(s) loaded` : "No plans in database yet";
+  if (!guidedState) {
+    hint.textContent =
+      allPlans.length > 0
+        ? "Select a state above to see available plans"
+        : "No plans in database yet";
+    return;
+  }
+  hint.textContent =
+    count > 0 ? `${count} plan(s) in ${guidedState}` : `No plans in ${guidedState}`;
 }
 
 function formatPlanLabel(plan) {
@@ -984,6 +993,7 @@ function onGuidedStateChanged(state) {
   refreshSingleDrugPickers();
   refreshMultiDrugPickers();
   refreshCompareDrugPickers();
+  updatePlanLoadHint(guidedScopedPlans().length);
   updateGuidedSubmitButtonState();
 }
 
@@ -1102,7 +1112,7 @@ async function loadPlans(contractYear = null) {
     throw new Error("plans API returned non-array");
   }
   populatePlanSelect(plans);
-  updatePlanLoadHint(plans.length);
+  updatePlanLoadHint(guidedScopedPlans().length);
   return plans.length;
 }
 
