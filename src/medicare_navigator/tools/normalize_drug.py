@@ -8,6 +8,12 @@ import httpx
 
 from medicare_navigator.config import settings
 from medicare_navigator.models.tool_result import ToolResult, ToolStatus
+from medicare_navigator.tools.rxnorm_offline import (
+    offline_approximate_lookup,
+    offline_exact_lookup,
+    offline_list_strength_concepts,
+    offline_strength_specific_lookup,
+)
 
 SOURCE_ID = "rxnorm_api"
 AS_OF_FALLBACK = "2026-01-15"
@@ -78,6 +84,8 @@ async def _rxnorm_exact_lookup(name: str) -> list[dict]:
                     candidates.append({"rxcui": rxcui, "name": name, "source": "rxnorm_api"})
     except httpx.HTTPError:
         pass
+    if not candidates:
+        candidates = offline_exact_lookup(name)
     return candidates
 
 
@@ -111,6 +119,15 @@ async def list_strength_concepts(name: str) -> list[dict]:
                         )
     except httpx.HTTPError:
         pass
+    if not matches:
+        matches = [
+            {
+                "rxcui": concept["rxcui"],
+                "tty": concept.get("tty", "SCD"),
+                "concept_name": concept.get("concept_name") or concept.get("name") or name,
+            }
+            for concept in offline_list_strength_concepts(name)
+        ]
     name_lower = name.lower()
 
     def _strength_rank(m: dict) -> tuple[int, int, int]:
@@ -139,11 +156,14 @@ async def _rxnorm_strength_specific_lookup(name: str, dosage: str) -> list[dict]
     -> 6472), which will never match a formulary row keyed on "lovastatin 40 MG Oral Tablet"
     (197905). Without this, any dosage-qualified query would resolve to the wrong RXCUI and
     be reported as not covered even when the drug is on the formulary."""
-    return [
+    strength_matches = [
         match
         for match in await list_strength_concepts(name)
         if _dosage_in_name(match.get("concept_name") or "", dosage)
     ]
+    if strength_matches:
+        return strength_matches
+    return offline_strength_specific_lookup(name, dosage)
 
 
 async def _rxnorm_approximate_lookup(name: str, max_results: int = 5) -> list[dict]:
@@ -170,6 +190,8 @@ async def _rxnorm_approximate_lookup(name: str, max_results: int = 5) -> list[di
                     )
     except httpx.HTTPError:
         pass
+    if not candidates:
+        candidates = offline_approximate_lookup(name, max_results=max_results)
     return candidates
 
 

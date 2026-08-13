@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from medicare_navigator.agent.mediator import MediatorRewrite
 
 from medicare_navigator.agent.prompts import build_navigator_system_prompt
+from medicare_navigator.analytics.collector import collector
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.citations import (
     apply_guardrails,
@@ -432,22 +433,10 @@ def _log_query(
     statuses: dict[str, str],
     latency_ms: float,
 ) -> None:
+    # Queued in-memory and written by analytics.flush's periodic loop — never a
+    # blocking disk write on this hot path. See analytics/collector.py.
     try:
-        from medicare_navigator.storage.connection import DuckDBConnection
-
-        db = DuckDBConnection()
-        conn = db.connect()
-        conn.execute(
-            "INSERT INTO query_log VALUES (?, ?, ?, ?, ?, current_timestamp)",
-            [
-                query_id,
-                session_id or "",
-                json.dumps(tools),
-                json.dumps(statuses),
-                latency_ms,
-            ],
-        )
-        conn.close()
+        collector.record_query_log(query_id, session_id or "", tools, statuses, latency_ms)
     except Exception:
         pass
 
@@ -904,7 +893,10 @@ class Navigator:
         start = time.perf_counter()
         query_id = str(uuid.uuid4())
         model_id = llm_model or default_llm_model()
+        was_new_session = session_manager.is_new(session_id)
         session = session_manager.get_or_create(session_id)
+        if was_new_session and settings.analytics_enabled:
+            collector.record_new_session()
         chat_history = session.get("chat_history", [])
 
         if not session_manager.can_continue(session):

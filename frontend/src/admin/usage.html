@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Usage Stats — Admin</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --surface: #ffffff; --border: #d8dee9; --text: #1a2332;
+    --muted: #526174; --accent: #2563eb; --accent-soft: #eff6ff;
+    --success: #059669; --error: #dc2626; --card-bg: #f8fafc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --surface: #1a2436; --border: #303f58; --text: #e8edf5;
+      --muted: #9aabc0; --accent: #5b9dff; --accent-soft: #1c2c47;
+      --success: #34d399; --error: #f87171; --card-bg: #212d42;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .gate, .content { max-width: 960px; margin: 0 auto; }
+  .gate {
+    max-width: 380px; margin-top: 15vh; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; padding: 24px;
+  }
+  .gate label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .gate input {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px;
+  }
+  .gate button, .toolbar button {
+    margin-top: 12px; padding: 8px 14px; border: none; border-radius: 6px;
+    background: var(--accent); color: white; font-size: 13px; cursor: pointer;
+  }
+  .error { color: var(--error); font-size: 13px; margin-top: 10px; display: none; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .toolbar button { margin-top: 0; background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .n { font-size: 22px; font-weight: 600; }
+  .card .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; background: var(--card-bg); }
+  tr:last-child td { border-bottom: none; }
+  .hidden { display: none; }
+  .empty { color: var(--muted); padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <h1>Usage Stats</h1>
+  <p class="sub">Aggregate-only — no message text or per-user data. Enter the admin token to continue.</p>
+  <label for="token">X-Admin-Token</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" />
+  <button id="submit">View stats</button>
+  <p id="gateError" class="error"></p>
+</div>
+
+<div id="content" class="content hidden">
+  <div class="toolbar">
+    <div>
+      <h1>Usage Stats</h1>
+      <p class="sub">Hourly rollups (UTC), last 200 buckets. No message content is ever recorded.</p>
+    </div>
+    <button id="refresh">Refresh</button>
+  </div>
+  <div id="cards" class="cards"></div>
+  <div id="tableWrap"></div>
+  <p id="contentError" class="error"></p>
+</div>
+
+<script>
+(function () {
+  const gate = document.getElementById('gate');
+  const content = document.getElementById('content');
+  const tokenInput = document.getElementById('token');
+  const gateError = document.getElementById('gateError');
+  const contentError = document.getElementById('contentError');
+  const cardsEl = document.getElementById('cards');
+  const tableWrap = document.getElementById('tableWrap');
+
+  function getToken() {
+    return sessionStorage.getItem('admin_token') || '';
+  }
+
+  function setToken(t) {
+    sessionStorage.setItem('admin_token', t);
+  }
+
+  async function fetchUsage(token) {
+    const res = await fetch('/api/admin/usage', {
+      headers: { 'X-Admin-Token': token },
+    });
+    if (res.status === 403) throw new Error('Invalid token.');
+    if (res.status === 404) throw new Error('Admin endpoint is not enabled (ADMIN_TOKEN not set on the server).');
+    if (!res.ok) throw new Error('Request failed (' + res.status + ').');
+    return res.json();
+  }
+
+  function renderCards(rows) {
+    const totals = rows.reduce((acc, r) => {
+      acc.sessions += r.sessions_new;
+      acc.requests += r.requests_total;
+      acc.errors += r.requests_error;
+      acc.latencySum += r.latency_ms_sum;
+      acc.costUsd += r.cost_usd_sum || 0;
+      acc.tokensIn += r.tokens_in_sum || 0;
+      acc.tokensOut += r.tokens_out_sum || 0;
+      return acc;
+    }, { sessions: 0, requests: 0, errors: 0, latencySum: 0, costUsd: 0, tokensIn: 0, tokensOut: 0 });
+
+    const avgLatency = totals.requests ? Math.round(totals.latencySum / totals.requests) : 0;
+    const errorRate = totals.requests ? ((totals.errors / totals.requests) * 100).toFixed(1) : '0.0';
+
+    const cards = [
+      ['New sessions', totals.sessions],
+      ['Requests', totals.requests],
+      ['Error rate', errorRate + '%'],
+      ['Avg latency', avgLatency + ' ms'],
+      ['Total tokens', (totals.tokensIn + totals.tokensOut).toLocaleString()],
+      ['Total cost', '$' + totals.costUsd.toFixed(2)],
+    ];
+    cardsEl.innerHTML = cards.map(([label, value]) =>
+      '<div class="card"><div class="n">' + value + '</div><div class="l">' + label + '</div></div>'
+    ).join('');
+  }
+
+  function renderTable(rows) {
+    if (!rows.length) {
+      tableWrap.innerHTML = '<div class="empty">No usage recorded yet.</div>';
+      return;
+    }
+    const head = [
+      'Hour (UTC)', 'Region', 'Mode', 'Model', 'New sessions', 'Requests', 'OK', 'Errors',
+      'Clarify', 'Not found', 'Limit', 'Short', 'Medium', 'Long', 'Avg latency (ms)',
+      'Tokens in', 'Tokens out', 'Cost ($)',
+    ];
+    const body = rows.map((r) => {
+      const avg = r.requests_total ? Math.round(r.latency_ms_sum / r.requests_total) : 0;
+      return '<tr>' + [
+        r.hour_bucket, r.region, r.mode, r.model, r.sessions_new, r.requests_total, r.requests_ok,
+        r.requests_error, r.requests_clarification, r.requests_not_found, r.requests_limit_reached,
+        r.prompt_len_short, r.prompt_len_medium, r.prompt_len_long, avg,
+        r.tokens_in_sum, r.tokens_out_sum, (r.cost_usd_sum || 0).toFixed(4),
+      ].map((v) => '<td>' + v + '</td>').join('') + '</tr>';
+    }).join('');
+    tableWrap.innerHTML =
+      '<table><thead><tr>' + head.map((h) => '<th>' + h + '</th>').join('') +
+      '</tr></thead><tbody>' + body + '</tbody></table>';
+  }
+
+  async function load(token) {
+    contentError.style.display = 'none';
+    try {
+      const data = await fetchUsage(token);
+      renderCards(data.rows);
+      renderTable(data.rows);
+    } catch (err) {
+      contentError.textContent = err.message;
+      contentError.style.display = 'block';
+    }
+  }
+
+  async function tryEnter(token) {
+    gateError.style.display = 'none';
+    try {
+      const data = await fetchUsage(token);
+      setToken(token);
+      gate.classList.add('hidden');
+      content.classList.remove('hidden');
+      renderCards(data.rows);
+      renderTable(data.rows);
+    } catch (err) {
+      gateError.textContent = err.message;
+      gateError.style.display = 'block';
+    }
+  }
+
+  document.getElementById('submit').addEventListener('click', () => {
+    const t = tokenInput.value.trim();
+    if (t) tryEnter(t);
+  });
+  tokenInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('submit').click();
+  });
+  document.getElementById('refresh').addEventListener('click', () => load(getToken()));
+
+  const existing = getToken();
+  if (existing) {
+    tryEnter(existing);
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -1167,6 +1167,62 @@ medicare-ingest spuf --source tests/fixtures/spuf -v  # if verbose flag exists; 
 
 ---
 
+## 19.2 Usage analytics (aggregate-only, privacy-safe)
+
+The app tracks lightweight, **aggregate-only** usage stats — request/session counts,
+prompt-length buckets, success/error counts, and latency sums, rolled up per UTC hour.
+This never includes message text, drug names, IP addresses, or anything that identifies
+an individual — consistent with `config/privacy_policy.txt`.
+
+**How it works** (`src/medicare_navigator/analytics/`): requests increment in-memory
+counters (`collector.py`) with zero disk I/O on the request path. A background task
+(`flush.py`, started in `api/app.py`'s `lifespan()`) drains and writes those counters to
+the `usage_hourly` DuckDB table every `ANALYTICS_FLUSH_INTERVAL_SECONDS` (default 60s).
+Set `ANALYTICS_ENABLED=false` to disable entirely.
+
+**Reading the data:**
+
+```bash
+# Direct DuckDB query (local or after copying the deployed .duckdb file down)
+duckdb data/navigator.duckdb -c "select * from usage_hourly order by hour_bucket desc limit 48"
+```
+
+```bash
+# Via the API (requires ADMIN_TOKEN set in the environment; off/404 if unset)
+curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<host>/api/admin/usage
+```
+
+A small self-contained UI is also served at `/admin/usage.html` (`frontend/src/admin/usage.html`,
+not linked from the main app). It prompts for the token client-side (stored only in
+`sessionStorage`, never in the URL) and calls the same `/api/admin/usage` JSON endpoint —
+no server-side session/auth beyond the header check above.
+
+`ADMIN_TOKEN` is a shared-secret env var (set separately per environment — local `.env`
+and Render's env vars are independent). There is no user-account system in this app, so
+this is a simple gate, not full auth — treat the token like a password and don't commit it.
+
+The `region` column holds the **user-selected state** from the chat/guided-form state
+picker (`chatState` / `guidedState` in `frontend/src/app.js`) — the same picker already
+used to scope the plan combobox, including the existing ZIP→state resolution
+(`GET /api/zip-lookup`, `tools/zip_lookup.py`, a static USPS ZIP3 table). No IP-based
+geo-IP lookup was added. `api/app.py`'s `_resolve_region()` tries, in order:
+
+1. A 2-letter state code sent directly in the request body (the state picker's value).
+2. The state of `filters.plan_id`, if a plan was picked via the plan combobox/guided form
+   (`PlanRepository.get_plan(...).state`, off the event loop via `asyncio.to_thread`).
+3. The state of a plan ID found by regex directly in the message text
+   (`_PLAN_KEY_IN_TEXT_RE`, matching CMS's `<contract_id>-<plan_id>` shape, e.g.
+   `S9999-001`) — covers a user typing a plan ID without ever touching the picker.
+
+Anything else — no state, no resolvable plan, or a malformed/free-text value — collapses
+to `"unknown"` so the bucket key can't be polluted. As with the plan-picker feature, this
+state is never sent to `/api/estimate*` or `/api/compare-plans` and never affects a cost
+figure — it exists solely as an analytics label. Session-creation counts (`sessions_new`)
+are always bucketed under `"unknown"` regardless, since the region isn't known yet at the
+point a session is first created.
+
+---
+
 ## 20. Related documentation
 
 | Document | Contents |

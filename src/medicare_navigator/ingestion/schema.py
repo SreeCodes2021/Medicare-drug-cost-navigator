@@ -13,6 +13,7 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
             "plans",
             "basic_drugs_formulary",
             "query_log",
+            "usage_hourly",
             "pricing",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -71,6 +72,28 @@ def create_tables(conn, *, drop_existing: bool = True) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_hourly (
+            hour_bucket TIMESTAMP, region VARCHAR, mode VARCHAR, model VARCHAR,
+            sessions_new INTEGER DEFAULT 0,
+            requests_total INTEGER DEFAULT 0,
+            requests_ok INTEGER DEFAULT 0,
+            requests_error INTEGER DEFAULT 0,
+            requests_clarification INTEGER DEFAULT 0,
+            requests_not_found INTEGER DEFAULT 0,
+            requests_limit_reached INTEGER DEFAULT 0,
+            prompt_len_short INTEGER DEFAULT 0,
+            prompt_len_medium INTEGER DEFAULT 0,
+            prompt_len_long INTEGER DEFAULT 0,
+            latency_ms_sum DOUBLE DEFAULT 0,
+            tokens_in_sum INTEGER DEFAULT 0,
+            tokens_out_sum INTEGER DEFAULT 0,
+            cost_usd_sum DOUBLE DEFAULT 0,
+            PRIMARY KEY (hour_bucket, region, mode, model)
+        )
+        """
+    )
 
 
 SPUF_INDEX_NAMES = (
@@ -117,6 +140,10 @@ def _column_exists(conn, table: str, column: str) -> bool:
 def migrate_schema(conn) -> None:
     if _table_exists(conn, "drugs"):
         conn.execute("DROP TABLE drugs")
+    # usage_hourly's primary key gained mode/model columns; older shapes can't be
+    # ALTER'd into the new PK, and the table only holds recomputable rollups.
+    if _table_exists(conn, "usage_hourly") and not _column_exists(conn, "usage_hourly", "tokens_in_sum"):
+        conn.execute("DROP TABLE usage_hourly")
     for table, column, col_type in SCHEMA_MIGRATIONS:
         if _table_exists(conn, table) and not _column_exists(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")

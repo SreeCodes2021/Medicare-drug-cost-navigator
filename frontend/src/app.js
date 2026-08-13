@@ -16,6 +16,9 @@ let cachedPrivacyText = "";
 let emptyStateHtml = "";
 let guidedSessionId = null;
 let guidedTurnCount = 0;
+// Which guided sub-tab is active (single/multidrug/compareplans) — sent as the
+// analytics-only `mode` field on /api/chat so usage can be broken out per flow.
+let guidedSubmode = "single";
 
 const DEFAULT_MODEL = "gpt-5.6-luna";
 const MODEL_OPTIONS = [
@@ -2174,6 +2177,7 @@ function switchGuidedSubmode(mode) {
     multidrug: "multidrug-submit",
     compareplans: "compareplans-submit",
   };
+  guidedSubmode = mode;
   closeAllDrugPickers();
   ["single", "multidrug", "compareplans"].forEach((m) => {
     const isActive = m === mode;
@@ -3004,6 +3008,10 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       filters: getFilters(),
       model: getSelectedModel(),
       timezone: getUserTimezone(),
+      // Aggregate usage-analytics labels only — never used to filter or adjust
+      // cost estimates (see collector.py / _normalize_region).
+      region: chatState || null,
+      mode: "chat",
     };
 
     const res = await fetch(`${API}/api/chat`, {
@@ -3148,6 +3156,16 @@ function updateGuidedFollowupAvailability() {
       : "Ask a follow-up about this estimate";
 }
 
+// Maps the active guided sub-tab to the analytics `mode` value the backend expects.
+function guidedAnalyticsMode() {
+  const bySubmode = {
+    single: "guided_single",
+    multidrug: "guided_compare_drug",
+    compareplans: "guided_compare_plan",
+  };
+  return bySubmode[guidedSubmode] || "guided_single";
+}
+
 async function sendGuidedInitial(message, filters = null) {
   resetGuidedConversation();
   await sendGuidedMessage(message, { filters });
@@ -3176,6 +3194,10 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
         filters,
         model: getSelectedModel("guided-model-select"),
         timezone: getUserTimezone(),
+        // Aggregate usage-analytics labels only — never used to filter or adjust
+        // cost estimates (see collector.py / _normalize_region).
+        region: guidedState || null,
+        mode: guidedAnalyticsMode(),
       }),
     });
     const contentType = res.headers.get("content-type") || "";

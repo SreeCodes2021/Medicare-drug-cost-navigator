@@ -12,6 +12,13 @@ MAX_HISTORY_TURNS = 5
 
 
 class SessionManager:
+    def is_new(self, session_id: str | None) -> bool:
+        """True if get_or_create(session_id) will mint a fresh session (unknown
+        id, no id given, or the existing one has expired)."""
+        if session_id and session_id in _sessions:
+            return datetime.utcnow() >= _sessions[session_id]["expires_at"]
+        return True
+
     def get_or_create(self, session_id: str | None = None) -> dict:
         if session_id and session_id in _sessions:
             session = _sessions[session_id]
