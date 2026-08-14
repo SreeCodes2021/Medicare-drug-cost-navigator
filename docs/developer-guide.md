@@ -374,6 +374,7 @@ Medicare-drug-cost-navigator/
 │   ├── agent/                # Navigator + system prompt + deterministic request routers
 │   │                         #   (insulin_requests, mixed_basket_requests, dosage_questions,
 │   │                         #    enrollment_questions, invalid_input_questions, ...)
+│   ├── analytics/            # Aggregate usage collector + background DuckDB flush
 │   ├── api/                  # FastAPI app
 │   ├── eval/                 # Offline eval suite (queries.jsonl)
 │   ├── guardrails/           # Citation enforcement
@@ -489,6 +490,29 @@ erDiagram
         double latency_ms
         timestamp created_at
     }
+
+    usage_hourly {
+        timestamp hour_bucket
+        varchar region
+        varchar mode
+        varchar model
+        int sessions_new
+        int requests_total
+        int requests_ok
+        int requests_error
+        int requests_clarification
+        int requests_not_found
+        int requests_limit_reached
+        int prompt_len_short
+        int prompt_len_medium
+        int prompt_len_long
+        int prompt_len_sum
+        double latency_ms_sum
+        int tokens_in_sum
+        int tokens_out_sum
+        int requests_with_tokens
+        double cost_usd_sum
+    }
 ```
 
 ### 5.2 Table purposes
@@ -501,7 +525,8 @@ erDiagram
 | `beneficiary_cost` | `beneficiary cost` | Copay/coinsurance by tier, coverage level, days-supply **code** |
 | `insulin_beneficiary_cost` | `insulin beneficiary cost` | Insulin statutory-cap copay by tier (nullable), pharmacy channel, days-supply **code** — no `coverage_level` column; insulin has no deductible phase. `coin_amt_*` columns are deliberately never ingested (see [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5) |
 | `drugs` | Runtime (RxNorm cache) | Cached normalization results |
-| `query_log` | Runtime | Optional analytics (failures swallowed) |
+| `query_log` | Runtime | Per-query tool/latency debug log; rows queued in `analytics/collector` and flushed asynchronously (not inline on the request path) |
+| `usage_hourly` | Runtime | Aggregate-only usage rollups keyed by UTC hour, region, mode, model — see [usage-analytics.md](./usage-analytics.md) |
 
 ### 5.3 Schema migrations
 
@@ -511,6 +536,8 @@ Persistent Render disks survive deploys. `CREATE TABLE IF NOT EXISTS` does **not
 SCHEMA_MIGRATIONS = (
     ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
     ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
+    ("usage_hourly", "prompt_len_sum", "INTEGER DEFAULT 0"),
+    ("usage_hourly", "requests_with_tokens", "INTEGER DEFAULT 0"),
 )
 ```
 
@@ -706,13 +733,36 @@ class DrugCostEstimate(BaseModel):
 | Filter injection | Guided-form slots appended to user message context |
 | Status derivation | `ok`, `needs_clarification`, `not_found`, `limit_reached` |
 | Guardrail retry | One rewrite attempt if dollar amounts or caveats fail validation |
-| Query logging | Best-effort insert into `query_log` |
+| Query logging | Queued via `analytics/collector.record_query_log`; flushed to `query_log` by `analytics/flush` (not inline DuckDB writes) |
 
-### 7.2 System prompt
+### 7.2 Early-return safety gate (`agent/invalid_input_questions.py`)
+
+Before the mediator or main LLM loop, malformed numeric inputs and prompt-injection patterns are rejected deterministically:
+
+| Pattern | Action |
+|---|---|
+| Non-positive days supply in message | Canned clarification (no LLM call) |
+| Price/jailbreak injection (`ignore instructions`, `disregard … instructions`, `say $…`, **`SYSTEM:`**, **`you are now unrestricted`**) | Refusal unless the message is a recognized mixed-basket price-injection test case |
+
+The safety gate always runs on the **raw** user message.
+
+### 7.2.1 Deterministic request routers (`agent/*_requests.py`)
+
+After the safety gate (and optional mediator), well-known request shapes are parsed and answered without the main LLM pricing loop:
+
+| Module | When |
+|---|---|
+| `insulin_requests.py` | Named insulin products, insulin policy questions, and **session follow-ups** — `resolve_insulin_session_follow_up` re-estimates when the user states new YTD spend but omits drug/plan names, reusing `session["last_tool_calls"]` from the prior turn |
+| `mixed_basket_requests.py` | Multi-drug baskets mixing insulin and oral drugs on one plan |
+| `dosage_questions.py` | Missing dosage clarification |
+| `enrollment_questions.py` | Enrollment / plan-switch asks |
+| `invalid_input_questions.py` | See §7.2 |
+
+### 7.3 System prompt
 
 `agent/prompts.py` — `NAVIGATOR_SYSTEM_PROMPT` encodes v1 scope boundaries (no enrollment advice, cite tool outputs only), plus insulin-specific rules: named insulin products may be priced without a strength/form (the statutory-cap path prices brand-only insulin), multiple named insulin products must never be collapsed into one pooled $35 total, and a normal priced insulin result (`benefit_phase: "insulin_cap"`) is presented like any other drug's estimate — no deductible-phase language.
 
-### 7.3 LLM client (`llm/client.py`)
+### 7.4 LLM client (`llm/client.py`)
 
 | Mode | When | Behavior |
 |---|---|---|
@@ -728,7 +778,7 @@ class DrugCostEstimate(BaseModel):
 
 Every response also carries token usage and an estimated USD cost (`LlmUsage`, via `llm/models.py::estimate_cost_usd` using each model's `input_per_mtok`/`output_per_mtok`); the frontend shows a running session total. When the mediator is enabled it makes its own separate call with its own timeout/retry settings (§2.4) — `LLM_TIMEOUT_SECONDS`/`LLM_MAX_RETRIES` above govern only the main chat model.
 
-### 7.4 Health check behavior
+### 7.5 Health check behavior
 
 `GET /api/health` returns **503 degraded** when LLM is not configured. Data endpoints (`/api/plans`) still work; chat returns 503.
 
@@ -746,6 +796,10 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 | `list_plans` | Sync | Filter by `state`, `plan_type`, `contract_year` |
 
 `normalize_drug` is **not** LLM-visible — it runs inside `estimate_drug_cost` so insulin detection cannot be skipped (it now sets a flag rather than hard-stopping).
+
+### 8.1 RxNorm offline fallback (`tools/rxnorm_offline.py`)
+
+When live NLM RxNorm REST calls fail (`httpx.HTTPError`) or return no matches, `normalize_drug` falls back to curated 2026 snapshots for demo/test drugs (ingredient RXCUIs, strength-specific SCD/SBD concepts, approximate fuzzy match). Candidates carry `source: "rxnorm_offline"`. This improves offline tests and degraded-network operation without changing the cost pipeline contract.
 
 ### Tool result envelope
 
@@ -768,7 +822,15 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 `guardrails/citations.py`:
 
 1. **`build_citations_from_artifacts`** — Maps tool results to `Citation` objects for the Sources panel (including lookup failures).
-2. **`apply_guardrails`** — Force-appends verbatim caveats from tools if the LLM paraphrased or omitted them; validates dollar amounts trace to `cost_low`/`cost_high`.
+2. **`apply_guardrails`** — Force-appends verbatim caveats from tools if the LLM paraphrased or omitted them; validates dollar amounts trace to `cost_low`/`cost_high`; runs channel-parity prose repairs from `guardrails/channel_parity.py`.
+
+`guardrails/channel_parity.py` keeps multi-channel wording honest:
+
+| Function | Role |
+|---|---|
+| `channel_wording_for_channels` | Suffix for cost sentences — uses "across all CMS pharmacy channels" when every priced channel shares one cost; never implies variance when amounts are uniform |
+| `repair_misleading_channel_variance_in_prose` | Rewrites LLM prose that says "depending on pharmacy channel" when all four channels returned the same amount |
+| `repair_missing_mail_retail_contrast_in_prose` | Ensures mail vs retail contrast is stated when channels differ |
 
 Enforced hard-stop statuses: `suppressed`, `insulin_out_of_scope` (the narrow data-gap case), `quantity_limit_blocked`. `INSULIN_STATUTORY_CAP_CAVEAT` is in `_CARD_ONLY_CAVEATS` alongside `BUG2_CAVEAT` — it renders on the estimate card without LLM paraphrasing, same treatment as the deductible-phase caveat.
 
@@ -783,13 +845,15 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/api/health` | None | Service health, LLM config, data freshness |
-| `GET` | `/api/disclaimer` | None | Canonical disclaimer text |
+| `GET` | `/api/disclaimer` | None | Canonical disclaimer text + short privacy pointer (banner and modal) |
+| `GET` | `/api/privacy` | None | Full privacy policy (`config/privacy_policy.txt`); covers session memory, aggregate usage stats, AI providers |
 | `GET` | `/api/meta/as-of` | None | Raw `manifest.json` |
 | `GET` | `/api/plans` | None | Plan list; query params: `plan_type`, `state`, `year` |
 | `GET` | `/api/models` | None | Available LLM models (`llm/models.py` catalog) with per-provider `configured` status |
 | `POST` | `/api/query` | None | Structured query (legacy-compatible) |
 | `POST` | `/api/chat` | None | Conversational turn with optional filters and `model` override |
 | `POST` | `/api/estimate` | None | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels` only, no LLM call) |
+| `GET` | `/api/admin/usage` | `X-Admin-Token` | Aggregate usage rollups; 404 when `ADMIN_TOKEN` unset — see [usage-analytics.md](./usage-analytics.md) |
 | `GET` | `/` | None | SPA shell (`frontend/dist/index.html`) |
 
 ### `POST /api/chat` request
@@ -805,9 +869,13 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
     "contract_year": 2026,
     "days_supply": 30,
     "ytd_oop_spend": 0
-  }
+  },
+  "region": "AR",
+  "mode": "chat"
 }
 ```
+
+Optional `region` (two-letter state from the UI state picker) and `mode` (`chat`, `guided_single`, `guided_compare_drug`, `guided_compare_plan`) are **analytics-only** — they do not affect routing or cost figures. See [usage-analytics.md](./usage-analytics.md).
 
 ### `POST /api/chat` response
 
@@ -877,11 +945,18 @@ flowchart LR
 | Plan loading | `GET /api/plans` on startup |
 | Empty DB polling | Every 20s, max 30 attempts, while plan count = 0 |
 | Guided estimate | Composes NL prompt → `POST /api/chat` → switches to chat tab |
+| Guided validation | Required asterisks + `updateGuidedMandatoryHints()` per-field "Mandatory" hints when submit is disabled |
+| Policy modals | `formatPolicyTextToHtml()` renders `##` section headings in disclaimer banner and Privacy/Disclaimer modals |
 | Error display | `chatErrorMessage()` parses FastAPI `detail` (JSON, text, validation arrays) |
 | Session | Stores `session_id` from first response; sends on subsequent turns |
+| Analytics labels | Sends `region` and `mode` on `POST /api/chat` for aggregate usage stats |
 | Cache busting | `?v=` query params on assets; server `Cache-Control: no-cache` |
 
-### 11.3 Build
+### 11.3 Admin pages
+
+`scripts/build-frontend.sh` copies `frontend/src/admin/*.html` to `frontend/dist/admin/` (e.g. `/admin/usage.html` usage dashboard). Not linked from the main SPA. See [usage-analytics.md](./usage-analytics.md).
+
+### 11.4 Build
 
 ```bash
 scripts/build-frontend.sh   # copies src → dist
@@ -918,6 +993,10 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | `SESSION_TTL_MINUTES` | No | `30` | In-memory session expiry |
 | `MAX_TOOL_ROUNDS` | No | `8` | Agent tool loop cap |
 | `INGEST_STATES` | No | yaml `states` | Comma-separated active ingest states; intersected with `pdp_region_codes` catalog |
+| `ANALYTICS_ENABLED` | No | `true` | Set `false` to disable usage collection and the flush background task |
+| `ANALYTICS_FLUSH_INTERVAL_SECONDS` | No | `60` | Seconds between analytics drains to DuckDB |
+| `ADMIN_TOKEN` | No | empty | Shared secret for `GET /api/admin/usage`; endpoint hidden (404) when unset |
+| `ADMIN_USAGE_HOURS` | No | `2160` | Default lookback window (~3 months) for admin usage API when `since`/`until` omitted |
 
 \*Production requires a real API key **or** intentional mock mode for demos only.
 
@@ -928,7 +1007,8 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
 | `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
 | `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
-| `config/disclaimer.txt` | UI disclaimer banner |
+| `config/disclaimer.txt` | UI disclaimer banner + modal; includes a short privacy pointer to the full policy |
+| `config/privacy_policy.txt` | Full privacy policy (`GET /api/privacy`, Privacy menu modal) |
 
 ---
 
@@ -1038,7 +1118,7 @@ Default: **integration tests deselected** (`-m 'not integration'` in `pyproject.
 pytest tests/ -v -m integration
 ```
 
-Current suite: **347 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 352 total. Run `pytest --collect-only -q` to confirm the current count.
+Current suite: **442 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 447 total. Run `pytest --collect-only -q` to confirm the current count.
 
 ### 14.2 Test categories
 
@@ -1050,10 +1130,11 @@ flowchart TB
         T3[test_citations — guardrails]
         T4[test_normalize_drug]
         T5[test_mcp_registry]
-        T10[test_insulin — allowlist, cap, catastrophic $0]
+        T10[test_insulin — allowlist, cap, catastrophic $0, session follow-up]
         T11[test_insulin_golden_contract — golden-037..045]
         T12[test_mixed_basket — insulin + oral baskets]
         T13[test_early_return_questions — enrollment, invalid input]
+        T14[test_channel_parity — uniform-channel prose repair]
     end
     subgraph Integration
         T6[test_navigator — E2E agent]
@@ -1092,7 +1173,19 @@ Prompt chips in `frontend/src/index.html` use `S5921-400` (AARP Medicare Rx Pref
 medicare-ui-test run --offline
 ```
 
-Checks DOM IDs, guided-estimate flow, and smoke messages against a running or mocked API.
+Checks DOM IDs, guided-estimate flow, mandatory-field contract, and smoke messages against a running or mocked API.
+
+Playwright browser flows (`medicare-ui-test browser <flow>`):
+
+| Flow | Coverage |
+|---|---|
+| `chat` | Free-form chat smoke |
+| `guided-single` | Single-drug guided estimate |
+| `guided-multi` | Multi-drug guided estimate |
+| `guided-compare-plan` | Compare plans guided flow |
+| `responsive-interactions` | Mobile/tablet/desktop viewports — no horizontal scroll, 44px touch targets, keyboard focus, Escape on menu/modal, combobox expand/collapse |
+
+`medicare-ui-test run` accepts `--base-url` and `--timeout` for live-server runs.
 
 ### 14.6 Linting
 
@@ -1262,9 +1355,10 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 | [insulin-cost-estimation.md](./insulin-cost-estimation.md) | Implementing or changing insulin cost logic; CMS source docs, field-resolution evidence, worked examples |
 | [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | Understanding the Phase 6 pivot |
 | [deployment.md](./deployment.md) | Ops, cron, Render disk |
+| [usage-analytics.md](./usage-analytics.md) | Privacy-safe aggregate telemetry, admin API, dashboard |
 | [data-sources.md](./data-sources.md) | CMS/RxNorm URLs (note stale Chroma sections) |
 | [build-requirements.md](../build-requirements.md) | Long-term product vision |
 
 ---
 
-*Last updated for Phase 6 (Navigator pivot). For doc issues, update this file alongside code changes.*
+*Last updated for Phase 6 plus usage analytics (`feature/frontend_anonymous`), RxNorm offline fallback, prompt-injection hardening, insulin session follow-up, channel-parity prose repair, and guided-form mandatory hints. For doc issues, update this file alongside code changes.*

@@ -74,7 +74,7 @@
       </span>
       <span class="disclaimer-label">Important notice</span>
     </summary>
-    <p id="disclaimer-text" class="disclaimer-text" aria-live="polite">Loading disclaimer…</p>
+    <div id="disclaimer-text" class="disclaimer-text" aria-live="polite">Loading disclaimer…</div>
   </details>
 
   <nav class="primary-mode-tabs" role="tablist" aria-label="Navigator mode">
@@ -181,7 +181,7 @@
           </div>
 
           <div class="location-picker guided-field-full" id="guided-location-picker">
-            <label>State <span class="field-hint">(required — filters the plan list below)</span>
+            <label><span class="label-text">State <span class="field-required" aria-hidden="true">*</span></span> <span class="field-hint">(filters plan list)</span>
               <div class="plan-combobox">
                 <input
                   type="text"
@@ -197,6 +197,7 @@
                 <input type="hidden" id="guided-state" value="" />
                 <ul id="guided-state-listbox" class="plan-listbox hidden" role="listbox" aria-label="States"></ul>
               </div>
+              <span class="field-mandatory-msg" id="guided-state-mandatory">Mandatory</span>
             </label>
             <label>Zip code <span class="field-hint">(optional — prefills state)</span>
               <input type="text" id="guided-zip-input" inputmode="numeric" maxlength="5" placeholder="e.g. 72201" />
@@ -205,7 +206,7 @@
           </div>
 
           <div id="guided-single" class="guided-fields">
-            <label class="guided-field-full">Plan
+            <label class="guided-field-full"><span class="label-text">Plan <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-row">
                 <div class="plan-combobox">
                   <input
@@ -225,8 +226,9 @@
                 <button type="button" id="refresh-plans" class="btn-secondary" title="Reload plan list from database">Refresh</button>
               </div>
               <span id="plan-load-hint" class="plan-load-hint" aria-live="polite"></span>
+              <span class="field-mandatory-msg" id="filter-plan-mandatory">Mandatory</span>
             </label>
-            <label>Drug
+            <label><span class="label-text">Drug <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-combobox">
                 <input
                   type="text"
@@ -254,8 +256,9 @@
                   <ul id="filter-drug-listbox" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
                 </div>
               </div>
+              <span class="field-mandatory-msg hidden" id="filter-drug-mandatory" hidden>Mandatory</span>
             </label>
-            <label>Dosage
+            <label><span class="label-text">Dosage <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-combobox">
                 <input
                   type="text"
@@ -273,6 +276,7 @@
                 <input type="hidden" id="filter-dosage" value="" />
                 <ul id="filter-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
               </div>
+              <span class="field-mandatory-msg hidden" id="filter-dosage-mandatory" hidden>Mandatory</span>
             </label>
             <div class="guided-fill-options guided-field-full">
               <label>Data release
@@ -290,7 +294,7 @@
           </div>
 
           <div id="guided-multidrug" class="guided-fields hidden">
-            <label class="guided-field-full">Plan
+            <label class="guided-field-full"><span class="label-text">Plan <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-row">
                 <div class="plan-combobox">
                   <input
@@ -308,7 +312,13 @@
                   <ul id="md-plan-listbox" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
                 </div>
               </div>
+              <span class="field-mandatory-msg hidden" id="md-plan-mandatory" hidden>Mandatory</span>
             </label>
+            <div class="repeatable-row repeatable-row--header guided-field-full" aria-hidden="true">
+              <span><span class="label-text">Drug <span class="field-required" aria-hidden="true">*</span></span></span>
+              <span><span class="label-text">Dosage <span class="field-required" aria-hidden="true">*</span></span></span>
+              <button type="button" class="repeatable-row-remove" tabindex="-1">&times;</button>
+            </div>
             <div id="multidrug-rows" class="repeatable-rows guided-field-full"></div>
             <button type="button" id="multidrug-add-row" class="btn-secondary guided-field-full">+ Add drug</button>
             <label>Days supply
@@ -322,9 +332,13 @@
           </div>
 
           <div id="guided-compareplans" class="guided-fields hidden">
+            <div class="repeatable-row repeatable-row--header guided-field-full" aria-hidden="true">
+              <span><span class="label-text">Plan <span class="field-required" aria-hidden="true">*</span></span></span>
+              <button type="button" class="repeatable-row-remove" tabindex="-1">&times;</button>
+            </div>
             <div id="compareplans-rows" class="repeatable-rows guided-field-full"></div>
             <button type="button" id="compareplans-add-row" class="btn-secondary guided-field-full">+ Add plan</button>
-            <label>Drug
+            <label><span class="label-text">Drug <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-combobox">
                 <input
                   type="text"
@@ -352,8 +366,9 @@
                   <ul id="cp-drug-listbox" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
                 </div>
               </div>
+              <span class="field-mandatory-msg hidden" id="cp-drug-mandatory" hidden>Mandatory</span>
             </label>
-            <label>Dosage
+            <label><span class="label-text">Dosage <span class="field-required" aria-hidden="true">*</span></span>
               <div class="plan-combobox">
                 <input
                   type="text"
@@ -371,6 +386,7 @@
                 <input type="hidden" id="cp-dosage" value="" />
                 <ul id="cp-dosage-listbox" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
               </div>
+              <span class="field-mandatory-msg hidden" id="cp-dosage-mandatory" hidden>Mandatory</span>
             </label>
             <label>Days supply
               <select id="cp-days-supply">

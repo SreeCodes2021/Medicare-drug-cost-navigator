@@ -20,9 +20,10 @@ class DuckDBConnection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
-        if read_only:
-            return duckdb.connect(str(self.path), read_only=True)
-        return duckdb.connect(str(self.path))
+        # DuckDB allows one writer plus concurrent read-only connections. Use
+        # read_only=True for fetch paths so pytest/offline checks can run while
+        # uvicorn holds a write connection on the same file.
+        return duckdb.connect(str(self.path), read_only=read_only)
 
     def execute(self, sql: str, params: list | None = None) -> duckdb.DuckDBPyConnection:
         conn = self.connect()

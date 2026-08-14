@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from medicare_navigator.agent.mediator import MediatorRewrite
 
 from medicare_navigator.agent.prompts import build_navigator_system_prompt
+from medicare_navigator.analytics.collector import collector
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.citations import (
     apply_guardrails,
@@ -432,22 +433,10 @@ def _log_query(
     statuses: dict[str, str],
     latency_ms: float,
 ) -> None:
+    # Queued in-memory and written by analytics.flush's periodic loop — never a
+    # blocking disk write on this hot path. See analytics/collector.py.
     try:
-        from medicare_navigator.storage.connection import DuckDBConnection
-
-        db = DuckDBConnection()
-        conn = db.connect()
-        conn.execute(
-            "INSERT INTO query_log VALUES (?, ?, ?, ?, ?, current_timestamp)",
-            [
-                query_id,
-                session_id or "",
-                json.dumps(tools),
-                json.dumps(statuses),
-                latency_ms,
-            ],
-        )
-        conn.close()
+        collector.record_query_log(query_id, session_id or "", tools, statuses, latency_ms)
     except Exception:
         pass
 
@@ -637,6 +626,7 @@ class Navigator:
         from medicare_navigator.agent.insulin_requests import (
             message_names_non_insulin_cost_drugs,
             resolve_insulin_request,
+            resolve_insulin_session_follow_up,
         )
         from medicare_navigator.agent.mixed_basket_requests import (
             build_batch_requests,
@@ -733,6 +723,18 @@ class Navigator:
             filter_days_supply=filter_slots.days_supply if filter_slots else None,
             filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
         )
+        if insulin_request is None or (
+            not insulin_request.products and not insulin_request.is_policy_question
+        ):
+            session_insulin = resolve_insulin_session_follow_up(
+                message,
+                session.get("last_tool_calls"),
+                filter_plan_id=filter_plan_id,
+                filter_days_supply=filter_slots.days_supply if filter_slots else None,
+                filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+            )
+            if session_insulin is not None:
+                insulin_request = session_insulin
         if insulin_request and insulin_request.is_policy_question:
             explanation = _explanation_with_disclaimer(_insulin_policy_explanation())
             session_manager.append_turn(session, log_message, explanation, query_id=query_id)
@@ -904,7 +906,10 @@ class Navigator:
         start = time.perf_counter()
         query_id = str(uuid.uuid4())
         model_id = llm_model or default_llm_model()
+        was_new_session = session_manager.is_new(session_id)
         session = session_manager.get_or_create(session_id)
+        if was_new_session and settings.analytics_enabled:
+            collector.record_new_session()
         chat_history = session.get("chat_history", [])
 
         if not session_manager.can_continue(session):

@@ -172,7 +172,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0.4rem 0.65rem;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -307,6 +307,16 @@ body {
 
 .info-modal-body p { margin-bottom: 0.75rem; }
 .info-modal-body p:last-child { margin-bottom: 0; }
+
+.info-modal-body h3 {
+  font-size: 0.95rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.info-modal-body h3:first-child { margin-top: 0; }
+
+.disclaimer-text p { margin-bottom: 0.75rem; }
+.disclaimer-text p:last-child { margin-bottom: 0; }
 
 html.modal-open,
 body.modal-open {
@@ -725,6 +735,26 @@ body.modal-open {
   font-size: 0.75rem;
 }
 
+.field-required {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.field-mandatory-msg {
+  font-size: 0.7rem;
+  color: var(--error);
+  line-height: 1.2;
+}
+
+.field-mandatory-msg.hidden,
+.field-mandatory-msg[hidden] {
+  display: none;
+}
+
+.label-text {
+  display: inline;
+}
+
 .location-picker {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1117,8 +1147,8 @@ body.modal-open {
   border: none;
   border-radius: 999px;
   padding: 0 1.1rem;
-  min-height: 36px;
-  min-width: 36px;
+  min-height: 44px;
+  min-width: 44px;
   cursor: pointer;
   font-weight: 600;
   font-size: 0.88rem;
@@ -2018,6 +2048,25 @@ body.modal-open {
 
 .repeatable-row > * {
   flex: 1;
+  min-width: 0;
+}
+
+.repeatable-row--header {
+  font-size: 0.82rem;
+  color: var(--muted);
+  align-items: flex-end;
+  padding-bottom: 0.1rem;
+}
+
+.repeatable-row--header .repeatable-row-remove {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.repeatable-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   min-width: 0;
 }
 

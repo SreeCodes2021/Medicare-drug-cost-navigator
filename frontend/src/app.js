@@ -16,6 +16,9 @@ let cachedPrivacyText = "";
 let emptyStateHtml = "";
 let guidedSessionId = null;
 let guidedTurnCount = 0;
+// Which guided sub-tab is active (single/multidrug/compareplans) — sent as the
+// analytics-only `mode` field on /api/chat so usage can be broken out per flow.
+let guidedSubmode = "single";
 
 const DEFAULT_MODEL = "gpt-5.6-luna";
 const MODEL_OPTIONS = [
@@ -607,11 +610,11 @@ async function loadDisclaimer() {
     const res = await fetch(`${API}/api/disclaimer`);
     const data = await res.json();
     cachedDisclaimerText = data.text;
-    el("disclaimer-text").textContent = data.text;
+    el("disclaimer-text").innerHTML = formatPolicyTextToHtml(data.text);
   } catch {
     cachedDisclaimerText =
       "Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice.";
-    el("disclaimer-text").textContent = cachedDisclaimerText;
+    el("disclaimer-text").innerHTML = formatPolicyTextToHtml(cachedDisclaimerText);
   }
 }
 
@@ -670,7 +673,7 @@ function showAboutModal() {
 function showDisclaimerModal() {
   closeMenu();
   const text = cachedDisclaimerText || el("disclaimer-text").textContent || "";
-  openInfoModal("Disclaimer", `<p>${escapeHtml(text)}</p>`);
+  openInfoModal("Disclaimer", formatPolicyTextToHtml(text));
 }
 
 async function showPrivacyModal() {
@@ -684,7 +687,7 @@ async function showPrivacyModal() {
       cachedPrivacyText = "Privacy policy could not be loaded right now. Please try again shortly.";
     }
   }
-  openInfoModal("Privacy policy", `<p>${escapeHtml(cachedPrivacyText)}</p>`);
+  openInfoModal("Privacy policy", formatPolicyTextToHtml(cachedPrivacyText));
 }
 
 // ---- New chat ----
@@ -742,11 +745,20 @@ function updateChatComposerHint() {
 
 function updatePlanLoadHint(count, message) {
   const hint = el("plan-load-hint");
+  if (!hint) return;
   if (message) {
     hint.textContent = message;
     return;
   }
-  hint.textContent = count > 0 ? `${count} plan(s) loaded` : "No plans in database yet";
+  if (!guidedState) {
+    hint.textContent =
+      allPlans.length > 0
+        ? "Select a state above to see available plans"
+        : "No plans in database yet";
+    return;
+  }
+  hint.textContent =
+    count > 0 ? `${count} plan(s) in ${guidedState}` : `No plans in ${guidedState}`;
 }
 
 function formatPlanLabel(plan) {
@@ -981,6 +993,7 @@ function onGuidedStateChanged(state) {
   refreshSingleDrugPickers();
   refreshMultiDrugPickers();
   refreshCompareDrugPickers();
+  updatePlanLoadHint(guidedScopedPlans().length);
   updateGuidedSubmitButtonState();
 }
 
@@ -1037,11 +1050,66 @@ function isGuidedComparePlansValid() {
   );
 }
 
+function setFieldMandatoryVisible(msgEl, show) {
+  if (!msgEl) return;
+  msgEl.hidden = !show;
+  msgEl.classList.toggle("hidden", !show);
+}
+
+function isComboboxInputEnabled(inputId) {
+  const input = el(inputId);
+  return Boolean(input && !input.disabled);
+}
+
+function updateGuidedMandatoryHints() {
+  setFieldMandatoryVisible(el("guided-state-mandatory"), !guidedState);
+
+  if (guidedSubmode === "single") {
+    setFieldMandatoryVisible(el("filter-plan-mandatory"), Boolean(guidedState && !el("filter-plan").value));
+    setFieldMandatoryVisible(
+      el("filter-drug-mandatory"),
+      isComboboxInputEnabled("filter-drug-input") && !el("filter-drug").value.trim()
+    );
+    setFieldMandatoryVisible(
+      el("filter-dosage-mandatory"),
+      isComboboxInputEnabled("filter-dosage-input") && !el("filter-dosage").value.trim()
+    );
+  }
+
+  if (guidedSubmode === "multidrug") {
+    const planId = el("md-plan").value;
+    setFieldMandatoryVisible(el("md-plan-mandatory"), Boolean(guidedState && !planId));
+    drugRows.forEach(({ picker, drugMandatoryEl, dosageMandatoryEl }) => {
+      const drug = picker.getDrug();
+      const dosage = picker.getDosage();
+      const drugEnabled = isComboboxInputEnabled(picker.drugInputId);
+      setFieldMandatoryVisible(drugMandatoryEl, drugEnabled && !drug);
+      setFieldMandatoryVisible(dosageMandatoryEl, Boolean(drug && !dosage));
+    });
+  }
+
+  if (guidedSubmode === "compareplans") {
+    setFieldMandatoryVisible(
+      el("cp-drug-mandatory"),
+      isComboboxInputEnabled("cp-drug-input") && !el("cp-drug").value.trim()
+    );
+    setFieldMandatoryVisible(
+      el("cp-dosage-mandatory"),
+      isComboboxInputEnabled("cp-dosage-input") && !el("cp-dosage").value.trim()
+    );
+    comparePlanRows.forEach(({ combobox, planMandatoryEl }, index) => {
+      const showPlanMandatory = Boolean(guidedState && index < 2 && !combobox.getValue());
+      setFieldMandatoryVisible(planMandatoryEl, showPlanMandatory);
+    });
+  }
+}
+
 function updateGuidedSubmitButtonState() {
   const lock = guidedEstimateInFlight;
   el("guided-submit").disabled = lock || !isGuidedSingleValid();
   el("multidrug-submit").disabled = lock || !isGuidedMultiDrugValid();
   el("compareplans-submit").disabled = lock || !isGuidedComparePlansValid();
+  updateGuidedMandatoryHints();
 }
 
 const primaryPlanCombobox = createPlanCombobox({
@@ -1099,7 +1167,7 @@ async function loadPlans(contractYear = null) {
     throw new Error("plans API returned non-array");
   }
   populatePlanSelect(plans);
-  updatePlanLoadHint(plans.length);
+  updatePlanLoadHint(guidedScopedPlans().length);
   return plans.length;
 }
 
@@ -1976,48 +2044,54 @@ function createDrugRowElement() {
   row.className = "repeatable-row";
   row.dataset.rowId = String(idx);
   row.innerHTML = `
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="md-drug-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Click to select a drug"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="md-drug-listbox-${idx}"
-        aria-autocomplete="list"
-        readonly
-      />
-      <input type="hidden" id="md-drug-${idx}" value="" />
-      <div id="md-drug-panel-${idx}" class="plan-dropdown-panel hidden" role="presentation">
+    <div class="repeatable-field">
+      <div class="plan-combobox">
         <input
           type="text"
-          id="md-drug-filter-${idx}"
-          class="combobox-filter"
-          placeholder="Search drugs…"
+          id="md-drug-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Click to select a drug"
           autocomplete="off"
-          aria-label="Search drugs"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="md-drug-listbox-${idx}"
+          aria-autocomplete="list"
+          readonly
         />
-        <ul id="md-drug-listbox-${idx}" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+        <input type="hidden" id="md-drug-${idx}" value="" />
+        <div id="md-drug-panel-${idx}" class="plan-dropdown-panel hidden" role="presentation">
+          <input
+            type="text"
+            id="md-drug-filter-${idx}"
+            class="combobox-filter"
+            placeholder="Search drugs…"
+            autocomplete="off"
+            aria-label="Search drugs"
+          />
+          <ul id="md-drug-listbox-${idx}" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+        </div>
       </div>
+      <span class="field-mandatory-msg hidden" id="md-drug-mandatory-${idx}" hidden>Mandatory</span>
     </div>
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="md-dosage-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Select a drug first"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="md-dosage-listbox-${idx}"
-        aria-autocomplete="list"
-        readonly
-        disabled
-      />
-      <input type="hidden" id="md-dosage-${idx}" value="" />
-      <ul id="md-dosage-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+    <div class="repeatable-field">
+      <div class="plan-combobox">
+        <input
+          type="text"
+          id="md-dosage-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Select a drug first"
+          autocomplete="off"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="md-dosage-listbox-${idx}"
+          aria-autocomplete="list"
+          readonly
+          disabled
+        />
+        <input type="hidden" id="md-dosage-${idx}" value="" />
+        <ul id="md-dosage-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+      </div>
+      <span class="field-mandatory-msg hidden" id="md-dosage-mandatory-${idx}" hidden>Mandatory</span>
     </div>
     <button type="button" class="repeatable-row-remove" aria-label="Remove drug" title="Remove drug">&times;</button>
   `;
@@ -2037,7 +2111,13 @@ function createDrugRowElement() {
   picker.init();
   const planId = el("md-plan").value;
   picker.setDrugDisabled(!planId, planId ? "Click to select a drug" : "Select a plan first");
-  const entry = { row, picker };
+  const entry = {
+    row,
+    picker,
+    drugMandatoryEl: el(`md-drug-mandatory-${idx}`),
+    dosageMandatoryEl: el(`md-dosage-mandatory-${idx}`),
+  };
+  picker.drugInputId = `md-drug-input-${idx}`;
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(entry));
   return entry;
 }
@@ -2093,20 +2173,23 @@ function createComparePlanRowEntry() {
   row.className = "repeatable-row";
   row.dataset.rowId = String(idx);
   row.innerHTML = `
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="cp-plan-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Type or scroll to select a plan"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="cp-plan-listbox-${idx}"
-        aria-autocomplete="list"
-      />
-      <input type="hidden" id="cp-plan-${idx}" value="" />
-      <ul id="cp-plan-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+    <div class="repeatable-field">
+      <div class="plan-combobox">
+        <input
+          type="text"
+          id="cp-plan-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Type or scroll to select a plan"
+          autocomplete="off"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="cp-plan-listbox-${idx}"
+          aria-autocomplete="list"
+        />
+        <input type="hidden" id="cp-plan-${idx}" value="" />
+        <ul id="cp-plan-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+      </div>
+      <span class="field-mandatory-msg hidden" id="cp-plan-mandatory-${idx}" hidden>Mandatory</span>
     </div>
     <button type="button" class="repeatable-row-remove" aria-label="Remove plan" title="Remove plan">&times;</button>
   `;
@@ -2126,7 +2209,11 @@ function createComparePlanRowEntry() {
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => {
     removeComparePlanRow(entry);
   });
-  const entry = { row, combobox };
+  const entry = {
+    row,
+    combobox,
+    planMandatoryEl: el(`cp-plan-mandatory-${idx}`),
+  };
   return entry;
 }
 
@@ -2174,6 +2261,7 @@ function switchGuidedSubmode(mode) {
     multidrug: "multidrug-submit",
     compareplans: "compareplans-submit",
   };
+  guidedSubmode = mode;
   closeAllDrugPickers();
   ["single", "multidrug", "compareplans"].forEach((m) => {
     const isActive = m === mode;
@@ -2361,6 +2449,23 @@ function escapeAttr(value) {
 
 function escapeHtml(value) {
   return escapeAttr(value);
+}
+
+function formatPolicyTextToHtml(text) {
+  if (!text) return "";
+  return text
+    .trim()
+    .split(/\n\n+/)
+    .map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return "";
+      if (trimmed.startsWith("## ")) {
+        return `<h3>${escapeHtml(trimmed.slice(3).trim())}</h3>`;
+      }
+      return `<p>${escapeHtml(trimmed)}</p>`;
+    })
+    .filter(Boolean)
+    .join("");
 }
 
 function withFieldInfo(label, tipId) {
@@ -2907,6 +3012,7 @@ function showGuidedError(message) {
 }
 
 function promptGuidedMandatoryFields() {
+  updateGuidedMandatoryHints();
   showGuidedError("Please fill in all required fields above.");
 }
 
@@ -3004,6 +3110,10 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       filters: getFilters(),
       model: getSelectedModel(),
       timezone: getUserTimezone(),
+      // Aggregate usage-analytics labels only — never used to filter or adjust
+      // cost estimates (see collector.py / _normalize_region).
+      region: chatState || null,
+      mode: "chat",
     };
 
     const res = await fetch(`${API}/api/chat`, {
@@ -3148,6 +3258,16 @@ function updateGuidedFollowupAvailability() {
       : "Ask a follow-up about this estimate";
 }
 
+// Maps the active guided sub-tab to the analytics `mode` value the backend expects.
+function guidedAnalyticsMode() {
+  const bySubmode = {
+    single: "guided_single",
+    multidrug: "guided_compare_drug",
+    compareplans: "guided_compare_plan",
+  };
+  return bySubmode[guidedSubmode] || "guided_single";
+}
+
 async function sendGuidedInitial(message, filters = null) {
   resetGuidedConversation();
   await sendGuidedMessage(message, { filters });
@@ -3176,6 +3296,10 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
         filters,
         model: getSelectedModel("guided-model-select"),
         timezone: getUserTimezone(),
+        // Aggregate usage-analytics labels only — never used to filter or adjust
+        // cost estimates (see collector.py / _normalize_region).
+        region: guidedState || null,
+        mode: guidedAnalyticsMode(),
       }),
     });
     const contentType = res.headers.get("content-type") || "";

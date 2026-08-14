@@ -102,3 +102,19 @@ def test_disclaimer_and_privacy_endpoints_return_nonempty_text():
     privacy_response = client.get("/api/privacy")
     assert privacy_response.status_code == 200
     assert privacy_response.json()["text"].strip()
+
+
+def test_privacy_policy_discloses_aggregate_usage():
+    client = TestClient(app)
+    text = client.get("/api/privacy").json()["text"].lower()
+    assert "aggregate" in text
+    assert "analytics/tracking scripts" not in text
+    assert "no analytics" not in text
+
+
+def test_disclaimer_privacy_snippet_matches_session_and_analytics():
+    client = TestClient(app)
+    text = client.get("/api/disclaimer").json()["text"].lower()
+    assert "only in this browser session" not in text
+    assert "aggregate" in text
+    assert "privacy policy" in text

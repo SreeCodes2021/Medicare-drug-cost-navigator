@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import re
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from medicare_navigator.analytics.collector import collector
 from medicare_navigator.config import settings
 from medicare_navigator.llm.errors import LLMNotConfiguredError, LLMRequestError
 from medicare_navigator.models.query import QuerySlots
@@ -48,7 +54,17 @@ async def lifespan(_app: FastAPI):
             log.warning(settings.llm_configuration_hint(provider))
         elif status == "missing" and provider == settings.llm_provider.lower():
             log.warning(settings.llm_configuration_hint(provider))
+
+    flush_task = None
+    if settings.analytics_enabled:
+        from medicare_navigator.analytics.flush import flush_loop
+
+        flush_task = asyncio.create_task(flush_loop(settings.analytics_flush_interval_seconds))
     yield
+    if flush_task is not None:
+        flush_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await flush_task
 
 
 app = FastAPI(title="Medicare Drug Cost Navigator", version="0.1.0", lifespan=lifespan)
@@ -94,6 +110,7 @@ class QueryRequest(BaseModel):
     message: str | None = None
     filters: FilterPayload | None = None
     session_id: str | None = None
+    region: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -102,6 +119,8 @@ class ChatRequest(BaseModel):
     filters: FilterPayload | None = None
     model: str | None = None
     timezone: str | None = None
+    region: str | None = None
+    mode: str | None = None
 
 
 class EstimateRequest(BaseModel):
@@ -153,6 +172,58 @@ def _filters_to_slots(filters: FilterPayload | None, message: str = "") -> Query
     if not filters:
         return None
     return QuerySlots(**filters.model_dump(exclude_none=True), raw_message=message)
+
+
+def _valid_state_code(candidate: str) -> str | None:
+    candidate = (candidate or "").strip().upper()
+    if len(candidate) == 2 and candidate.isalpha():
+        return candidate
+    return None
+
+
+# Interaction modes for analytics only — never affects routing/response logic.
+_VALID_MODES = frozenset({"chat", "guided_single", "guided_compare_drug", "guided_compare_plan"})
+
+
+def _resolve_mode(mode: str | None) -> str:
+    candidate = (mode or "").strip()
+    return candidate if candidate in _VALID_MODES else "chat"
+
+
+# CMS plan_key shape: contract_id ("H"/"S"/"R" + 4 digits) + "-" + 3-digit plan id,
+# e.g. "S9999-001", "H8888-001" — see plan_key = f"{contract_id}-{plan_id}" in
+# ingestion/spuf.py. Used only to spot a plan ID typed directly in chat text (not
+# picked via the plan combobox) so its state can be resolved for analytics.
+_PLAN_KEY_IN_TEXT_RE = re.compile(r"\b([A-Z]\d{4}-\d{3})\b")
+
+
+async def _plan_state(plan_id: str) -> str | None:
+    plan = await asyncio.to_thread(PlanRepository().get_plan, plan_id.strip())
+    if not plan:
+        return None
+    return _valid_state_code(plan.get("state") or "")
+
+
+async def _resolve_region(region: str | None, plan_id: str | None, message: str = "") -> str:
+    """User-selected 2-letter state code for analytics only — never used to filter
+    or adjust cost estimates. Falls back, in order, to: the state of a picked
+    plan_id (plan combobox / guided form), then the state of a plan ID typed
+    directly in the message text. Anything else — no state, no resolvable plan,
+    or a malformed/free-text value — collapses to 'unknown' so it can't pollute
+    the usage_hourly bucket key."""
+    direct = _valid_state_code(region or "")
+    if direct:
+        return direct
+    if plan_id and plan_id.strip():
+        state = await _plan_state(plan_id)
+        if state:
+            return state
+    match = _PLAN_KEY_IN_TEXT_RE.search(message or "")
+    if match:
+        state = await _plan_state(match.group(1))
+        if state:
+            return state
+    return "unknown"
 
 
 @app.get("/api/health")
@@ -250,6 +321,72 @@ async def list_drug_dosages(drug: str, plan_id: str | None = None):
 @app.get("/api/disclaimer")
 async def get_disclaimer():
     return {"text": settings.disclaimer_text}
+
+
+@app.get("/api/admin/usage")
+async def admin_usage(
+    x_admin_token: str | None = Header(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+):
+    """Aggregate-only usage rollups (no message text, no per-user identity).
+    Off by default: returns 404 unless ADMIN_TOKEN is set, and requires a
+    matching X-Admin-Token header. Optional `since`/`until` query params
+    (ISO-8601) select the window; if omitted, defaults to the last
+    ADMIN_USAGE_HOURS hours ending now."""
+    if not settings.admin_token:
+        raise HTTPException(status_code=404, detail="Not found")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from medicare_navigator.storage.connection import DuckDBConnection
+
+    now = datetime.now(timezone.utc)
+    resolved_since = since if since is not None else now - timedelta(hours=settings.admin_usage_hours)
+    resolved_until = until if until is not None else now
+    if resolved_since >= resolved_until:
+        raise HTTPException(status_code=400, detail="since must be before until")
+
+    columns = [
+        "hour_bucket",
+        "region",
+        "mode",
+        "model",
+        "sessions_new",
+        "requests_total",
+        "requests_ok",
+        "requests_error",
+        "requests_clarification",
+        "requests_not_found",
+        "requests_limit_reached",
+        "prompt_len_short",
+        "prompt_len_medium",
+        "prompt_len_long",
+        "prompt_len_sum",
+        "latency_ms_sum",
+        "tokens_in_sum",
+        "tokens_out_sum",
+        "requests_with_tokens",
+        "cost_usd_sum",
+    ]
+    db = DuckDBConnection()
+    rows = await asyncio.to_thread(
+        db.fetchall,
+        # Explicit column list (not SELECT *): ALTER TABLE ADD COLUMN appends new
+        # columns to the end of the physical row on disk, which would silently
+        # desync a SELECT *-based positional zip() from the `columns` list below
+        # on any DB that picked up prompt_len_sum/requests_with_tokens via migration
+        # rather than a fresh CREATE TABLE.
+        f"SELECT {', '.join(columns)} FROM usage_hourly "
+        "WHERE hour_bucket >= ? AND hour_bucket < ? ORDER BY hour_bucket DESC",
+        [resolved_since.replace(tzinfo=None), resolved_until.replace(tzinfo=None)],
+    )
+    return {
+        "since": resolved_since.isoformat(),
+        "until": resolved_until.isoformat(),
+        "default_timezone": settings.default_timezone,
+        "rows": [dict(zip(columns, row, strict=True)) for row in rows],
+    }
 
 
 @app.get("/api/privacy")
@@ -404,12 +541,31 @@ async def query(req: QueryRequest):
     if req.ytd_oop_spend is not None:
         message = f"{message} spent ${req.ytd_oop_spend} YTD".strip()
 
+    start = time.perf_counter()
+    ok = False
+    response = None
     try:
         response = await orchestrator.run(message=message, filter_slots=filters, session_id=req.session_id)
+        ok = True
     except LLMNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMRequestError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        if settings.analytics_enabled:
+            plan_id = req.plan_id or (req.filters.plan_id if req.filters else None)
+            usage = response.total_llm_usage if response else None
+            collector.record_request(
+                prompt_len=len(message or ""),
+                ok=ok,
+                latency_ms=(time.perf_counter() - start) * 1000,
+                region=await _resolve_region(req.region, plan_id, message),
+                mode="chat",
+                status=response.status if response else "ok",
+                tokens_in=usage.input_tokens if usage else 0,
+                tokens_out=usage.output_tokens if usage else 0,
+                cost_usd=usage.cost_usd if usage else 0.0,
+            )
     return response
 
 
@@ -423,6 +579,9 @@ async def list_models():
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     filters = _filters_to_slots(req.filters, req.message)
+    start = time.perf_counter()
+    ok = False
+    response = None
     try:
         response = await orchestrator.run(
             message=req.message,
@@ -431,12 +590,35 @@ async def chat(req: ChatRequest):
             llm_model=req.model,
             timezone=req.timezone,
         )
+        ok = True
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LLMNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMRequestError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        if settings.analytics_enabled:
+            from medicare_navigator.llm.models import resolve_model
+
+            plan_id = req.filters.plan_id if req.filters else None
+            usage = response.total_llm_usage if response else None
+            try:
+                model_id = resolve_model(req.model).id if ok else "unknown"
+            except ValueError:
+                model_id = "unknown"
+            collector.record_request(
+                prompt_len=len(req.message or ""),
+                ok=ok,
+                latency_ms=(time.perf_counter() - start) * 1000,
+                region=await _resolve_region(req.region, plan_id, req.message),
+                mode=_resolve_mode(req.mode),
+                model=model_id,
+                status=response.status if response else "ok",
+                tokens_in=usage.input_tokens if usage else 0,
+                tokens_out=usage.output_tokens if usage else 0,
+                cost_usd=usage.cost_usd if usage else 0.0,
+            )
     from medicare_navigator.session.manager import session_manager
 
     session = session_manager.get_or_create(response.session_id)
@@ -468,11 +650,13 @@ def _sync_frontend_dist() -> Path:
         return dist
 
     assets = ("index.html", "app.js", "styles.css", "manifest.json")
+    admin_pages = list((src / "admin").glob("*.html")) if (src / "admin").is_dir() else []
     stale = not dist.is_dir()
     if not stale:
-        for name in assets:
-            src_path = src / name
-            dist_path = dist / name
+        for src_path in (*(src / name for name in assets), *admin_pages):
+            dist_path = (
+                dist / "admin" / src_path.name if src_path in admin_pages else dist / src_path.name
+            )
             if src_path.is_file() and (
                 not dist_path.is_file() or src_path.stat().st_mtime > dist_path.stat().st_mtime
             ):
@@ -489,6 +673,11 @@ def _sync_frontend_dist() -> Path:
         if icons_src.is_dir():
             for icon in icons_src.glob("*.png"):
                 shutil.copy2(icon, dist / "icons" / icon.name)
+        admin_src = src / "admin"
+        if admin_src.is_dir():
+            (dist / "admin").mkdir(parents=True, exist_ok=True)
+            for page in admin_src.glob("*.html"):
+                shutil.copy2(page, dist / "admin" / page.name)
 
     return dist
 
@@ -500,5 +689,12 @@ if _frontend.exists():
     @app.get("/", include_in_schema=False)
     async def serve_index():
         return FileResponse(_frontend / "index.html", media_type="text/html", headers=_no_cache)
+
+    _admin_usage = _frontend / "admin" / "usage.html"
+    if _admin_usage.is_file():
+
+        @app.get("/admin/usage", include_in_schema=False)
+        async def serve_admin_usage():
+            return FileResponse(_admin_usage, media_type="text/html", headers=_no_cache)
 
     app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")

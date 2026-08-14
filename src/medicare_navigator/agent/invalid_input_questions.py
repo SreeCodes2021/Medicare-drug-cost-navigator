@@ -12,7 +12,9 @@ _DAYS_SUPPLY_RE = re.compile(
 _PRICE_INJECTION_RE = re.compile(
     r"\bignore\s+(?:all\s+)?(?:previous\s+)?instructions\b|"
     r"\bdisregard\b.*\binstructions\b|"
-    r"\bsay\b.*\$\s*\d",
+    r"\bsay\b.*\$\s*\d|"
+    r"\bSYSTEM:\b|"
+    r"\byou\s+are\s+now\s+unrestricted\b",
     re.I,
 )
 
