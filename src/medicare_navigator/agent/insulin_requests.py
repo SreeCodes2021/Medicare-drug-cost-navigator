@@ -112,6 +112,16 @@ INSULIN_INTENT_CHANNEL_CONTRAST = "channel_contrast"
 INSULIN_INTENT_MULTI_PLAN_COMPARE = "multi_plan_compare"
 INSULIN_INTENT_REMAINING_YEAR = "remaining_year"
 
+_ESTIMATE_TOOL_NAMES = frozenset({"estimate_drug_cost_all_channels", "estimate_drug_cost"})
+_INSULIN_PRODUCTS = frozenset(name for name in _INSULIN_NAMES if name != "insulin")
+_YTD_ONLY_FOLLOW_UP_SKIP_RE = re.compile(
+    r"\b(?:what|which)\s+(?:formulary\s+)?tier\b|\bformulary\s+tier\b|"
+    r"\bcompare|versus|vs\.?|between\b|"
+    r"\bmail(?:[- ]order)?\b.*\bretail\b|\bretail\b.*\bmail(?:[- ]order)?\b|"
+    r"\brest\s+of\s+(?:the\s+)?year\b|\bremainder\s+of\s+(?:the\s+)?year\b",
+    re.I,
+)
+
 
 @dataclass(frozen=True)
 class InsulinRequest:
@@ -245,6 +255,88 @@ def mentioned_oral_drugs_with_strength(message: str) -> list[tuple[str, str]]:
 def message_names_non_insulin_cost_drugs(message: str) -> bool:
     """True when the message names oral/common drugs alongside insulin products."""
     return bool(_mentioned_common_drugs(message) or mentioned_oral_drugs_with_strength(message))
+
+
+def _message_explicitly_states_ytd(message: str) -> bool:
+    return bool(
+        _YTD_SUFFIX_RE.search(message)
+        or _YTD_RE.search(message)
+        or _ZERO_YTD_RE.search(message)
+        or _MET_OOP_AMOUNT_RE.search(message)
+        or _CATASTROPHIC_RE.search(message)
+    )
+
+
+def _insulin_context_from_last_tool_calls(
+    last_tool_calls: list[dict[str, Any]] | None,
+) -> tuple[tuple[str, ...], str, int, str | None] | None:
+    if not last_tool_calls:
+        return None
+
+    products: list[str] = []
+    plan_keys: set[str] = set()
+    days_supply = 30
+    pharmacy_channel: str | None = None
+
+    for call in last_tool_calls:
+        if call.get("name") not in _ESTIMATE_TOOL_NAMES:
+            continue
+        args = call.get("arguments") or {}
+        drug = (args.get("drug_name") or "").lower().strip()
+        if drug not in _INSULIN_PRODUCTS:
+            return None
+        if drug not in products:
+            products.append(drug)
+        plan_key = args.get("plan_key")
+        if plan_key:
+            plan_keys.add(str(plan_key).upper())
+        if args.get("days_supply") is not None:
+            days_supply = int(args["days_supply"])
+        if args.get("pharmacy_channel"):
+            pharmacy_channel = str(args["pharmacy_channel"])
+
+    if not products or len(plan_keys) != 1:
+        return None
+    return tuple(products), next(iter(plan_keys)), days_supply, pharmacy_channel
+
+
+def resolve_insulin_session_follow_up(
+    message: str,
+    last_tool_calls: list[dict[str, Any]] | None,
+    *,
+    filter_plan_id: str | None = None,
+    filter_days_supply: int | None = None,
+    filter_ytd_oop_spend: float | None = None,
+) -> InsulinRequest | None:
+    """Re-estimate insulin when a follow-up changes YTD but omits drug/plan names."""
+    if _extract_products(message) or _PLAN_RE.search(message):
+        return None
+    if _YTD_ONLY_FOLLOW_UP_SKIP_RE.search(message) or _DAYS_RE.search(message):
+        return None
+    if not _message_explicitly_states_ytd(message):
+        return None
+
+    context = _insulin_context_from_last_tool_calls(last_tool_calls)
+    if context is None:
+        return None
+
+    products, plan_key, days_supply, pharmacy_channel = context
+    if filter_plan_id and filter_plan_id.upper() != plan_key:
+        return None
+
+    return InsulinRequest(
+        products=products,
+        plan_key=plan_key,
+        plan_keys=(plan_key,),
+        days_supply=filter_days_supply if filter_days_supply is not None else days_supply,
+        ytd_oop_spend=_extract_ytd_oop_spend(
+            message,
+            filter_ytd_oop_spend=filter_ytd_oop_spend,
+        ),
+        pharmacy_channel=pharmacy_channel,
+        is_policy_question=False,
+        intent=INSULIN_INTENT_COST,
+    )
 
 
 def resolve_insulin_request(

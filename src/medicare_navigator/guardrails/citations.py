@@ -12,6 +12,7 @@ from medicare_navigator.guardrails.channel_parity import (
     repair_false_unavailable_prose,
     repair_missing_mail_retail_contrast_in_prose,
     repair_missing_tier_in_prose,
+    repair_misleading_channel_variance_in_prose,
     summarize_channel_coverage,
     text_claims_no_estimate,
     deterministic_cost_explanation,
@@ -728,6 +729,7 @@ def apply_guardrails(
     out = repair_missing_mail_retail_contrast_in_prose(
         out, channel_estimates, user_message
     )
+    out = repair_misleading_channel_variance_in_prose(out, channel_estimates)
     cites = list(citations or build_citations_from_artifacts(tool_artifacts))
 
     valid_source_ids = extract_source_ids(tool_artifacts)

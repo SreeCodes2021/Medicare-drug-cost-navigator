@@ -40,6 +40,20 @@ Each run replaces only that state's plans in DuckDB; the CMS zip is still downlo
 - **Active states (no redeploy):** set `INGEST_STATES` on the Render service (e.g. `AR,TX,CA`). The nightly cron ingests only states that appear in both `INGEST_STATES` and the `pdp_region_codes` catalog in [`config/ingest_filters.yaml`](../config/ingest_filters.yaml). Restart the service after changing env vars.
 - **Resources:** edit `plan` and `disk.sizeGB` in [`render.yaml`](../render.yaml).
 
+### Usage analytics (optional)
+
+Aggregate-only usage stats are collected by default and stored in the `usage_hourly` DuckDB table on the same persistent disk as SPUF data.
+
+| Step | Action |
+|---|---|
+| Enable dashboard | Set `ADMIN_TOKEN` on the web service (Dashboard → Environment). Treat it like a password — do not commit it. |
+| Open UI | `https://<your-app>.onrender.com/admin/usage.html` (not linked from the main app) |
+| API | `curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<host>/api/admin/usage` |
+| Widen/narrow default window | Optional `ADMIN_USAGE_HOURS` (default `2160` ≈ 3 months) |
+| Disable collection | `ANALYTICS_ENABLED=false` stops the in-memory collector and background flush task |
+
+Full detail: [usage-analytics.md](./usage-analytics.md).
+
 ## Architecture
 
 ```mermaid

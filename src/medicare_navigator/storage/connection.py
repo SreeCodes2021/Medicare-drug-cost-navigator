@@ -19,10 +19,11 @@ class DuckDBConnection:
         self.path = path or settings.duckdb_path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self) -> duckdb.DuckDBPyConnection:
-        # DuckDB rejects overlapping connections to the same file when read_only
-        # differs; use one configuration everywhere (writes + analytics flush).
-        return duckdb.connect(str(self.path))
+    def connect(self, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+        # DuckDB allows one writer plus concurrent read-only connections. Use
+        # read_only=True for fetch paths so pytest/offline checks can run while
+        # uvicorn holds a write connection on the same file.
+        return duckdb.connect(str(self.path), read_only=read_only)
 
     def execute(self, sql: str, params: list | None = None) -> duckdb.DuckDBPyConnection:
         conn = self.connect()
@@ -37,7 +38,7 @@ class DuckDBConnection:
             raise
 
     def fetchone(self, sql: str, params: list | None = None):
-        conn = self.connect()
+        conn = self.connect(read_only=True)
         try:
             if params:
                 return conn.execute(sql, params).fetchone()
@@ -50,7 +51,7 @@ class DuckDBConnection:
             conn.close()
 
     def fetchall(self, sql: str, params: list | None = None):
-        conn = self.connect()
+        conn = self.connect(read_only=True)
         try:
             if params:
                 return conn.execute(sql, params).fetchall()

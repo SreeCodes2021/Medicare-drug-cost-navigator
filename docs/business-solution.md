@@ -117,6 +117,8 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Cost-share | Full negotiated price pre-deductible, copay once the deductible is met/exempted, statutory-capped copay for insulin (no deductible ever applies), or catastrophic-phase cost-share (typically $0) once the annual OOP cap is reached — dollar estimate returned in all four cases |
 | Pharmacy channel | Preferred/standard retail and preferred/standard mail-order priced independently; `estimate_drug_cost_all_channels` returns all four CMS channels in one call |
 | Multi-drug requests | Up to 5 drugs on one plan per request, including baskets mixing insulin and oral drugs — each product priced and capped independently, with an optional combined total when the user asks for one |
+| Insulin session follow-up | After an insulin estimate, a follow-up that only changes YTD spend (e.g. "what if I've spent $2,200 YTD?") re-prices the same product(s) and plan from the prior turn without re-stating drug or plan names |
+| Operator analytics | Aggregate-only usage rollups (request counts, latency, LLM token/cost sums, coarse prompt-length buckets, interaction mode, two-letter state label) — no message text, drug names, or per-user identity; operator dashboard gated by shared secret — see [Usage Analytics](./usage-analytics.md) |
 | Restrictions | Prior auth and step therapy surfaced as soft caveats; quantity limits as hard stops |
 
 ### 5.2 Out of scope (honest limitations)
@@ -235,13 +237,15 @@ sequenceDiagram
 
 | Component | Business function |
 |---|---|
-| **Disclaimer banner** | Always-visible notice: informational only; not medical, financial, or enrollment advice |
+| **Disclaimer banner** | Always-visible notice: informational only; not medical, financial, or enrollment advice; short privacy pointer to aggregate usage stats |
+| **Privacy policy modal** | Full plain-language policy from `config/privacy_policy.txt` (`GET /api/privacy`); section headings rendered in the banner and modals |
 | **Ask in Chat tab** | Free-form natural language with session follow-ups (max 5 turns) |
-| **Guided Estimate tab** | Structured form: drug, dosage, plan, contract year, days supply, YTD OOP |
+| **Guided Estimate tab** | Structured form: state, drug, dosage, plan, contract year, days supply, YTD OOP — required fields marked with asterisks and per-field "Mandatory" hints when submit is disabled |
 | **Prompt chips** | Example queries using the real plan `S5921-400` (AARP Medicare Rx Preferred from UHC, AR 2026), so they resolve once a real CMS AR ingest has run — see [§3.3](#33-verified-example) |
 | **Plan polling** | Auto-refreshes plan list every 20s during CMS data ingest |
 | **Sources panel** | Citations, data-as-of badge, tool status footer |
 | **Error handling** | Parses 502/503 API errors into user-visible messages |
+| **Responsive layout** | Mobile/tablet/desktop smoke-tested for horizontal scroll, 44px touch targets, keyboard/Escape on menus and modals |
 
 Dollar figures appear in the chat transcript. The Sources panel provides auditability, not a separate guarantee card.
 
@@ -254,7 +258,9 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 | `POST /api/query` | Structured query (same backend pipeline) |
 | `GET /api/plans` | Plan list for guided form |
 | `GET /api/meta/as-of` | Data freshness manifest |
-| `GET /api/disclaimer` | Canonical disclaimer text |
+| `GET /api/disclaimer` | Canonical disclaimer text + short privacy pointer |
+| `GET /api/privacy` | Full privacy policy text |
+| `GET /api/admin/usage` | Aggregate usage rollups (shared-secret gate; hidden when unset) — see [Usage Analytics](./usage-analytics.md) |
 
 ### 7.3 Navigator agent (`src/medicare_navigator/agent/`)
 
@@ -262,7 +268,7 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 |---|---|
 | `navigator.py` | LLM tool-calling loop; invokes MCP tools; extracts `DrugCostEstimate` |
 | `prompts.py` | Enforces scope, verbatim caveats, no plan-switching advice |
-| Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `enrollment_questions.py`, `invalid_input_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, missing dosage, enrollment asks, malformed numeric input) and either answer directly or call the estimate tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior |
+| Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `enrollment_questions.py`, `invalid_input_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, missing dosage, enrollment asks, malformed numeric input, prompt-injection patterns) and either answer directly or call the estimate tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior. `resolve_insulin_session_follow_up` re-estimates insulin when a follow-up turn changes YTD spend but omits drug/plan names, reusing `last_tool_calls` from the prior session turn |
 | `mediator.py` | Optional pre-processing step (off unless `MEDIATOR_ENABLED=1`) that runs a second, separate LLM call before the routers/agent loop to normalize phrasing and pull out date/duration wording (e.g. "the next 3 months") into structured fields — it never answers, routes, or prices anything, and safety refusal checks always see the user's original wording regardless of whether this step is on |
 | LLM client | OpenAI (default model) or Anthropic Claude; `LLM_MOCK=1` for offline use. Which models are available, their pricing, and the default are configuration (`config/deploy.yaml`), not application code — switching or repricing a model doesn't require a code change |
 
@@ -325,7 +331,7 @@ Resolve plan by contract-plan ID or search text; return ingested plan list for d
 
 #### Internal: `normalize_drug`
 
-Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB cache and insulin detection (flag, not a hard-stop — insulin proceeds to its own cap pipeline).
+Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB cache, curated offline fallback for demo/test drugs when the live API is unreachable (`tools/rxnorm_offline.py`), and insulin detection (flag, not a hard-stop — insulin proceeds to its own cap pipeline).
 
 #### Mixed baskets: insulin + oral drugs on one plan
 
@@ -350,6 +356,7 @@ When a user names insulin products alongside oral drugs for the same plan (e.g.,
 | Citation builder | Every factual claim links to CMS SPUF source |
 | Dollar-amount validation | Retries LLM response if untraceable `$` figures appear |
 | Verbatim caveat enforcement | Force-appends safety disclaimers if LLM paraphrases |
+| Channel-parity prose repair | When all four CMS pharmacy channels share one cost, rewrites misleading "depending on pharmacy channel" wording to "across all CMS pharmacy channels" |
 | Hard-stop statuses | No cost figures for suppressed, insulin data-gap, or quantity-limit blocks |
 | Lookup-failure citations | `not_found` and `not_covered` still show which dataset was queried |
 
@@ -358,11 +365,11 @@ When a user names insulin products alongside oral drugs for the same plan (e.g.,
 | Asset | Coverage |
 |---|---|
 | 15-case eval suite | Cost estimates, not-found, not-covered, insulin (priced, catastrophic $0, data-gap), suppressed, quantity-limit |
-| 347 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing |
+| 442 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing, channel-parity prose repair, insulin session follow-up |
 | 5 live-API integration tests | Real RxNorm and CMS catalog API calls (excluded from default run; opt-in via `pytest -m integration`) |
-| UI test harness | Guided form, mode switching, smoke messages |
+| UI test harness | Guided form, mode switching, smoke messages, mandatory-field contract checks, responsive-interactions Playwright flow (viewport, touch targets, keyboard/Escape, combobox) |
 
-Current result: 15/15 eval cases passing; 347/347 default-suite tests passing; 5/5 live-API integration tests passing.
+Current result: 15/15 eval cases passing; 442/442 default-suite tests passing; 5/5 live-API integration tests passing.
 
 ---
 
@@ -373,7 +380,8 @@ Current result: 15/15 eval cases passing; 347/347 default-suite tests passing; 5
 | Hallucinated prices | LLM cannot compute dollars; guardrail retry on untraceable amounts |
 | Medical advice liability | Persistent disclaimer; no diagnosis or treatment recommendations |
 | Insurance solicitation | No plan-switching recommendations |
-| PHI exposure | No health records stored; session-scoped only |
+| PHI exposure | No health records stored; chat held in server memory for the session (~30 min) and in the browser tab — not saved as a long-term database record |
+| Usage analytics | Aggregate-only hourly rollups (counts, latency, token/cost sums, coarse prompt-length buckets, mode, state label); no message text, drug names, or personal identifiers — disclosed in disclaimer and [privacy policy](../config/privacy_policy.txt); operator dashboard requires shared secret |
 | Stale data | Manifest-driven "Data as of" on every response |
 | Unreliable CMS data | Hard stop on suppressed plans |
 | Coinsurance misrepresentation | Dollar amount never shown when base is unconfirmed |
@@ -558,7 +566,7 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 |---|---|
 | **Accessibility** | WCAG 2.1 AA compliance audit; screen reader testing for chat and guided form |
 | **Localization** | Spanish-language UI strings and system prompt; CMS data remains English (source language) |
-| **Mobile** | Responsive layout optimization for phone-first beneficiaries |
+| **Mobile** | Responsive layout optimization for phone-first beneficiaries — initial smoke coverage via `responsive-interactions` Playwright flow (no horizontal scroll, 44px touch targets, keyboard/Escape) |
 
 #### 9.5 Print and share
 
@@ -575,7 +583,7 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 
 | Item | Detail |
 |---|---|
-| **GitHub Actions workflow** | Run `pytest` (347+ tests) and `medicare-eval` (15+ cases) on every pull request |
+| **GitHub Actions workflow** | Run `pytest` (442+ tests) and `medicare-eval` (15+ cases) on every pull request |
 | **Eval threshold** | Block merge if citation-groundedness rate drops below defined threshold |
 | **Ingest smoke test** | Verify SPUF ingest produces expected row counts for fixture zip |
 

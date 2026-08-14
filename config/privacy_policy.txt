@@ -1,1 +1,35 @@
-Privacy: We don't create accounts, and we don't use cookies or any analytics/tracking scripts. Your chat isn't saved to a database — conversation content lives only in the server's memory for your session (which expires after 30 minutes of inactivity) and in your browser tab; refreshing or closing the page clears it. We do keep a lightweight technical log per session (which internal tools ran, timing, success/failure) to monitor reliability — it does not include your message text, drug names, or the estimates shown to you. Your questions are sent to our AI provider (Anthropic or OpenAI, depending on configuration) to generate a response, along with the plan/drug details needed to answer — we don't send your IP address or browser identity to them; review the provider's own policies for how they handle API requests on their end. Our hosting provider's own server logs may briefly retain basic request metadata (like timestamps) outside of this application's control. This is a plain-language summary, not a legal document.
+We don't create accounts, and the main app does not use cookies, localStorage, or third-party browser tracking scripts (no ad trackers or analytics pixels). This is a plain-language summary of how this application handles your data—not a legal document.
+
+## Your chat and session
+
+When you ask a question, the server keeps a short-lived session in memory so follow-up turns work (up to five turns, expiring after about 30 minutes of inactivity). That session includes your recent message text and the assistant's replies so the AI can continue the conversation. The same thread appears in your browser tab. We do not save your chat as a long-term database record or tied to an account—you cannot log back in and retrieve old conversations. Refreshing the page or starting a new chat mints a new session identifier in your browser; server memory is cleared when the session expires, the server restarts, or you start over.
+
+## Aggregate usage statistics
+
+To understand how the app is used (volume, errors, latency, and LLM spend), we collect aggregate-only server statistics rolled up per hour. These counters include: number of requests and outcomes (success, error, needs clarification, not found, turn limit reached); sums of request latency; coarse prompt length buckets and total character counts (not the message itself); totals of LLM input/output tokens and estimated API cost; which interaction mode you used (free-form chat vs guided estimate flows); which AI model answered; and a two-letter state label from the state you pick in the UI or inferred from a plan ID you selected or typed—not from geo-IP and never used to change your cost estimate.
+
+We do not store in these statistics: your message text, drug names, dollar estimates shown to you, IP address, or anything that identifies you personally. Statistics are written to our server database on the same disk as CMS plan data and accumulate over time unless operators clear them or disable collection.
+
+## Which requests are counted
+
+Usage statistics are recorded when you send a chat-style question that invokes the AI (`/api/chat` or the legacy `/api/query` endpoint). Direct cost-estimate API calls that do not use the AI (`/api/estimate`, compare-plans) are not included in these rollups.
+
+## Technical reliability logs
+
+Separately, we keep lightweight per-request debug rows on disk: which internal tools ran, their success/failure status, timing, and an internal random session identifier to correlate tools within one conversation. These rows do not include your message text, drug names, or estimates.
+
+## State, ZIP, and plan picker
+
+The state picker (and optional ZIP lookup that suggests a state for the picker) helps scope which plans appear in the dropdown. ZIP codes are not stored in usage statistics—only a two-letter state label may appear in aggregate counts when you send a chat request.
+
+## AI providers
+
+Your questions, plan and drug details needed to answer, filter fields you provide, and your browser's timezone (for date-related questions) are sent to our configured AI provider (Anthropic or OpenAI) to generate a response. When enabled, an optional second AI processing pass may rewrite or extract dates from your message before the main answer step—still using your message content. We do not send your IP address or browser fingerprint to the AI provider; review the provider's own policies for how they handle API traffic on their end.
+
+## Hosting
+
+Our hosting provider may retain basic server access logs (such as timestamps and request paths) outside this application's control.
+
+## Operator tools
+
+A separate operator-only usage dashboard (not linked from this app) may display the aggregate statistics above. It is gated by a shared secret and does not expose individual conversations.

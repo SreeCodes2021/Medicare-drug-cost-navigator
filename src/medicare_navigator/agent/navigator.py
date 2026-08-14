@@ -626,6 +626,7 @@ class Navigator:
         from medicare_navigator.agent.insulin_requests import (
             message_names_non_insulin_cost_drugs,
             resolve_insulin_request,
+            resolve_insulin_session_follow_up,
         )
         from medicare_navigator.agent.mixed_basket_requests import (
             build_batch_requests,
@@ -722,6 +723,18 @@ class Navigator:
             filter_days_supply=filter_slots.days_supply if filter_slots else None,
             filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
         )
+        if insulin_request is None or (
+            not insulin_request.products and not insulin_request.is_policy_question
+        ):
+            session_insulin = resolve_insulin_session_follow_up(
+                message,
+                session.get("last_tool_calls"),
+                filter_plan_id=filter_plan_id,
+                filter_days_supply=filter_slots.days_supply if filter_slots else None,
+                filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+            )
+            if session_insulin is not None:
+                insulin_request = session_insulin
         if insulin_request and insulin_request.is_policy_question:
             explanation = _explanation_with_disclaimer(_insulin_policy_explanation())
             session_manager.append_turn(session, log_message, explanation, query_id=query_id)

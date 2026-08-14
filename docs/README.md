@@ -13,6 +13,7 @@ Developer-facing documentation for the **Medicare Drug Cost & Benefit-Transparen
 | [Insulin Trails (review)](./insulin_trails/README.md) | Maintainers / reviewers | Implementation review of insulin coverage: architecture summary, strengths, bugs/risks, action items, test gaps (feedback only) |
 | [Phase 6 Implementation Plan](./phase-6-implementation-plan.md) | Maintainers | What shipped in Phase 6, decisions, commit history |
 | [Deployment](./deployment.md) | DevOps | Render, cron ingest, persistent disk, monitoring |
+| [Usage Analytics](./usage-analytics.md) | Ops / backend | Privacy-safe aggregate telemetry, admin API, dashboard, configuration |
 | [Data Sources](./data-sources.md) | Data / backend | CMS SPUF, RxNorm, manifest fields (note: some Phase 1–5 sources are removed) |
 | [Build Requirements](../build-requirements.md) | Product | Long-term vision (broader than current v1 scope) |
 | Phase 1–5 plans | History | `phase-1-implementation-plan.md` … `phase-5-implementation-plan.md` |

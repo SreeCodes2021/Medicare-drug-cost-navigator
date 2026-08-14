@@ -205,7 +205,7 @@ GUIDED_SMOKE_FLOWS = [
     },
 ]
 
-BROWSER_FLOW_NAMES = ("chat", "guided-single", "guided-multi", "guided-compare-plan")
+BROWSER_FLOW_NAMES = ("chat", "guided-single", "guided-multi", "guided-compare-plan", "responsive-interactions")
 
 # Every text/number input and select-like control a beneficiary can type into
 # or open, across chat and all three guided submodes. Tier-1 smoke: exists,
@@ -451,6 +451,24 @@ def check_guided_ui_contract(html: str, js: str, css: str) -> CheckReport:
         and "updateGuidedSubmitButtonState()" in js
         and "promptGuidedMandatoryFields" in js,
         detail="guided submit buttons must reflect form validity and in-flight state",
+        group="guided",
+    )
+    report.add(
+        "guided:css:mandatory-field-styles",
+        ".field-required" in css and ".field-mandatory-msg" in css,
+        detail="required asterisk and mandatory hint styles are required",
+        group="guided",
+    )
+    report.add(
+        "guided:js:mandatory-hints",
+        "function updateGuidedMandatoryHints" in js,
+        detail="guided form must show per-field mandatory hints",
+        group="guided",
+    )
+    report.add(
+        "guided:html:mandatory-hint-ids",
+        'id="guided-state-mandatory"' in html and "field-mandatory-msg" in html,
+        detail="guided form must include mandatory hint elements",
         group="guided",
     )
     return report
