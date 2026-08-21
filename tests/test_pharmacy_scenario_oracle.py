@@ -79,13 +79,63 @@ def test_verify_pharmacy_prose_accepts_oracle_pharmacy_labels():
         "pharmacies": [{"pharmacy_name": "Pharmacy near 72712", "zip_code": "72712", "distance_miles": 0.0}],
     }
     prose = (
-        "Pharmacies near ZIP 72712:\n\n"
-        "- Pharmacy near 72712 — 72712 — 0.0 mi away\n"
+        "Pharmacies within 25 miles of ZIP 72712:\n\n"
+        "- Pharmacy near 72712 — 72712\n"
     )
     failures = verify_pharmacy_prose_against_oracle(
         prose,
         oracle,
         {"zip_code": "72712", "require_results": True, "min_results": 1},
+    )
+    assert failures == []
+
+
+def test_verify_pharmacy_prose_requires_cross_zip_distance_and_radius():
+    oracle = {
+        "status": "ok",
+        "zip_code": "72719",
+        "pharmacies": [
+            {"pharmacy_name": "WALGREEN CO.", "zip_code": "72719", "distance_miles": 0.0},
+            {"pharmacy_name": "TRISTATE INFUSION, LLC", "zip_code": "72712", "distance_miles": 2.6},
+        ],
+    }
+    prose = (
+        "Pharmacies within 25 miles of ZIP 72719:\n\n"
+        "- WALGREEN CO. — 72719\n"
+        "- TRISTATE INFUSION, LLC — 72712 — 2.6 mi away\n"
+    )
+    failures = verify_pharmacy_prose_against_oracle(
+        prose,
+        oracle,
+        {
+            "zip_code": "72719",
+            "require_results": True,
+            "require_radius_in_prose": True,
+            "require_cross_zip_distance_in_prose": True,
+            "forbid_zero_mile_distance_prose": True,
+        },
+    )
+    assert failures == []
+
+
+def test_verify_pharmacy_prose_forbids_distance_for_same_zip_only_results():
+    oracle = {
+        "status": "ok",
+        "zip_code": "72712",
+        "pharmacies": [
+            {"pharmacy_name": "WALMART INC.", "zip_code": "72712", "distance_miles": 0.0},
+        ],
+    }
+    prose = "Pharmacies within 25 miles of ZIP 72712:\n\n- WALMART INC. — 72712\n"
+    failures = verify_pharmacy_prose_against_oracle(
+        prose,
+        oracle,
+        {
+            "zip_code": "72712",
+            "require_results": True,
+            "require_radius_in_prose": True,
+            "forbid_any_distance_in_prose": True,
+        },
     )
     assert failures == []
 

@@ -97,13 +97,23 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "list_plans",
-        "description": "List Medicare Part D / MA-PD plans with optional filters.",
+        "description": (
+            "List Medicare Part D / MA-PD plans with optional filters. Results are capped by "
+            "limit (default 20) — when discovering candidate plans for a ZIP/state without the "
+            "user naming specific plans to compare, price and enumerate only a handful of the "
+            "least expensive results, not every plan returned."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "plan_type": {"type": "string"},
                 "state": {"type": "string"},
                 "contract_year": {"type": "integer"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max plans to return",
+                    "default": 20,
+                },
             },
         },
     },

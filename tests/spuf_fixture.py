@@ -6,19 +6,22 @@ from datetime import date
 from pathlib import Path
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.npi_enrichment import decode_cms_pharmacy_number
 from medicare_navigator.ingestion.npi_enrichment_offline import offline_lookup
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 from medicare_navigator.storage.connection import DuckDBConnection
 
 
-def _offline_only_enrich_npis(npis: list[str]) -> dict[str, dict]:
-    """Test-only enrich_npis replacement — offline snapshot lookups only, no live NPPES
-    HTTP calls, so every test that loads the SPUF fixture stays fast and deterministic."""
+def _offline_enrich_pharmacy_identifiers(identifiers: list[str]) -> dict[str, dict]:
+    """Test-only enrich_pharmacy_identifiers replacement — offline snapshot lookups only."""
     enriched: dict[str, dict] = {}
-    for npi in npis:
-        record = offline_lookup(npi)
+    for identifier in identifiers:
+        lookup_npi = decode_cms_pharmacy_number(identifier)
+        if not lookup_npi:
+            continue
+        record = offline_lookup(lookup_npi)
         if record is not None:
-            enriched[npi] = {**record, "enrichment_source": "nppes_offline"}
+            enriched[identifier] = {**record, "enrichment_source": "nppes_offline"}
     return enriched
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "spuf"
@@ -51,7 +54,8 @@ def load_spuf_fixture(
     db = DuckDBConnection(path=duckdb_path)
     if monkeypatch is not None:
         monkeypatch.setattr(
-            "medicare_navigator.ingestion.spuf.enrich_npis", _offline_only_enrich_npis
+            "medicare_navigator.ingestion.spuf.enrich_pharmacy_identifiers",
+            _offline_enrich_pharmacy_identifiers,
         )
     filters = IngestFilters(
         contract_year=2026,

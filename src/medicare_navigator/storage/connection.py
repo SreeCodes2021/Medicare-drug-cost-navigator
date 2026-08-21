@@ -20,9 +20,9 @@ class DuckDBConnection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
-        # DuckDB allows one writer plus concurrent read-only connections. Use
-        # read_only=True for fetch paths so pytest/offline checks can run while
-        # uvicorn holds a write connection on the same file.
+        # All in-process connections to the same file must share one access mode.
+        # Analytics flush and ingest use read-write; fetch paths must match or
+        # DuckDB raises "different configuration than existing connections".
         return duckdb.connect(str(self.path), read_only=read_only)
 
     def execute(self, sql: str, params: list | None = None) -> duckdb.DuckDBPyConnection:
@@ -38,7 +38,7 @@ class DuckDBConnection:
             raise
 
     def fetchone(self, sql: str, params: list | None = None):
-        conn = self.connect(read_only=True)
+        conn = self.connect()
         try:
             if params:
                 return conn.execute(sql, params).fetchone()
@@ -51,7 +51,7 @@ class DuckDBConnection:
             conn.close()
 
     def fetchall(self, sql: str, params: list | None = None):
-        conn = self.connect(read_only=True)
+        conn = self.connect()
         try:
             if params:
                 return conn.execute(sql, params).fetchall()

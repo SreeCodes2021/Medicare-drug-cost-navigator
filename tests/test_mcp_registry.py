@@ -83,6 +83,20 @@ async def test_mcp_list_plans():
 
 
 @pytest.mark.asyncio
+async def test_mcp_list_plans_limit_truncates():
+    result = await call_tool("list_plans", {"state": "FL", "limit": 2})
+    assert result["status"] == "ok"
+    assert len(result["data"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_plans_default_limit_bounds_results():
+    result = await call_tool("list_plans", {"state": "FL"})
+    assert result["status"] == "ok"
+    assert len(result["data"]) <= 20
+
+
+@pytest.mark.asyncio
 async def test_mcp_get_part_d_benefit_params():
     result = await call_tool("get_part_d_benefit_params", {"contract_year": 2026})
     assert result["status"] == "ok"

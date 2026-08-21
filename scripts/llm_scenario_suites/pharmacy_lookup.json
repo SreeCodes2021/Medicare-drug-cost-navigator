@@ -1,6 +1,6 @@
 {
   "suite": "pharmacy-lookup",
-  "description": "33 live LLM scenarios — mirrors .cursor/skills/tests/T3/pharmacy-lookup/llm-scenarios.md",
+  "description": "48 live LLM scenarios — mirrors .cursor/skills/tests/T3/pharmacy-lookup/llm-scenarios.md",
   "default_model": "gpt-5.6-luna",
   "_fl_fixture_names": [
     "Icon Pharmacy",
@@ -266,7 +266,9 @@
           "Fake Pharmacy",
           "found within 50",
           "within 50 miles",
-          "50 miles of"
+          "50 miles of",
+          "no pharmacies were found",
+          "no pharmacies found"
         ]
       }
     },
@@ -467,6 +469,308 @@
         "forbid_substrings": [
           "Angels Pharmacy",
           "Accredo"
+        ]
+      }
+    },
+    {
+      "id": "B10-1",
+      "message": "What pharmacies are near zip 72719?",
+      "pharmacy_lookup": {
+        "zip_code": "72719",
+        "min_results": 1,
+        "require_results": true,
+        "max_distance_miles": 25,
+        "require_radius_in_prose": true,
+        "require_cross_zip_distance_in_prose": true,
+        "forbid_zero_mile_distance_prose": true,
+        "forbid_names_not_in_oracle": [
+          "Icon Pharmacy",
+          "Angels Pharmacy",
+          "Albertsons",
+          "Accredo",
+          "Jackson Pharmacy"
+        ]
+      },
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/NearbyPharmacy",
+        "prose_contains_any": [
+          "72712",
+          "2.6 mi away"
+        ],
+        "forbid_substrings": [
+          "0.0 mi away",
+          "0 mi away",
+          "Icon Pharmacy",
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B10-2",
+      "message": "I live in 72719. What pharmacies are available near me?",
+      "pharmacy_lookup": {
+        "zip_code": "72719",
+        "min_results": 1,
+        "require_results": true,
+        "max_distance_miles": 25,
+        "require_radius_in_prose": true,
+        "require_cross_zip_distance_in_prose": true,
+        "forbid_zero_mile_distance_prose": true,
+        "forbid_names_not_in_oracle": [
+          "Icon Pharmacy",
+          "Angels Pharmacy",
+          "Albertsons",
+          "Accredo",
+          "Jackson Pharmacy"
+        ]
+      },
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/NearbyPharmacy",
+        "prose_contains": [
+          "within 25 miles"
+        ],
+        "forbid_substrings": [
+          "0.0 mi away",
+          "0 mi away",
+          "Icon Pharmacy",
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B10-3",
+      "message": "I live in 72712. What are the pharmacies available in my zip?",
+      "pharmacy_lookup": {
+        "zip_code": "72712",
+        "min_results": 1,
+        "require_results": true,
+        "max_distance_miles": 25,
+        "require_radius_in_prose": true,
+        "forbid_any_distance_in_prose": true,
+        "forbid_names_not_in_oracle": [
+          "Icon Pharmacy",
+          "Angels Pharmacy",
+          "Albertsons",
+          "Accredo",
+          "Jackson Pharmacy"
+        ]
+      },
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/NearbyPharmacy",
+        "prose_contains": [
+          "within 25 miles"
+        ],
+        "forbid_substrings": [
+          " mi away",
+          "Icon Pharmacy",
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B10-4",
+      "message": "What pharmacies are near zip 32801?",
+      "pharmacy_lookup": {
+        "zip_code": "32801",
+        "min_results": 1,
+        "require_results": true,
+        "max_distance_miles": 25,
+        "require_radius_in_prose": true,
+        "require_cross_zip_distance_in_prose": true,
+        "forbid_zero_mile_distance_prose": true
+      },
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/NearbyPharmacy",
+        "prose_contains_any": [
+          "32803",
+          "2 mi away",
+          "2.0 mi away"
+        ],
+        "forbid_substrings": [
+          "0.0 mi away",
+          "0 mi away"
+        ]
+      }
+    },
+    {
+      "id": "B10-5",
+      "message": "What are my preferred pharmacies near zip 32801 on plan S9999-001?",
+      "pharmacy_lookup": {
+        "zip_code": "32801",
+        "plan_key": "S9999-001",
+        "preferred_only": true,
+        "min_results": 1,
+        "require_results": true,
+        "max_distance_miles": 25,
+        "require_radius_in_prose": true,
+        "require_cross_zip_distance_in_prose": true,
+        "forbid_zero_mile_distance_prose": true
+      },
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PreferredPharmacy",
+        "prose_contains_any": [
+          "Icon Pharmacy",
+          "6.2 mi away",
+          "Accredo"
+        ],
+        "forbid_substrings": [
+          "0.0 mi away",
+          "0 mi away"
+        ]
+      }
+    },
+    {
+      "id": "B11-1",
+      "message": "I need to take metformin 500mg. I live in zip 32801. What pharmacies are near me?",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanPharmacyMatch",
+        "drugs_named": [
+          "metformin"
+        ],
+        "prose_contains_any": [
+          "S9999-001",
+          "Florida Test PDP"
+        ],
+        "prose_contains": [
+          "Icon Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B11-2",
+      "message": "I need to take lovastatin 40mg. I live in zip 32801. What pharmacies are near me?",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanPharmacyMatch",
+        "drugs_named": [
+          "lovastatin"
+        ],
+        "prose_contains_any": [
+          "none",
+          "not covered",
+          "doesn't cover",
+          "does not cover"
+        ],
+        "forbid_substrings": [
+          "Icon Pharmacy",
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B11-3",
+      "message": "I need to take metformin. I live in zip 32801. What pharmacies are near me?",
+      "expect": {
+        "status": "needs_clarification",
+        "prose_contains_any": [
+          "strength",
+          "dosage"
+        ]
+      }
+    },
+    {
+      "id": "B11-4",
+      "message": "I take metformin 500mg. What pharmacies are near zip 32801 for plan S9999-001?",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/NearbyPharmacy"
+      }
+    },
+    {
+      "id": "B11-5",
+      "message": "I need to take lovastatin 40mg and I live in 72719 what plans over this in near by pharamacies?",
+      "expect": {
+        "status": "ok",
+        "drugs_named": [
+          "lovastatin"
+        ],
+        "forbid_substrings": [
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B12-1",
+      "message": "I need to take lovastatin 40mg and I live in 72712 what plans are availalsblr that covers this medication in my zip?",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanCoverage",
+        "drugs_named": [
+          "lovastatin"
+        ],
+        "prose_contains": [
+          "H2802-060",
+          "$0.00"
+        ],
+        "forbid_substrings": [
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B12-2",
+      "message": "What plans cover metformin 500mg? I live in zip 32801.",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanCoverage",
+        "drugs_named": [
+          "metformin"
+        ],
+        "prose_contains": [
+          "S9999-001",
+          "Florida Test PDP",
+          "$3.00",
+          "$15.00"
+        ]
+      }
+    },
+    {
+      "id": "B12-3",
+      "message": "What plans cover lovastatin 40mg? I live in zip 32801.",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanCoverage",
+        "drugs_named": [
+          "lovastatin"
+        ],
+        "prose_contains_any": [
+          "none"
+        ],
+        "forbid_substrings": [
+          "$",
+          "Icon Pharmacy",
+          "Fake Pharmacy"
+        ]
+      }
+    },
+    {
+      "id": "B12-4",
+      "message": "What plans cover metformin? I live in zip 32801.",
+      "expect": {
+        "status": "needs_clarification",
+        "prose_contains_any": [
+          "strength",
+          "dosage"
+        ]
+      }
+    },
+    {
+      "id": "B12-5",
+      "message": "Which plans cover metformin 500mg and have a pharmacy nearby? I live in zip 32801.",
+      "expect": {
+        "status": "ok",
+        "response_source_prefix": "System/PlanPharmacyMatch",
+        "drugs_named": [
+          "metformin"
+        ],
+        "prose_contains": [
+          "Icon Pharmacy"
         ]
       }
     }

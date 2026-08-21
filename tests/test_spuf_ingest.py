@@ -6,6 +6,10 @@ from io import BytesIO
 import pytest
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.npi_enrichment import (
+    decode_cms_pharmacy_number,
+    enrich_pharmacy_identifiers,
+)
 from medicare_navigator.ingestion.schema import create_indexes, create_tables
 from medicare_navigator.ingestion.spuf import (
     IngestFilters,
@@ -507,6 +511,35 @@ def test_extract_pharmacy_network_row_fixture_layout():
     assert membership["mail_yn"] is False
 
 
+def test_decode_cms_pharmacy_number():
+    assert decode_cms_pharmacy_number("1841304730") == "1841304730"
+    assert decode_cms_pharmacy_number("101124789573") == "1124789573"
+    assert decode_cms_pharmacy_number("bad") is None
+
+
+def test_enrich_pharmacy_identifiers_maps_twelve_digit_numbers(monkeypatch):
+    def _fake_enrich(npis):
+        assert npis == ["1124789573"]
+        return {
+            "1124789573": {
+                "pharmacy_name": "TRISTATE INFUSION, LLC",
+                "address_line1": "123 Main St",
+                "city": "Bentonville",
+                "state": "AR",
+                "zip_code": "72712",
+                "phone": "555-0100",
+                "enrichment_source": "nppes_api",
+            }
+        }
+
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.npi_enrichment.enrich_npis",
+        _fake_enrich,
+    )
+    enriched = enrich_pharmacy_identifiers(["101124789573"])
+    assert enriched["101124789573"]["pharmacy_name"] == "TRISTATE INFUSION, LLC"
+
+
 def test_extract_pharmacy_network_row_cms_ppuf_layout():
     row = {
         "CONTRACT_ID": "H9207",
@@ -557,6 +590,10 @@ def test_find_all_pharmacy_network_members_sorts_parts():
 
 def test_ingest_spuf_cms_pharmacy_network_creates_zip_stub_pharmacies(spuf_db, tmp_path, monkeypatch):
     """CMS PPUF pharmacy-network rows use PHARMACY_NUMBER + PHARMACY_ZIPCODE, not NPI."""
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.npi_enrichment.enrich_npis",
+        lambda npis: {},
+    )
     cms_network = tmp_path / "pharmacy networks file  PPUF_2026Q2 part 1.txt"
     cms_network.write_text(
         "CONTRACT_ID|PLAN_ID|SEGMENT_ID|PHARMACY_NUMBER|PHARMACY_ZIPCODE|"

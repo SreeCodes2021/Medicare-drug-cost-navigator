@@ -5,6 +5,8 @@ from medicare_navigator.ingestion.zip_centroids import (
     distance_between_zips,
     haversine_miles,
 )
+from medicare_navigator.agent.pharmacy_questions import _pharmacy_list_sentence
+from medicare_navigator.models.response import PharmacyResult
 from medicare_navigator.tools.pharmacy_lookup import find_pharmacies
 from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PDP
 
@@ -132,3 +134,60 @@ def test_find_pharmacies_shared_npi_across_plans():
     assert result.status.value == "ok"
     names = {p.pharmacy_name for p in result.data}
     assert "Icon Pharmacy" in names
+
+
+def test_find_pharmacies_enriches_cms_stub_records(monkeypatch):
+    monkeypatch.setattr(
+        "medicare_navigator.tools.pharmacy_lookup.PharmacyRepository.nearby_candidates",
+        lambda self, **kwargs: [
+            {
+                "npi": "101124789573",
+                "pharmacy_name": "Pharmacy near 72712",
+                "address_line1": None,
+                "city": None,
+                "state": None,
+                "zip_code": "72712",
+                "preferred_yn": None,
+                "retail_yn": None,
+                "mail_yn": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "medicare_navigator.tools.pharmacy_lookup.PharmacyRepository.enrich_stub_records",
+        lambda self, identifiers: {
+            "101124789573": {
+                "pharmacy_name": "TRISTATE INFUSION, LLC",
+                "address_line1": "901 SE 28th St",
+                "city": "Bentonville",
+                "state": "AR",
+                "zip_code": "72712",
+                "enrichment_source": "nppes_api",
+            }
+        },
+    )
+
+    result = find_pharmacies(zip_code="72712", limit=1)
+    assert result.status.value == "ok"
+    assert result.data[0].pharmacy_name == "TRISTATE INFUSION, LLC"
+    assert result.data[0].address_line1 == "901 SE 28th St"
+
+
+def test_pharmacy_list_sentence_collapses_identical_zip_stubs():
+    pharmacies = [
+        PharmacyResult(
+            npi="101124789573",
+            pharmacy_name="Pharmacy near 72712",
+            zip_code="72712",
+            distance_miles=0.0,
+        ),
+        PharmacyResult(
+            npi="101134229453",
+            pharmacy_name="Pharmacy near 72712",
+            zip_code="72712",
+            distance_miles=0.0,
+        ),
+    ]
+    sentence = _pharmacy_list_sentence(pharmacies)
+    assert "CMS lists 2 in-network pharmacies in ZIP 72712" in sentence
+    assert sentence.count("Pharmacy near 72712") == 0

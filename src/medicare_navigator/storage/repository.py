@@ -379,6 +379,55 @@ class PharmacyRepository:
             for r in rows
         ]
 
+    def enrich_stub_records(self, identifiers: list[str]) -> dict[str, dict[str, object]]:
+        """Resolve CMS ZIP-only stub rows via NPPES and persist updates."""
+        from medicare_navigator.ingestion.npi_enrichment import enrich_pharmacy_identifiers
+
+        if not identifiers:
+            return {}
+
+        placeholders = ", ".join("?" for _ in identifiers)
+        stub_rows = self.db.fetchall(
+            f"""
+            SELECT npi FROM pharmacies
+            WHERE npi IN ({placeholders})
+              AND enrichment_source = 'cms_pharmacy_zipcode'
+            """,
+            list(identifiers),
+        )
+        stub_npis = [row[0] for row in stub_rows]
+        if not stub_npis:
+            return {}
+
+        enriched = enrich_pharmacy_identifiers(stub_npis)
+        if not enriched:
+            return {}
+
+        conn = self.db.connect()
+        try:
+            for npi, record in enriched.items():
+                conn.execute(
+                    """
+                    UPDATE pharmacies
+                    SET pharmacy_name = ?, address_line1 = ?, city = ?, state = ?,
+                        zip_code = ?, phone = ?, enrichment_source = ?
+                    WHERE npi = ?
+                    """,
+                    [
+                        record.get("pharmacy_name"),
+                        record.get("address_line1"),
+                        record.get("city"),
+                        record.get("state"),
+                        record.get("zip_code"),
+                        record.get("phone"),
+                        record.get("enrichment_source"),
+                        npi,
+                    ],
+                )
+        finally:
+            conn.close()
+        return enriched
+
 
 class PricingRepository:
     def __init__(self, db: DuckDBConnection | None = None) -> None:

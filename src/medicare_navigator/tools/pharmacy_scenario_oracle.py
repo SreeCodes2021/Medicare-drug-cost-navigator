@@ -113,4 +113,35 @@ def verify_pharmacy_prose_against_oracle(
         if forbidden_lower in lower and forbidden_lower not in oracle_names:
             failures.append(f"prose names pharmacy outside oracle: {forbidden}")
 
+    if spec.get("require_radius_in_prose"):
+        radius = float(spec.get("radius_miles", 25))
+        radius_phrases = {
+            f"within {radius:g} miles".lower(),
+            f"within {int(radius)} miles".lower(),
+        }
+        if not any(phrase in lower for phrase in radius_phrases):
+            failures.append(
+                f"prose missing search radius (expected 'within {radius:g} miles')"
+            )
+
+    if spec.get("forbid_zero_mile_distance_prose"):
+        for bad in ("0.0 mi away", "0 mi away", "0.0 miles", "0 miles"):
+            if bad in lower:
+                failures.append(f"prose shows zero-mile distance: {bad}")
+
+    if spec.get("require_cross_zip_distance_in_prose"):
+        cross_zip = [
+            p for p in pharmacies if (p.get("distance_miles") or 0) > 0
+        ]
+        if cross_zip and " mi away" not in lower:
+            failures.append(
+                "prose missing cross-ZIP distance (expected 'X mi away' for pharmacies "
+                "outside the query ZIP)"
+            )
+
+    if spec.get("forbid_any_distance_in_prose") and " mi away" in lower:
+        failures.append(
+            "prose shows distance but scenario expected same-ZIP-only results without miles"
+        )
+
     return failures

@@ -73,11 +73,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
     elif name == "list_plans":
         repo = PlanRepository()
+        limit = max(1, int(args.get("limit", 20)))
         plans = repo.list_plans(
             plan_type=args.get("plan_type"),
             state=args.get("state"),
             contract_year=args.get("contract_year"),
-        )
+        )[:limit]
         result = ToolResult.ok(plans, source_id=_spuf_source_id(), as_of_date=_spuf_as_of())
     elif name == "find_pharmacies":
         from medicare_navigator.tools.pharmacy_lookup import find_pharmacies

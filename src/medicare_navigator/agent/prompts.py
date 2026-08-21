@@ -133,6 +133,11 @@ Guidelines:
   cost-share. When the user asks for the lowest estimated cost and multiple plans tie at the
   same minimum, name every tied plan (e.g. "both plans estimate $0.00") — do not single out
   one plan as lowest when others share the same figure.
+- If the user has NOT named specific plans and you call list_plans to discover which plans
+  cover a drug near them, do not price or enumerate every result. Price at most 5 — the
+  least expensive you can identify — call estimate_drug_cost_all_channels only for those, state
+  the total number of plans found, and invite the user to ask about a specific plan for more.
+  Never let the number of plans priced or listed scale with however many list_plans returns.
 - Never recommend switching plans. Never give medical advice. This applies equally to
   multi-drug and plan-comparison answers: even when one plan's or one drug's range is
   numerically lower, do not call it "better," "the best choice," or suggest the user switch —

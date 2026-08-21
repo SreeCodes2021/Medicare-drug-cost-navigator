@@ -1,7 +1,7 @@
 ---
 name: quality-test-pharmacy-lookup
 description: >-
-  ZIP-based pharmacy locator QA — deterministic pytest, plus a fixed 34-query
+  ZIP-based pharmacy locator QA — deterministic pytest, plus a fixed 49-query
   live LLM catalog (customizable via --limit) graded against /api/chat and
   the find_pharmacies oracle. Invoke with /quality-test/pharmacy-lookup.
   Independent of the parent /quality-test 100-query budget.
@@ -72,8 +72,8 @@ Without AR pharmacy-network rows, B7/B8 auto-checks fail with
 
 - [src/medicare_navigator/tools/pharmacy_lookup.py](../../../../src/medicare_navigator/tools/pharmacy_lookup.py) — `find_pharmacies`, haversine distance, channel/radius/limit filtering
 - [src/medicare_navigator/ingestion/zip_centroids.py](../../../../src/medicare_navigator/ingestion/zip_centroids.py) — ZIP→lat/lon resolution, malformed/unknown-ZIP handling
-- [src/medicare_navigator/agent/pharmacy_questions.py](../../../../src/medicare_navigator/agent/pharmacy_questions.py) — Q1 (preferred), Q2 (cost at nearest preferred pharmacy), Q3 (nearby) chat routing
-- [llm-scenarios.md](llm-scenarios.md) — 33 live-LLM scenarios (B1–B4, B6–B9)
+- [src/medicare_navigator/agent/pharmacy_questions.py](../../../../src/medicare_navigator/agent/pharmacy_questions.py) — Q1 (preferred), Q2 (cost at nearest preferred pharmacy), Q3 (nearby), Q4 (plan+pharmacy cross-reference), Q5 (plan coverage by ZIP, no pharmacy angle) chat routing
+- [llm-scenarios.md](llm-scenarios.md) — 48 live-LLM scenarios (B1–B4, B6–B12)
 
 ## Real LLM mandate
 
@@ -91,12 +91,12 @@ Default model for all Phase B queries: **`gpt-5.6-luna`**.
 | Phase | Queries | Notes |
 |-------|---------|-------|
 | **Phase A** | **0** | Existing pytest only — no golden-cases.jsonl group (pharmacy lookup has no numeric CMS oracle of its own) |
-| **Phase B** | **34 (default, customizable)** | Fixed catalog in [llm-scenarios.md](llm-scenarios.md) — 33 scenarios, B7-2 is a 2-turn follow-up (34 total `medicare-chat-invoke` calls) — use `--limit N` to scale down/up |
+| **Phase B** | **49 (default, customizable)** | Fixed catalog in [llm-scenarios.md](llm-scenarios.md) — 48 scenarios, B7-2 is a 2-turn follow-up (49 total `medicare-chat-invoke` calls) — use `--limit N` to scale down/up |
 
-**Customizing the budget:** the 33-scenario (34-query) catalog is the default
+**Customizing the budget:** the 48-scenario (49-query) catalog is the default
 full pass, not a hard cap. Run a smaller subset with `--limit N` (first N
 scenarios in catalog order) or target one scenario with `--scenario <id>`.
-Ask the user before exceeding 34 real queries in a single invocation, same as
+Ask the user before exceeding 49 real queries in a single invocation, same as
 any other live-LLM budget in this tier.
 
 ## Phase A — Deterministic (always run first)
@@ -114,7 +114,7 @@ pytest tests/test_pharmacy_lookup.py tests/test_pharmacy_api.py tests/test_pharm
 | `test_pharmacy_questions.py` | `extract_zip` regex, intent predicates, resolver deferral, missing ZIP/plan/dosage clarification |
 | `test_pharmacy_scenario_oracle.py` | CMS ZIP oracle builder, prose-vs-oracle verifier, 72712 same-ZIP zero-mile regression |
 
-## Phase B — 33 live LLM scenarios / 34 queries (default, `--limit` customizable)
+## Phase B — 48 live LLM scenarios / 49 queries (default, `--limit` customizable)
 
 Follow [llm-scenarios.md](llm-scenarios.md). Rephrase wording each run;
 categories are fixed.
@@ -141,7 +141,10 @@ Suite data: `scripts/llm_scenario_suites/pharmacy_lookup.json`.
 | B7 | 6 | 7 | AR ZIP positive regression (`72719`) — verified against `find_pharmacies` oracle |
 | B8 | 2 | 2 | CMS data truth verification (`72712` user-reported false negatives) |
 | B9 | 5 | 5 | Gap-fill: multi-drug Q2 cost, missing-dosage Q2, honest empty channel result, decoy-ZIP guard, plan-scoped Q3 without "preferred" wording |
-| **Total** | **33** | **34** | |
+| B10 | 5 | 5 | Cross-ZIP distance prose: radius header, hide 0 mi, show `X mi away` for adjacent-ZIP pharmacies (`72719`/`72712`, `32801`/`32803`) |
+| B11 | 5 | 5 | Plan+pharmacy cross-reference (Q4): formulary coverage joined to nearby preferred-pharmacy network across all state plans, covered/uncovered/missing-dosage/plan-already-named, plus the original bug-report regression |
+| B12 | 5 | 5 | Plan coverage by ZIP, no pharmacy angle (Q5): the plain "what plans cover my drug in my zip" question that previously missed every resolver and cost real API dollars pricing every plan in the state — covered/uncovered/missing-dosage/pharmacy-wording-defers-to-Q4, plus the original cost-report regression against real AR data |
+| **Total** | **48** | **49** | |
 
 **Per-query workflow** (or use `python scripts/run_llm_scenarios.py --suite pharmacy-lookup` for the full catalog):
 
@@ -168,6 +171,8 @@ Apply in addition to [chat-QA](../../utils/chat-QA/SKILL.md):
 | Names a mail-order pharmacy as the "nearest" physical location | 0 |
 | Invents a `$` figure when the ZIP wasn't recognized or no pharmacy was found in range | 0 |
 | Silently drops one drug from a multi-drug preferred-pharmacy cost ask | 0 |
+| Claims a specific *pharmacy* stocks/carries a drug — pharmacy location data (NPPES) has no drug-stocking info; only *plan* formulary coverage is real | 0 |
+| Drops the named drug entirely from a plan+pharmacy cross-reference (Q4) answer, or fabricates plan coverage not backed by `basic_drugs_formulary` | 0 |
 
 Pass on unknown/no-match ZIP: honest "don't recognize this ZIP" or "no
 pharmacies found" message; may still answer other parts of the question; **no
@@ -178,7 +183,7 @@ fabricated pharmacy**.
 ```markdown
 ## Pharmacy-lookup quality test — {date/time}
 
-**Mode:** real LLM (models used: {list}) — {N}/34 real queries spent
+**Mode:** real LLM (models used: {list}) — {N}/49 real queries spent
 **Overall verdict:** BLOCK | REVISE | PASS
 
 ### Phase A — Pytest
@@ -207,6 +212,15 @@ fabricated pharmacy**.
 | # | Scenario | Oracle | Prose | Verdict | Notes |
 
 ### Phase B — B9 Additional coverage / gap-fill (5)
+| # | Scenario | Expected | Actual | Verdict | Notes |
+
+### Phase B — B10 Cross-ZIP distance prose (5)
+| # | Scenario | Expected | Actual | Verdict | Notes |
+
+### Phase B — B11 Plan+pharmacy cross-reference (5)
+| # | Scenario | Expected | Actual | Verdict | Notes |
+
+### Phase B — B12 Plan coverage by ZIP, no pharmacy angle (5)
 | # | Scenario | Expected | Actual | Verdict | Notes |
 
 ### Priority fixes needed

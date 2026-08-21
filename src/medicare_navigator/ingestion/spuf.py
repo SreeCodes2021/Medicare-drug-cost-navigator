@@ -18,7 +18,7 @@ import yaml
 from medicare_navigator.config import settings
 from medicare_navigator.ingestion.manifest import calendar_quarter_from_date, load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
-from medicare_navigator.ingestion.npi_enrichment import enrich_npis
+from medicare_navigator.ingestion.npi_enrichment import enrich_pharmacy_identifiers
 from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
 from medicare_navigator.storage.connection import DuckDBConnection
 
@@ -995,16 +995,11 @@ def ingest_spuf(
             }
             new_npis = sorted(pharmacy_network_npis - existing_npis)
             if new_npis:
-                enrich_candidates = [
-                    npi for npi in new_npis if len(npi) == 10 and npi.isdigit()
-                ]
-                enriched: dict[str, dict[str, Any]] = {}
-                if enrich_candidates:
-                    _progress(
-                        f"Enriching {len(enrich_candidates):,} new pharmacy NPI(s) via NPPES...",
-                        file="pharmacies",
-                    )
-                    enriched = enrich_npis(enrich_candidates)
+                _progress(
+                    f"Enriching {len(new_npis):,} new pharmacy identifier(s) via NPPES...",
+                    file="pharmacies",
+                )
+                enriched = enrich_pharmacy_identifiers(new_npis)
                 pharmacy_rows = []
                 for npi in new_npis:
                     record = enriched.get(npi)

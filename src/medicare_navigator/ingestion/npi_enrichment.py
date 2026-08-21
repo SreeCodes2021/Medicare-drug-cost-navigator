@@ -17,6 +17,20 @@ from medicare_navigator.ingestion.npi_enrichment_offline import offline_lookup
 _NPPES_BASE_URL = "https://npiregistry.cms.hhs.gov/api/"
 
 
+def decode_cms_pharmacy_number(identifier: str) -> str | None:
+    """Map a CMS pharmacy-network identifier to a 10-digit NPI for NPPES lookup.
+
+    CMS PPUF ``PHARMACY_NUMBER`` values are 12 characters: a leading ``10`` plus the
+    10-digit NPI. Fixture rows may already use a bare 10-digit NPI.
+    """
+    value = (identifier or "").strip()
+    if len(value) == 10 and value.isdigit():
+        return value
+    if len(value) == 12 and value.startswith("10") and value.isdigit():
+        return value[2:]
+    return None
+
+
 def _parse_nppes_result(result: dict) -> dict[str, object] | None:
     basic = result.get("basic") or {}
     name = basic.get("organization_name") or basic.get("name")
@@ -72,4 +86,25 @@ def enrich_npis(npis: list[str]) -> dict[str, dict[str, object]]:
             record = offline_lookup(npi)
             if record is not None:
                 enriched[npi] = {**record, "enrichment_source": "nppes_offline"}
+    return enriched
+
+
+def enrich_pharmacy_identifiers(identifiers: list[str]) -> dict[str, dict[str, object]]:
+    """Enrich CMS pharmacy-network identifiers, keyed by the original identifier.
+
+    12-digit CMS ``PHARMACY_NUMBER`` values are decoded to 10-digit NPIs before lookup;
+    results are mapped back to the original identifier so ``pharmacy_network.npi`` joins still
+    match ``pharmacies.npi``.
+    """
+    lookup_to_originals: dict[str, list[str]] = {}
+    for identifier in identifiers:
+        lookup_npi = decode_cms_pharmacy_number(identifier)
+        if lookup_npi:
+            lookup_to_originals.setdefault(lookup_npi, []).append(identifier)
+
+    enriched_by_lookup = enrich_npis(list(lookup_to_originals))
+    enriched: dict[str, dict[str, object]] = {}
+    for lookup_npi, record in enriched_by_lookup.items():
+        for original in lookup_to_originals.get(lookup_npi, []):
+            enriched[original] = record
     return enriched

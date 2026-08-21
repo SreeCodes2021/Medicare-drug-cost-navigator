@@ -3,14 +3,20 @@ insulin/suppressed-plan hard stops and prior-authorization/step-therapy caveat."
 
 import pytest
 
-from medicare_navigator.models.tool_result import ToolStatus
+from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.tools.disclaimers import (
     BUG2_CAVEAT,
     BUG4_CAVEAT,
     INSULIN_STATUTORY_CAP_CAVEAT,
     NO_COST_SHARE_DATA_MESSAGE,
 )
-from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost, estimate_drug_cost_all_channels
+from medicare_navigator.tools.estimate_drug_cost import (
+    ResolvedDrug,
+    check_formulary_coverage_for_plans,
+    estimate_drug_cost,
+    estimate_drug_cost_all_channels,
+    resolve_drug_for_pricing,
+)
 from tests.spuf_fixture import PLAN_FL_MAPD, PLAN_FL_PARTIAL_CHANNELS, PLAN_FL_PDP, PLAN_FL_SUPPRESSED
 
 
@@ -517,3 +523,50 @@ async def test_unmapped_days_supply_without_cost_does_not_claim_ingredient_cost(
     assert result.data.cost_high is None
     assert any("45-day supply" in c for c in result.data.caveats)
     assert not any("reflects ingredient cost only" in c for c in result.data.caveats)
+
+
+# --- resolve_drug_for_pricing / check_formulary_coverage_for_plans (extracted for Q4) ----
+# The extraction in estimate_drug_cost_all_channels's pipeline is behavior-preserving (the
+# whole test suite above passes unchanged); these tests cover the new pieces directly.
+
+
+@pytest.mark.asyncio
+async def test_resolve_drug_for_pricing_matches_inline_resolution():
+    resolved = await resolve_drug_for_pricing("metformin", "500mg")
+    assert isinstance(resolved, ResolvedDrug)
+    assert resolved.rxcui == "861007"
+    assert resolved.resolved_dosage == "500mg"
+    assert resolved.is_insulin_drug is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_drug_for_pricing_needs_dosage():
+    resolved = await resolve_drug_for_pricing("metformin", None)
+    assert isinstance(resolved, ToolResult)
+    assert resolved.status == ToolStatus.needs_dosage
+
+
+@pytest.mark.asyncio
+async def test_check_formulary_coverage_for_plans_dedupes_shared_formulary_id():
+    """H8888-001 and H5427-060 share FORM0002 — coverage must still be computed correctly
+    for both formularies, plus FORM0001 and FORM0005, which all carry metformin 500mg."""
+    coverage = await check_formulary_coverage_for_plans(
+        formulary_ids=["FORM0001", "FORM0002", "FORM0002", "FORM0005"],
+        rxcui="861007",
+        drug_name="metformin",
+        dosage="500mg",
+    )
+    assert set(coverage.keys()) == {"FORM0001", "FORM0002", "FORM0005"}
+    assert all(coverage[fid][0] for fid in coverage)
+
+
+@pytest.mark.asyncio
+async def test_check_formulary_coverage_for_plans_no_coverage_returns_empty():
+    coverage = await check_formulary_coverage_for_plans(
+        formulary_ids=["FORM0001", "FORM0002"],
+        rxcui="197905",
+        drug_name="lovastatin",
+        dosage="40mg",
+    )
+    assert coverage["FORM0001"][0] == []
+    assert coverage["FORM0002"][0] == []

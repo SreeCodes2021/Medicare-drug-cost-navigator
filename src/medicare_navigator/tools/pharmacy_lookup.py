@@ -40,6 +40,59 @@ def _channel_for(
     return f"{prefix}_retail"
 
 
+def is_zip_only_stub_pharmacy(
+    *,
+    pharmacy_name: str | None,
+    address_line1: str | None,
+    zip_code: str | None,
+) -> bool:
+    name = (pharmacy_name or "").strip()
+    if address_line1:
+        return False
+    if not name.startswith("Pharmacy near "):
+        return False
+    suffix = name.removeprefix("Pharmacy near ").strip()
+    return bool(suffix) and suffix == (zip_code or "")
+
+
+def _apply_enriched_fields(pharmacy: PharmacyResult, record: dict[str, object]) -> PharmacyResult:
+    return pharmacy.model_copy(
+        update={
+            "pharmacy_name": record.get("pharmacy_name") or pharmacy.pharmacy_name,
+            "address_line1": record.get("address_line1"),
+            "city": record.get("city"),
+            "state": record.get("state"),
+            "zip_code": record.get("zip_code") or pharmacy.zip_code,
+        }
+    )
+
+
+def _enrich_stub_results(results: list[PharmacyResult]) -> list[PharmacyResult]:
+    stub_npis = [
+        pharmacy.npi
+        for pharmacy in results
+        if pharmacy.npi
+        and is_zip_only_stub_pharmacy(
+            pharmacy_name=pharmacy.pharmacy_name,
+            address_line1=pharmacy.address_line1,
+            zip_code=pharmacy.zip_code,
+        )
+    ]
+    if not stub_npis:
+        return results
+
+    enriched = PharmacyRepository().enrich_stub_records(stub_npis)
+    if not enriched:
+        return results
+
+    return [
+        _apply_enriched_fields(pharmacy, enriched[pharmacy.npi])
+        if pharmacy.npi in enriched
+        else pharmacy
+        for pharmacy in results
+    ]
+
+
 def find_pharmacies(
     *,
     zip_code: str,
@@ -107,5 +160,7 @@ def find_pharmacies(
             as_of_date=as_of,
             message=f"No pharmacies{scope} found within {radius_miles:.0f} miles of ZIP {zip_code}.",
         )
+
+    results = _enrich_stub_results(results)
 
     return ToolResult.ok(results, source_id=source_id, as_of_date=as_of)

@@ -1,9 +1,10 @@
-# Pharmacy-lookup quality test — 33 live LLM scenarios
+# Pharmacy-lookup quality test — 48 live LLM scenarios
 
 Parent skill: [SKILL.md](SKILL.md). **Rephrase wording each run** — scenario intent is fixed.
 
 Default model: **`gpt-5.6-luna`**. Each row = one `medicare-chat-invoke send` (1 query);
-B7-2 is 2 queries (opener + follow-up in the same session).
+B7-2 is 2 queries (opener + follow-up in the same session), so the catalog is 49 queries
+total.
 Automated batch run: `python scripts/run_llm_scenarios.py --suite pharmacy-lookup` (see
 `scripts/llm_scenario_suites/pharmacy_lookup.json`). Budget is customizable — pass `--limit N`
 to run only the first N scenarios, or `--scenario <id>` for one.
@@ -139,6 +140,85 @@ dollar amounts look suspect.
 
 ---
 
+## B10 — Cross-ZIP distance prose (5 queries)
+
+Pins the distance-display rules shipped 2026-08-21: prose states the fixed search
+radius, **omits** miles when `distance_miles == 0` (same-ZIP centroid match), and
+**shows** `X mi away` only for pharmacies whose CMS ZIP differs from the query ZIP.
+
+**Demo ZIP for manual testing:** `72719` (Centerton, AR) — same-ZIP rows (72719)
+have no miles; adjacent-ZIP rows (72712 Bentonville) show **2.6 mi away**. FL fixture
+analog: `32801` → Icon Pharmacy (no miles) + 32803 pharmacies at **2.0 mi away**.
+
+| # | Scenario | Example shape (rephrase) | Pass |
+|---|----------|--------------------------|------|
+| B10-1 | AR nearby Q3, explicit ZIP | "What pharmacies are near zip 72719?" | `System/NearbyPharmacy`; header includes `within 25 miles`; lists 72712 pharmacies with `2.6 mi away`; same-ZIP 72719 rows have **no** `0.0 mi away` |
+| B10-2 | AR nearby Q3, live-in phrasing | "I live in 72719. What pharmacies are available near me?" | Same distance prose rules as B10-1 |
+| B10-3 | AR same-ZIP-only top results | "I live in 72712. What are the pharmacies available in my zip?" | Header includes `within 25 miles`; top oracle rows all `distance_miles == 0` → prose has **no** ` mi away` substring |
+| B10-4 | FL fixture nearby Q3 | "What pharmacies are near zip 32801?" | Header includes `within 25 miles`; cross-ZIP 32803 rows show non-zero miles; no `0.0 mi away` |
+| B10-5 | FL fixture preferred Q1 | "What are my preferred pharmacies near zip 32801 on plan S9999-001?" | `System/PreferredPharmacy`; Icon Pharmacy (32801) without miles; Accredo/Albertsons in other ZIPs with non-zero miles |
+
+**B10-1 oracle note:** auto-check uses `require_cross_zip_distance_in_prose`,
+`forbid_zero_mile_distance_prose`, and `require_radius_in_prose` in
+`pharmacy_scenario_oracle.py` — not just substring guards.
+
+---
+
+## B11 — Plan+pharmacy cross-reference (Q4, 5 queries)
+
+Motivated by a live report where a message naming a drug, a ZIP, and "nearby pharmacies" (no
+plan) got a bare, drug-blind pharmacy list — the user had actually asked "which plans cover
+this drug at a nearby pharmacy," a question the app couldn't answer at all before Q4
+(`resolve_plan_pharmacy_match_question`) existed. Q4 cross-references formulary coverage
+(`basic_drugs_formulary`) against preferred-pharmacy-network proximity
+(`pharmacy_network`) across every candidate plan in the ZIP's state — it never claims a
+*pharmacy* stocks a drug (NPPES data has no drug-stocking info at all), only that a *plan*
+covers it and has a preferred pharmacy nearby.
+
+FL fixture facts: metformin 500mg is on every FL fixture formulary; only `S9999-001` and
+`H8888-001` have a preferred-retail pharmacy (Icon Pharmacy) within 25 miles of ZIP `32801`;
+`H5427-060` and `S9999-004` also cover it but have no nearby preferred pharmacy. Lovastatin
+40mg is on none of the FL fixture formularies.
+
+| # | Scenario | Example shape (rephrase) | Pass |
+|---|----------|--------------------------|------|
+| B11-1 | Covered drug, no plan named (Q4) | "I need to take metformin 500mg. I live in zip 32801. What pharmacies are near me?" | `System/PlanPharmacyMatch`; names both `S9999-001` and `H8888-001` with "Icon Pharmacy"; discloses `H5427-060`/`S9999-004` as covered but without a nearby pharmacy — **not** silently dropped |
+| B11-2 | Uncovered drug, no plan named (Q4) | "I need to take lovastatin 40mg. I live in zip 32801. What pharmacies are near me?" | `System/PlanPharmacyMatch`; honest "none of the ... plans ... cover lovastatin 40mg" — **no fabricated coverage** |
+| B11-3 | Missing dosage at Q4 | "I need to take metformin. I live in zip 32801. What pharmacies are near me?" | `needs_clarification`; asks for strength — same dosage-required gate as Q2's B9-2 |
+| B11-4 | Plan already named defers Q4 to Q3 | "I take metformin 500mg. What pharmacies are near zip 32801 for plan S9999-001?" | `System/NearbyPharmacy` (**not** `PlanPharmacyMatch`) — naming a plan routes to the existing plan-scoped path, not the plan-search cross-reference |
+| B11-5 | Original bug-report message — drug never silently dropped | "I need to take lovastatin 40mg and I live in 72719 what plans over this in near by pharamacies?" | Whichever path answers (Q4's cross-reference if AR formulary data is ingested, or Q3's fallback caveat if not — see [SKILL.md's data prerequisite](SKILL.md#before-running-phase-b-data-prerequisite)), prose must name **"lovastatin"** — pins the exact bug where the drug was dropped entirely and the bot demanded a plan pick with no acknowledgment of what was asked |
+
+---
+
+## B12 — Plan coverage by ZIP, no pharmacy angle (Q5, 5 queries)
+
+Motivated by a live cost-report: "I need to take lovastatin 40mg and I live in 72712 what
+plans are available that covers this medication in my zip?" names no pharmacy at all, so it
+missed Q1–Q4 (all gated on "pharmac..." wording) and fell through to the LLM agent loop, which
+called the unbounded `list_plans` tool and priced/enumerated every plan on file for the state —
+20+ plans plus one channel-gap disclaimer sentence per plan, a real 7-cent API charge for one
+answer. Q5 (`resolve_plan_coverage_question`) now answers this exact question shape
+deterministically and for free: it prices at most `MAX_PRICED_PLANS_FOR_COVERAGE` (8) covered
+plans, displays at most `MAX_DISPLAYED_PLAN_COVERAGE` (5) cheapest-first, and names each plan
+(not just its bare `plan_key`) so the reply is legible without a separate plan lookup.
+
+FL fixture facts (same formulary data as B11): metformin 500mg is on every FL fixture
+formulary — `S9999-001` (Florida Test PDP) estimates $3.00–$15.00 across channels at
+`ytd_oop_spend=0`; lovastatin 40mg is on none of them. Real (non-fixture) AR facts: ZIP `72712`
+has 85 covered plans for lovastatin 40mg, including `H2802-060` at Tier 1, $0.00
+(standard-retail only) — see [SKILL.md's data prerequisite](SKILL.md#before-running-phase-b-data-prerequisite)
+for the AR ingest this scenario needs.
+
+| # | Scenario | Example shape (rephrase) | Pass |
+|---|----------|--------------------------|------|
+| B12-1 | Original bug-report message, real AR data | "I need to take lovastatin 40mg and I live in 72712 what plans are availalsblr that covers this medication in my zip?" | `System/PlanCoverage`; names **"lovastatin"**; lists real plan `H2802-060` at `$0.00`; **no LLM-narrated plan wall** (bounded to ≤5 displayed + truncation notes) |
+| B12-2 | Covered drug, no plan named (Q5) | "What plans cover metformin 500mg? I live in zip 32801." | `System/PlanCoverage`; names `S9999-001` / "Florida Test PDP" with its `$3.00`–`$15.00` range — plan **name**, not just the bare key |
+| B12-3 | Uncovered drug, no plan named (Q5) | "What plans cover lovastatin 40mg? I live in zip 32801." | `System/PlanCoverage`; honest "none of the ... plans ... cover lovastatin" — **no fabricated `$` figure**, no leaked FL pharmacy name |
+| B12-4 | Missing dosage at Q5 | "What plans cover metformin? I live in zip 32801." | `needs_clarification`; asks for strength — same dosage-required gate as Q2's B9-2 / Q4's B11-3 |
+| B12-5 | Pharmacy wording still routes to Q4, not Q5 | "Which plans cover metformin 500mg and have a pharmacy nearby? I live in zip 32801." | `System/PlanPharmacyMatch` (**not** `PlanCoverage`) — the word "pharmacy" must keep routing to Q4's proximity cross-reference; names "Icon Pharmacy" |
+
+---
+
 ## Harness invariants
 
 - ZIP is chat-only by design — it must never appear in `FilterPayload`/`ChatRequest` (regression
@@ -158,7 +238,7 @@ dollar amounts look suspect.
   `find_pharmacies` oracle — a polite but wrong "no pharmacies" answer is an auto-fail when
   the tool returns matches (see B7-1/B7-3/B7-6, B8-1/B8-2).
 
-## Optional (live multi-state data only — not counted in the 28-scenario budget)
+## Optional (live multi-state data only — not counted in the 48-scenario budget)
 
 Cross-state / border-ZIP behavior (a ZIP whose centroid sits near a state line, where the nearest
 in-network pharmacy is in an adjacent state) has no state filtering in `find_pharmacies` by
@@ -192,3 +272,11 @@ than skipping silently.
 | Mail-order wording + plan whose only pharmacy is retail-only (H8888-001) | Channel-filtered honest empty result | Q3, channel-aware, zero matches (see B9-3) |
 | Pharmacy question with a decoy 5-digit number, no "zip" keyword/location anchor | `needs_clarification` | `_MISSING_ZIP_MESSAGE`; decoy number not extracted as ZIP (see B9-4) |
 | ZIP 32801 + plan H8888-001, no "preferred" wording | `System/NearbyPharmacy` | Q3, plan-scoped without preferred wording — Icon Pharmacy only (see B9-5) |
+| ZIP 72719 (AR, cross-ZIP in top 5) | `System/NearbyPharmacy`; 72719 rows no miles; 72712 rows `2.6 mi away`; header `within 25 miles` | Q3 distance prose (see B10-1/B10-2) |
+| ZIP 72712 (AR, same-ZIP top results) | `System/NearbyPharmacy`; header `within 25 miles`; no ` mi away` in prose | Q3 same-ZIP display (see B10-3) |
+| ZIP 32801 preferred S9999-001 | `System/PreferredPharmacy`; Icon (32801) no miles; mail/retail in other ZIPs show miles | Q1 distance prose (see B10-5) |
+| ZIP 32801, drug named, no plan | `System/PlanPharmacyMatch` | Q4 — cross-references formulary coverage + nearby preferred pharmacy across all state plans (see B11-1/B11-2) |
+| ZIP 32801, drug + plan both named | `System/NearbyPharmacy` | Q4 defers to the existing plan-scoped path when a plan is already named (see B11-4) |
+| ZIP given, drug named, "plans cover" wording, **no** "pharmacy" wording | `System/PlanCoverage` | Q5 — plain coverage-by-ZIP, priced and capped, no pharmacy-network angle (see B12-1/B12-2/B12-3) |
+| ZIP given, "plans cover" wording, no drug strength | `needs_clarification` | Q5's own dosage-missing branch (see B12-4) |
+| ZIP given, "plans cover" wording **plus** "pharmacy" wording | `System/PlanPharmacyMatch` | Q5 defers to Q4 whenever pharmacy wording appears (see B12-5) |
