@@ -15,7 +15,8 @@ def test_tool_names():
     assert "estimate_drug_cost" in names
     assert "lookup_plan" in names
     assert "list_plans" in names
-    assert len(names) == 5
+    assert "find_pharmacies" in names
+    assert len(names) == 6
 
 
 def test_openai_tool_schemas():
@@ -92,3 +93,58 @@ async def test_mcp_get_part_d_benefit_params():
 async def test_mcp_unknown_tool():
     result = await call_tool("nonexistent_tool", {})
     assert result["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_mcp_find_pharmacies_nearby_no_plan():
+    result = await call_tool("find_pharmacies", {"zip_code": "32801"})
+    assert result["status"] == "ok"
+    names = [p["pharmacy_name"] for p in result["data"]]
+    assert "Icon Pharmacy" in names
+    assert result["data"][0]["pharmacy_name"] == "Icon Pharmacy"
+    assert result["data"][0]["distance_miles"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_mcp_find_pharmacies_preferred_for_plan():
+    result = await call_tool(
+        "find_pharmacies",
+        {"zip_code": "32801", "plan_key": PLAN_FL_PDP, "preferred_only": True},
+    )
+    assert result["status"] == "ok"
+    names = {p["pharmacy_name"] for p in result["data"]}
+    assert "Icon Pharmacy" in names
+    assert "Angels Pharmacy I Inc" not in names  # standard, not preferred
+
+
+@pytest.mark.asyncio
+async def test_mcp_find_pharmacies_radius_excludes_far_pharmacy():
+    result = await call_tool(
+        "find_pharmacies",
+        {"zip_code": "32801", "plan_key": PLAN_FL_PDP},
+    )
+    assert result["status"] == "ok"
+    names = {p["pharmacy_name"] for p in result["data"]}
+    assert "Jackson Pharmacy Jackson South" not in names
+
+
+@pytest.mark.asyncio
+async def test_mcp_find_pharmacies_unknown_zip():
+    result = await call_tool("find_pharmacies", {"zip_code": "00000"})
+    assert result["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_mcp_find_pharmacies_channel_filter_excludes_mail():
+    result = await call_tool(
+        "find_pharmacies",
+        {
+            "zip_code": "32801",
+            "plan_key": PLAN_FL_PDP,
+            "preferred_only": True,
+            "channel": "preferred_retail",
+            "limit": 1,
+        },
+    )
+    assert result["status"] == "ok"
+    assert result["data"][0]["channel"] == "preferred_retail"

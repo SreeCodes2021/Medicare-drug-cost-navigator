@@ -108,6 +108,43 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "find_pharmacies",
+        "description": (
+            "Find CMS-network pharmacies near a ZIP code, optionally filtered to a specific "
+            "Medicare plan's network (CMS SPUF Pharmacy Network file, enriched with NPPES "
+            "NPI Registry name/address). Distance is straight-line from the ZIP's census "
+            "centroid to the pharmacy's ZIP centroid, not driving distance. Call this before "
+            "estimating a drug's cost 'at my preferred pharmacy' so you can name the pharmacy, "
+            "then pass pharmacy_channel='preferred_retail' to estimate_drug_cost — CMS prices "
+            "at the channel level, not per individual pharmacy."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "zip_code": {"type": "string", "description": "5-digit US ZIP code"},
+                "plan_key": {
+                    "type": "string",
+                    "description": "Optional exact plan key to filter to that plan's network",
+                },
+                "preferred_only": {
+                    "type": "boolean",
+                    "description": "Restrict to preferred-network pharmacies",
+                    "default": False,
+                },
+                "channel": {
+                    "type": "string",
+                    "description": (
+                        "Optional exact channel filter: preferred_retail | standard_retail | "
+                        "preferred_mail | standard_mail"
+                    ),
+                },
+                "radius_miles": {"type": "number", "default": 25},
+                "limit": {"type": "integer", "default": 5},
+            },
+            "required": ["zip_code"],
+        },
+    },
+    {
         "name": "get_part_d_benefit_params",
         "description": (
             "Return the CMS statutory Part D annual out-of-pocket maximum for a contract year. "

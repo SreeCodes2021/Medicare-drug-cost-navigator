@@ -6,8 +6,20 @@ from datetime import date
 from pathlib import Path
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.npi_enrichment_offline import offline_lookup
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 from medicare_navigator.storage.connection import DuckDBConnection
+
+
+def _offline_only_enrich_npis(npis: list[str]) -> dict[str, dict]:
+    """Test-only enrich_npis replacement — offline snapshot lookups only, no live NPPES
+    HTTP calls, so every test that loads the SPUF fixture stays fast and deterministic."""
+    enriched: dict[str, dict] = {}
+    for npi in npis:
+        record = offline_lookup(npi)
+        if record is not None:
+            enriched[npi] = {**record, "enrichment_source": "nppes_offline"}
+    return enriched
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "spuf"
 FIXTURE_INGEST_DATE = date(2026, 1, 15)
@@ -32,10 +44,15 @@ def load_spuf_fixture(
     *,
     data_dir: Path,
     duckdb_path: Path | None = None,
+    monkeypatch=None,
 ) -> None:
     """Ingest minimal SPUF fixture into the given data directory."""
     duckdb_path = duckdb_path or data_dir / "navigator.duckdb"
     db = DuckDBConnection(path=duckdb_path)
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            "medicare_navigator.ingestion.spuf.enrich_npis", _offline_only_enrich_npis
+        )
     filters = IngestFilters(
         contract_year=2026,
         states=["FL"],
@@ -60,5 +77,5 @@ def patch_settings(monkeypatch, data_dir: Path, duckdb_path: Path | None = None)
     duckdb_path = duckdb_path or data_dir / "navigator.duckdb"
     monkeypatch.setattr(settings, "data_dir", data_dir)
     monkeypatch.setattr(settings, "duckdb_path", duckdb_path)
-    load_spuf_fixture(data_dir=data_dir, duckdb_path=duckdb_path)
+    load_spuf_fixture(data_dir=data_dir, duckdb_path=duckdb_path, monkeypatch=monkeypatch)
     return duckdb_path

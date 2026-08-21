@@ -43,6 +43,7 @@ at the end of each run (see [Post-run backlog](#post-run-backlog)).
 | `/quality-test/answer-consistency` | Oracle vs UI/chat prose | [answer-consistency/SKILL.md](answer-consistency/SKILL.md) |
 | `/quality-test/insulin` | IRA insulin cap billing — deterministic + 10 LLM (insulin-only) | [insulin/SKILL.md](insulin/SKILL.md) |
 | `/quality-test/mixed-basket` | Insulin + regular same-plan baskets — deterministic + 20 LLM | [mixed-basket/SKILL.md](mixed-basket/SKILL.md) |
+| `/quality-test/pharmacy-lookup` | ZIP-based pharmacy locator (Q1/Q2/Q3 chat routing, ZIP edge cases) — deterministic pytest + 33 LLM scenarios / 34 queries (customizable via `--limit`) | [pharmacy-lookup/SKILL.md](pharmacy-lookup/SKILL.md) |
 
 For a single call that runs everything in this tier, invoke `/quality-test` only.
 
@@ -591,7 +592,7 @@ Before appending, read the file and skip items that duplicate an open entry (sam
 ## Internal building blocks (do not ask the user to call these separately)
 
 - [`numeric-accuracy/SKILL.md`](../utils/numeric-accuracy/SKILL.md) + [`golden-cases.jsonl`](../utils/numeric-accuracy/golden-cases.jsonl) + `scripts/run_golden_cases.py`
-- **Fixed LLM scenario suites** — `scripts/run_llm_scenarios.py` + `scripts/llm_scenario_suites/` (`mixed-basket`, `insulin`, `quality-test-2g`)
+- **Fixed LLM scenario suites** — `scripts/run_llm_scenarios.py` + `scripts/llm_scenario_suites/` (`mixed-basket`, `insulin`, `quality-test-2g`, `pharmacy-lookup`)
 - **T3 live-LLM batch grading** — `scripts/run_quality_test_llm.py` + `scripts/qa_grading.py` (§1c-B, §2b–2i, exploratory). **Do not create ad-hoc `tmp_t3_*.py` scripts** — extend these files or add suite JSON instead.
 - [`chat-QA/SKILL.md`](../utils/chat-QA/SKILL.md) — the rubric itself, applied to both the happy-path baseline and exploratory findings
 - [`exploratory-qa/SKILL.md`](../utils/exploratory-qa/SKILL.md) — the on-the-fly question categories

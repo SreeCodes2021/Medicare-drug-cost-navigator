@@ -15,10 +15,14 @@ Usage:
     python scripts/run_llm_scenarios.py --suite mixed-basket
     python scripts/run_llm_scenarios.py --suite insulin --failures-only
     python scripts/run_llm_scenarios.py --suite quality-test-2g
+    python scripts/run_llm_scenarios.py --suite pharmacy-lookup
 
     # Single scenario or JSON output for agent grading
     python scripts/run_llm_scenarios.py --suite mixed-basket --scenario M3-2
     python scripts/run_llm_scenarios.py --suite mixed-basket --output json > /tmp/mixed.json
+
+    # Customize the query budget: run only the first N scenarios in a suite
+    python scripts/run_llm_scenarios.py --suite pharmacy-lookup --limit 5
 """
 
 from __future__ import annotations
@@ -34,6 +38,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from medicare_navigator.tools.pharmacy_scenario_oracle import (
+    build_pharmacy_lookup_oracle,
+    verify_pharmacy_prose_against_oracle,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SUITES_DIR = Path(__file__).resolve().parent / "llm_scenario_suites"
 
@@ -44,6 +53,8 @@ SUITE_ALIASES = {
     "quality-test-2g": "quality_test_2g.json",
     "quality_test_2g": "quality_test_2g.json",
     "2g": "quality_test_2g.json",
+    "pharmacy-lookup": "pharmacy_lookup.json",
+    "pharmacy_lookup": "pharmacy_lookup.json",
 }
 
 
@@ -237,13 +248,25 @@ def _auto_check(
     failures.extend(_prose_checks(primary.explanation, expect))
 
     follow_expect = {
+        "status": expect.get("follow_up_status"),
+        "response_source_prefix": expect.get("follow_up_response_source_prefix"),
         "prose_contains": expect.get("follow_up_prose_contains"),
         "prose_contains_any": expect.get("follow_up_prose_contains_any"),
         "forbid_substrings": expect.get("follow_up_forbid_substrings"),
         "drugs_named": expect.get("follow_up_drugs_named"),
     }
     if len(turns) > 1 and any(follow_expect.values()):
-        failures.extend(_prose_checks(turns[-1].explanation, follow_expect, prefix="follow-up: "))
+        follow_turn = turns[-1]
+        if follow_expect.get("status") and follow_turn.status != follow_expect["status"]:
+            failures.append(
+                f"follow-up: status: expected {follow_expect['status']}, got {follow_turn.status}"
+            )
+        prefix = follow_expect.get("response_source_prefix")
+        if prefix and follow_turn.response_source and not str(follow_turn.response_source).startswith(prefix):
+            failures.append(
+                f"follow-up: response_source: expected prefix {prefix}, got {follow_turn.response_source}"
+            )
+        failures.extend(_prose_checks(follow_turn.explanation, follow_expect, prefix="follow-up: "))
 
     if oracle and scenario.get("batch"):
         low = oracle.get("combined_total_low")
@@ -256,6 +279,20 @@ def _auto_check(
                     failures.append(
                         f"no prose $ near batch combined oracle {low}-{high}"
                     )
+
+    pharmacy_spec = scenario.get("pharmacy_lookup")
+    if pharmacy_spec and oracle and oracle.get("pharmacy"):
+        pharmacy_oracle = oracle["pharmacy"]
+        if pharmacy_oracle.get("error"):
+            failures.append(f"pharmacy oracle error: {pharmacy_oracle['error']}")
+        else:
+            failures.extend(
+                verify_pharmacy_prose_against_oracle(
+                    primary.explanation,
+                    pharmacy_oracle,
+                    pharmacy_spec,
+                )
+            )
 
     return failures
 
@@ -275,6 +312,15 @@ def _run_scenario(
             oracle = _fetch_oracle(base_url, scenario)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             oracle = {"error": str(exc)}
+
+    if scenario.get("pharmacy_lookup"):
+        try:
+            pharmacy_oracle = build_pharmacy_lookup_oracle(scenario["pharmacy_lookup"])
+        except Exception as exc:  # noqa: BLE001 — surface oracle build failures in auto-check
+            pharmacy_oracle = {"error": str(exc), "status": "error", "pharmacies": []}
+        if oracle is None:
+            oracle = {}
+        oracle["pharmacy"] = pharmacy_oracle
 
     turn = _invoke_chat(
         scenario["message"],
@@ -354,9 +400,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run fixed live-LLM quality-test scenario suites")
     parser.add_argument(
         "--suite",
-        help="Suite name: mixed-basket, insulin, quality-test-2g",
+        help="Suite name: mixed-basket, insulin, quality-test-2g, pharmacy-lookup",
     )
     parser.add_argument("--scenario", help="Run a single scenario id from the suite")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Customize the query budget: run only the first N scenarios in the suite "
+        "(applied after --scenario filtering, in catalog order)",
+    )
     parser.add_argument("--model", help="Override default model from suite JSON")
     parser.add_argument("--base-url", default="http://localhost:8000", help="API base for oracles")
     parser.add_argument("--no-oracle", action="store_true", help="Skip batch/estimate oracle fetch")
@@ -406,6 +458,11 @@ def main() -> None:
         scenarios = [s for s in scenarios if s["id"] == args.scenario]
         if not scenarios:
             raise SystemExit(f"Scenario {args.scenario} not found in suite {args.suite}")
+
+    if args.limit is not None:
+        if args.limit < 1:
+            raise SystemExit("--limit must be a positive integer")
+        scenarios = scenarios[: args.limit]
 
     if args.dry_run:
         print(f"Suite {suite.get('suite')} — model {model} — {len(scenarios)} scenario(s)")

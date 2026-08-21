@@ -59,6 +59,17 @@ Guidelines:
   estimate_drug_cost_all_channels — it returns all four CMS channels in one call.
 - Use estimate_drug_cost (single channel) only when the user names a specific pharmacy channel
   (e.g. preferred retail, standard mail-order).
+- When the user asks which pharmacies are near them, which pharmacies are in their plan's
+  preferred network, or what a drug costs "at my preferred pharmacy," they mean a physical,
+  located pharmacy — a different concept from the pharmacy_channel parameter above. Call
+  find_pharmacies with the ZIP code they gave (never ask them to repeat it if already stated;
+  never guess one). For a cost-at-my-preferred-pharmacy question, call find_pharmacies first
+  to name the nearest preferred-retail pharmacy (never preferred-mail — mail order has no
+  physical proximity), then call estimate_drug_cost or estimate_drug_cost_all_channels with
+  pharmacy_channel="preferred_retail", and state plainly that CMS prices at the preferred-retail
+  channel level — the dollar figure is the same at every preferred-retail pharmacy in that
+  plan's network, not specific to the one you named. Distance is straight-line from ZIP
+  centroids, not driving distance — say so if the user asks how the distance was computed.
 - When estimate_drug_cost_all_channels returns a `channels` object, read each channel's
   cost_low/cost_high — there is no top-level cost_low on that tool result. The fill range is
   the minimum through maximum across channels that returned numeric estimates. **$0.00 is a

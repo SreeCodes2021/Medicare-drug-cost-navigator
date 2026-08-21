@@ -79,6 +79,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             contract_year=args.get("contract_year"),
         )
         result = ToolResult.ok(plans, source_id=_spuf_source_id(), as_of_date=_spuf_as_of())
+    elif name == "find_pharmacies":
+        from medicare_navigator.tools.pharmacy_lookup import find_pharmacies
+
+        result = find_pharmacies(
+            zip_code=args["zip_code"],
+            plan_key=args.get("plan_key"),
+            preferred_only=args.get("preferred_only"),
+            channel=args.get("channel"),
+            radius_miles=float(args.get("radius_miles", 25)),
+            limit=int(args.get("limit", 5)),
+        )
     elif name == "get_part_d_benefit_params":
         year = args.get("contract_year")
         result = get_part_d_benefit_params(int(year) if year is not None else None)
