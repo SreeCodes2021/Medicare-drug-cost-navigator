@@ -2,8 +2,8 @@
 # Cron expressions use UTC (supercronic / Render).
 
 ingest:
-  cron: "0 3 * * *"
-  # 0 8 * * * ≈ 3:00 AM US Eastern (EST, UTC-5)
+  cron: "0 8 * * *"
+  # 08:00 UTC = 3:00 AM US Central (CDT, UTC-5). During CST (UTC-6), runs at 2:00 AM.
 
 render:
   plan: starter

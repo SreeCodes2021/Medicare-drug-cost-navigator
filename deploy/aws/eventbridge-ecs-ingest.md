@@ -1,16 +1,16 @@
-# AWS: EventBridge → ECS scheduled SPUF ingest (3:00 AM)
+# AWS: EventBridge → ECS scheduled SPUF ingest (3:00 AM CT)
 
 Run `medicare-ingest spuf --download` as a **one-off ECS Fargate task** on a schedule, separate from the API service.
 
 ## Schedule
 
-EventBridge rule (UTC — adjust for your timezone):
+EventBridge rules use UTC. Match [`config/deploy.yaml`](../../config/deploy.yaml):
 
 ```
-cron(0 3 * * ? *)
+cron(0 8 * * ? *)
 ```
 
-For 3:00 AM US Eastern (EST, UTC-5), use `cron(0 8 * * ? *)` during standard time.
+`08:00 UTC` = 3:00 AM US Central (CDT, UTC-5). During CST (UTC-6), the job runs at 2:00 AM.
 
 ## Task command
 
