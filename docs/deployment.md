@@ -58,7 +58,7 @@ Full detail: [usage-analytics.md](./usage-analytics.md).
 
 ```mermaid
 flowchart LR
-    Scheduler["supercronic 3AM UTC"]
+    Scheduler["supercronic 3AM CT (08:00 UTC)"]
     Ingest["run-daily-ingest.sh"]
     CMS[data.cms.gov]
     DataVol["/data volume"]

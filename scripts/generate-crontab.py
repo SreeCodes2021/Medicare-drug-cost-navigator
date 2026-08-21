@@ -14,7 +14,7 @@ INGEST_SCRIPT = ROOT / "scripts" / "run-daily-ingest.sh"
 
 def main() -> None:
     data = yaml.safe_load(DEPLOY_CONFIG.read_text(encoding="utf-8"))
-    schedule = data.get("ingest", {}).get("cron", "0 3 * * *")
+    schedule = data.get("ingest", {}).get("cron", "0 8 * * *")
     print(f"{schedule} {INGEST_SCRIPT}")
 
 
