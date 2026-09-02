@@ -1,6 +1,6 @@
 # Medicare Drug Cost Navigator — Technical Notes
 
-Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope plus the subsequent insulin-cap and mixed-basket work (see [navigator-implementation-spec.md](./navigator-implementation-spec.md), [phase-6-implementation-plan.md](./phase-6-implementation-plan.md), and [insulin-cost-estimation.md](./insulin-cost-estimation.md)).
+Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope plus the subsequent insulin-cap, mixed-basket, and ZIP pharmacy-locator work (see [navigator-implementation-spec.md](./navigator-implementation-spec.md), [insulin-cost-estimation.md](./insulin-cost-estimation.md), and the [Developer Guide](./developer-guide.md), which is the canonical/actively-maintained reference — this file overlaps it and may lag behind on newer features).
 
 ---
 
@@ -88,8 +88,9 @@ The LLM is a **conversational layer** over deterministic MCP tools plus a statel
 |---|---|---|
 | **CMS SPUF** (quarterly zip) | HTTPS download from data.cms.gov | `medicare-ingest spuf` → DuckDB |
 | **RxNorm REST API** (NLM) | HTTPS JSON | `normalize_drug()` (internal to cost pipeline) |
+| **NPPES NPI Registry API** (CMS) | HTTPS JSON, no auth | `ingestion/npi_enrichment.py` — pharmacy name/address enrichment, at ingest time and (for unresolved stubs) at pharmacy-locator query time |
 
-Offline tests use `tests/fixtures/spuf/` — no network required for pytest.
+Offline tests use `tests/fixtures/spuf/` — no network required for pytest. ZIP-centroid distances for the pharmacy locator come from a static, committed CSV (`config/zip_centroids.csv`), not a live source.
 
 ### 2.5 Infrastructure and ops
 
@@ -133,7 +134,7 @@ flowchart TB
         Med["Mediator — optional 2nd LLM call\n(MEDIATOR_ENABLED, rewrite + date extraction only)"]
         Nav[Navigator agent]
         LLM[LLM client — Anthropic / OpenAI / mock]
-        MCP[MCP registry — 5 tools]
+        MCP[MCP registry — 6 tools]
         Guard[Guardrails + citations]
         Session[Session manager — in-memory]
     end
@@ -638,6 +639,17 @@ as_of_date VARCHAR
 -- drugs (RxNorm cache, optional)
 drug_name, rxcui, ndc, dosage, ingredient VARCHAR
 
+-- pharmacy_network (CMS pharmacy-network file; column layout unconfirmed, ingested defensively)
+plan_key, npi VARCHAR
+preferred_yn, retail_yn, mail_yn, ltc_yn, home_infusion_yn BOOLEAN
+as_of_date VARCHAR
+
+-- pharmacies (NPPES enrichment; not plan-key-keyed, never purged per state)
+npi VARCHAR PRIMARY KEY
+pharmacy_name, address_line1, city, state, zip_code, phone VARCHAR
+enrichment_source VARCHAR    -- nppes_api | nppes_offline | cms_pharmacy_zipcode (stub)
+as_of_date VARCHAR
+
 -- query_log (analytics)
 query_id, session_id, tools_invoked, statuses VARCHAR
 latency_ms DOUBLE, created_at TIMESTAMP
@@ -651,6 +663,8 @@ latency_ms DOUBLE, created_at TIMESTAMP
 | `idx_plans_state_year` | `(state, contract_year)` |
 | `idx_beneficiary_cost_lookup` | `(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)` |
 | `idx_pricing_plan_ndc` | `(plan_key, ndc, days_supply)` |
+| `idx_pharmacy_network_plan` | `(plan_key, preferred_yn)` |
+| `idx_pharmacies_zip` | `(zip_code)` |
 
 Indexes are dropped before bulk deletes during ingest (DuckDB ART index delete bug), then recreated.
 
@@ -766,6 +780,7 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `estimate_drug_cost_all_channels` | Yes | `tools/estimate_drug_cost.py` — all four CMS channels in one call; default tool for general cost questions |
 | `lookup_plan` | Yes | `tools/lookup_plan.py` |
 | `list_plans` | Yes | `storage/repository.py` → `PlanRepository.list_plans` |
+| `find_pharmacies` | Yes | `tools/pharmacy_lookup.py` — CMS pharmacy-network locator by ZIP (fixed 25-mile straight-line radius); also reachable via deterministic pre-LLM routing in `agent/pharmacy_questions.py`. See [Developer Guide §8.2](./developer-guide.md#82-pharmacy-locator-find_pharmacies-toolspharmacy_lookuppy) |
 | `get_part_d_benefit_params` | Yes | `tools/part_d_benefit_lookup.py` — annual Part D OOP cap and other statutory benefit parameters for a contract year; used to answer catastrophic-phase/cap questions without inventing figures |
 | `normalize_drug` | **No** | Called internally by `estimate_drug_cost` |
 
@@ -1229,11 +1244,10 @@ point a session is first created.
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | v1 product spec, pipeline, CMS bugs |
 | [insulin-cost-estimation.md](./insulin-cost-estimation.md) | IRA $35/30-day insulin cap: source docs, calculation methodology, implementation |
-| [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | What shipped in Phase 6 pivot |
+| [developer-guide.md](./developer-guide.md) | Canonical, actively-maintained technical reference (this file overlaps it) |
 | [deployment.md](./deployment.md) | Render ops, cron, monitoring |
 | [data-sources.md](./data-sources.md) | External dataset URLs (some Phase 1 entries are historical) |
 | [build-requirements.md](../build-requirements.md) | Long-term product vision (broader than v1) |
-| Phase 1–5 plans | Historical implementation records |
 
 ---
 

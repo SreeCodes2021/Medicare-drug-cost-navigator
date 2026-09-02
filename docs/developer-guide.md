@@ -2,7 +2,7 @@
 
 **Medicare Drug Cost & Benefit-Transparency Navigator** — technical reference for running, developing, testing, and deploying the Phase 6 system.
 
-> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, insulin-cap, or catastrophic phase, priced per pharmacy channel — including insulin, priced via its separate IRA statutory $35/30-day cap (see [insulin-cost-estimation.md](./insulin-cost-estimation.md)), and multi-drug baskets mixing insulin and oral drugs on one plan. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
+> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, insulin-cap, or catastrophic phase, priced per pharmacy channel — including insulin, priced via its separate IRA statutory $35/30-day cap (see [insulin-cost-estimation.md](./insulin-cost-estimation.md)), and multi-drug baskets mixing insulin and oral drugs on one plan. Also locates nearby/preferred CMS-network pharmacies by ZIP code (§8.2). See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
 
 ---
 
@@ -416,6 +416,8 @@ erDiagram
     plans ||--o{ beneficiary_cost : "plan_key"
     plans ||--o{ insulin_beneficiary_cost : "plan_key"
     plans ||--o| basic_drugs_formulary : "formulary_id"
+    plans ||--o{ pharmacy_network : "plan_key"
+    pharmacy_network }o--|| pharmacies : "npi"
     drugs }o--o| basic_drugs_formulary : "rxcui / ndc"
 
     plans {
@@ -482,6 +484,29 @@ erDiagram
         varchar ingredient
     }
 
+    pharmacy_network {
+        varchar plan_key
+        varchar npi
+        boolean preferred_yn
+        boolean retail_yn
+        boolean mail_yn
+        boolean ltc_yn
+        boolean home_infusion_yn
+        varchar as_of_date
+    }
+
+    pharmacies {
+        varchar npi PK
+        varchar pharmacy_name
+        varchar address_line1
+        varchar city
+        varchar state
+        varchar zip_code
+        varchar phone
+        varchar enrichment_source "nppes_api | nppes_offline | cms_pharmacy_zipcode (stub)"
+        varchar as_of_date
+    }
+
     query_log {
         varchar query_id
         varchar session_id
@@ -525,6 +550,8 @@ erDiagram
 | `beneficiary_cost` | `beneficiary cost` | Copay/coinsurance by tier, coverage level, days-supply **code** |
 | `insulin_beneficiary_cost` | `insulin beneficiary cost` | Insulin statutory-cap copay by tier (nullable), pharmacy channel, days-supply **code** — no `coverage_level` column; insulin has no deductible phase. `coin_amt_*` columns are deliberately never ingested (see [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5) |
 | `drugs` | Runtime (RxNorm cache) | Cached normalization results |
+| `pharmacy_network` | `pharmacy network` | Plan-to-pharmacy membership (NPI, preferred/retail/mail/LTC/home-infusion flags) — real CMS column layout unconfirmed, ingested defensively (see §8.2) |
+| `pharmacies` | Runtime (NPPES enrichment at ingest) | Pharmacy name/address/phone by NPI, not plan-key-keyed (one NPI can serve multiple plans/states) and never purged on a state re-ingest |
 | `query_log` | Runtime | Per-query tool/latency debug log; rows queued in `analytics/collector` and flushed asynchronously (not inline on the request path) |
 | `usage_hourly` | Runtime | Aggregate-only usage rollups keyed by UTC hour, region, mode, model — see [usage-analytics.md](./usage-analytics.md) |
 
@@ -554,8 +581,10 @@ SCHEMA_MIGRATIONS = (
 | `idx_beneficiary_cost_lookup` | `(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)` | Cost-share lookup |
 | `idx_pricing_plan_ndc` | `(plan_key, ndc, days_supply)` | Pricing lookup |
 | `idx_insulin_beneficiary_cost` | `(plan_key, tier, days_supply_code, pharmacy_channel)` | Insulin cost-share lookup |
+| `idx_pharmacy_network_plan` | `(plan_key, preferred_yn)` | Pharmacy locator plan-network lookup |
+| `idx_pharmacies_zip` | `(zip_code)` | Pharmacy locator ZIP filtering |
 
-Indexes are dropped before bulk SPUF delete/reload (DuckDB ART index delete bug) and recreated after ingest.
+Indexes are dropped before bulk SPUF delete/reload (DuckDB ART index delete bug) and recreated after ingest. `pharmacy_network` and `pharmacies` use destructive drop-and-recreate migrations (not the additive `SCHEMA_MIGRATIONS` above) when an older disk's schema predates a column rename — see `migrate_schema()`.
 
 ### 5.5 Read-only API connections
 
@@ -758,6 +787,8 @@ After the safety gate (and optional mediator), well-known request shapes are par
 | `enrollment_questions.py` | Enrollment / plan-switch asks |
 | `invalid_input_questions.py` | See §7.2 |
 
+Pharmacy questions follow the same pre-LLM-router pattern but live in `agent/pharmacy_questions.py` (not the `*_requests.py` naming convention above) — see §8.2.
+
 ### 7.3 System prompt
 
 `agent/prompts.py` — `NAVIGATOR_SYSTEM_PROMPT` encodes v1 scope boundaries (no enrollment advice, cite tool outputs only), plus insulin-specific rules: named insulin products may be priced without a strength/form (the statutory-cap path prices brand-only insulin), multiple named insulin products must never be collapsed into one pooled $35 total, and a normal priced insulin result (`benefit_phase: "insulin_cap"`) is presented like any other drug's estimate — no deductible-phase language.
@@ -786,7 +817,7 @@ Every response also carries token usage and an estimated USD cost (`LlmUsage`, v
 
 ## 8. MCP tools
 
-Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
+Six tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 
 | Tool | Type | Description |
 |---|---|---|
@@ -794,12 +825,33 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 | `estimate_drug_cost_all_channels` | Async | Same pipeline run independently across all four CMS pharmacy channels; returns `MultiChannelDrugCostEstimate`. Default tool the Navigator calls for general (non-channel-specific) cost questions, including insulin — no separate insulin tool or schema exists; multi-product insulin/mixed-basket requests call this once per product |
 | `lookup_plan` | Sync | Resolve by `plan_key` or fuzzy `search_text` |
 | `list_plans` | Sync | Filter by `state`, `plan_type`, `contract_year` |
+| `find_pharmacies` | Sync (called from an `async` dispatcher — see §8.2 caveat) | CMS pharmacy-network locator by ZIP code, optionally scoped to a plan's network and/or an exact channel; see §8.2 |
+| `get_part_d_benefit_params` | Sync | Annual Part D OOP cap and other statutory benefit parameters for a contract year (`tools/part_d_benefit_lookup.py`) — answers catastrophic-phase/cap questions without inventing figures |
 
 `normalize_drug` is **not** LLM-visible — it runs inside `estimate_drug_cost` so insulin detection cannot be skipped (it now sets a flag rather than hard-stopping).
 
 ### 8.1 RxNorm offline fallback (`tools/rxnorm_offline.py`)
 
 When live NLM RxNorm REST calls fail (`httpx.HTTPError`) or return no matches, `normalize_drug` falls back to curated 2026 snapshots for demo/test drugs (ingredient RXCUIs, strength-specific SCD/SBD concepts, approximate fuzzy match). Candidates carry `source: "rxnorm_offline"`. This improves offline tests and degraded-network operation without changing the cost pipeline contract.
+
+### 8.2 Pharmacy locator (`find_pharmacies`, `tools/pharmacy_lookup.py`)
+
+Finds CMS-network pharmacies near a ZIP code:
+
+| Param | Default | Notes |
+|---|---|---|
+| `zip_code` | required | 5-digit ZIP; resolved to a lat/lon centroid via `ingestion/zip_centroids.py` (static `config/zip_centroids.csv`, US Census 2020 Gazetteer ZCTA — never loaded into DuckDB) |
+| `plan_key` | none | Scopes results to that plan's CMS pharmacy network; omitted for a plan-agnostic search across every enriched pharmacy |
+| `preferred_only` | `false` | Restrict to preferred-network pharmacies |
+| `channel` | none | Exact filter: `preferred_retail` \| `standard_retail` \| `preferred_mail` \| `standard_mail` |
+| `radius_miles` | `25` | Fixed per call — chat has no path to widen this; a "search a wider radius" follow-up gets an honest refusal (`agent/pharmacy_questions.py::resolve_pharmacy_radius_follow_up`) |
+| `limit` | `5` | Results returned, sorted by distance ascending |
+
+Distance is **straight-line (haversine) between ZIP centroids**, not driving distance and not pharmacy-street-address-to-ZIP-centroid — a `PharmacyResult` at 0.0 mi means "same ZIP," not "next door." Pharmacy name/address comes from NPPES enrichment (`ingestion/npi_enrichment.py`, `https://npiregistry.cms.hhs.gov/api/`, no auth) run at ingest time against every NPI discovered in the CMS SPUF Pharmacy Network file; unresolvable NPIs are stored as a ZIP-only stub (`"Pharmacy near {zip}"`) that `find_pharmacies` attempts to re-resolve at query time via `PharmacyRepository.enrich_stub_records`.
+
+Deterministic chat routing for five pharmacy question shapes (named/preferred pharmacy, cost at preferred pharmacy, nearby list, plan+pharmacy cross-match, plan-coverage-in-ZIP) lives in `agent/pharmacy_questions.py` and is wired into `navigator.py` ahead of the general LLM tool-calling loop, same pattern as the insulin/mixed-basket/dosage routers in §7.2.1; the LLM can still call `find_pharmacies` directly for phrasing the routers miss. `MAX_COVERED_PLANS_FOR_PHARMACY_CHECK=10` caps how many candidate plans get a per-plan pharmacy-proximity check in the plan-cross-match router.
+
+**Known open risks** (tracked in [quality-test-todos.md](./quality-test-todos.md), not fixed here): the query-time NPPES re-resolution call is synchronous `httpx.Client` inside an `async def call_tool` dispatcher, which can block the event loop; and the real CMS Pharmacy Network file's column layout is unconfirmed (`ingestion/spuf.py` guesses column names defensively).
 
 ### Tool result envelope
 
@@ -1118,7 +1170,7 @@ Default: **integration tests deselected** (`-m 'not integration'` in `pyproject.
 pytest tests/ -v -m integration
 ```
 
-Current suite: **442 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 447 total. Run `pytest --collect-only -q` to confirm the current count.
+Current suite: **559 tests** run by default (554 passing, 5 skipped), plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 564 total. Run `pytest --collect-only -q` to confirm the current count.
 
 ### 14.2 Test categories
 
@@ -1332,6 +1384,7 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 - Copay cost-sharing (with Bug 2 tier override) for oral drugs; statutory-capped copay for insulin
 - Per-pharmacy-channel pricing (preferred/standard retail, preferred/standard mail) via `estimate_drug_cost_all_channels`
 - PA/ST as soft caveats (cost still computed)
+- Nearby/preferred pharmacy lookup by ZIP code within a fixed 25-mile straight-line radius (`find_pharmacies`, §8.2) — no driving distance, real-time hours, or stock
 
 ### Out of scope (hard stops or deferred)
 
@@ -1353,12 +1406,12 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | Implementing or changing cost logic |
 | [insulin-cost-estimation.md](./insulin-cost-estimation.md) | Implementing or changing insulin cost logic; CMS source docs, field-resolution evidence, worked examples |
-| [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | Understanding the Phase 6 pivot |
 | [deployment.md](./deployment.md) | Ops, cron, Render disk |
 | [usage-analytics.md](./usage-analytics.md) | Privacy-safe aggregate telemetry, admin API, dashboard |
-| [data-sources.md](./data-sources.md) | CMS/RxNorm URLs (note stale Chroma sections) |
+| [data-sources.md](./data-sources.md) | CMS/RxNorm/NPPES/ZIP-centroid URLs (note stale Chroma sections) |
+| [quality-test-todos.md](./quality-test-todos.md) | Known open risks/data gaps, including the pharmacy-locator items in §8.2 |
 | [build-requirements.md](../build-requirements.md) | Long-term product vision |
 
 ---
 
-*Last updated for Phase 6 plus usage analytics (`feature/frontend_anonymous`), RxNorm offline fallback, prompt-injection hardening, insulin session follow-up, channel-parity prose repair, and guided-form mandatory hints. For doc issues, update this file alongside code changes.*
+*Last updated for Phase 6 plus usage analytics (`feature/frontend_anonymous`), RxNorm offline fallback, prompt-injection hardening, insulin session follow-up, channel-parity prose repair, guided-form mandatory hints, and the ZIP pharmacy locator (`find_pharmacies`). For doc issues, update this file alongside code changes.*
