@@ -41,12 +41,36 @@ When live NLM REST calls fail (`httpx.HTTPError`) or return no matches, `normali
 | **Order page** | https://www.cms.gov/Research-Statistics-Data-and-Systems/Files-for-Order/NonIdentifiableDataFiles/PrescriptionDrugPlanFormularyPharmacyNetworkandPricingInformationFiles |
 | **Data portal** | https://data.cms.gov/provider-summary-by-type-of-service/medicare-part-d-prescribers/quarterly-prescription-drug-plan-formulary-pharmacy-network-and-pricing-information |
 | **Naming** | `SPUF.YYYY.YYYYMMDD.zip` (quarterly, includes pricing); monthly PUF also available |
-| **Key files** | `plan information`, `basic drugs formulary`, `beneficiary cost`, `insulin beneficiary cost`, `pricing` (quarterly only) |
+| **Key files** | `plan information`, `basic drugs formulary`, `beneficiary cost`, `insulin beneficiary cost`, `pharmacy network`, `pricing` (quarterly only) |
 | **Methodology** | https://www.cms.gov/files/document/methodology-spuf-2025.pdf |
 | **Format** | ZIP containing tab-delimited text files |
 | **Refresh** | Monthly (formulary/network); quarterly (pricing) |
 | **Phase 1** | Download latest quarterly zip; filter to `config/ingest_filters.yaml` states (currently AR + TX); load into DuckDB |
-| **Used by** | `estimate_drug_cost`, `estimate_drug_cost_all_channels`, `lookup_plan`, `list_plans` |
+| **Used by** | `estimate_drug_cost`, `estimate_drug_cost_all_channels`, `lookup_plan`, `list_plans`, `find_pharmacies` (`pharmacy network` file) |
+
+### 2.1 Pharmacy network locator enrichment
+
+Two additional sources back the `find_pharmacies` pharmacy locator (not part of the CMS SPUF release itself):
+
+| Field | Value |
+|---|---|
+| **Source** | NPPES NPI Registry API (CMS) |
+| **Docs / base URL** | https://npiregistry.cms.hhs.gov/api/ |
+| **Format** | JSON API |
+| **Refresh** | On-demand — at SPUF ingest for every new NPI discovered in the `pharmacy network` file, and again at pharmacy-locator query time for any pharmacy that ingest-time enrichment couldn't resolve |
+| **Auth** | None required |
+| **Used by** | `ingestion/npi_enrichment.py` → `pharmacies` table (name, address, phone) |
+| **Offline fallback** | `ingestion/npi_enrichment_offline.py` — a small hardcoded directory of real NPPES records for offline tests/degraded-network operation |
+| **Caveat** | The real CMS `pharmacy network` file's column layout is unconfirmed against a live download — `ingestion/spuf.py` guesses column names defensively (see [quality-test-todos.md](./quality-test-todos.md)) |
+
+**ZIP centroid distances:**
+
+| Field | Value |
+|---|---|
+| **Source** | US Census Bureau 2020 Gazetteer ZCTA file (ZIP centroid coordinates) |
+| **Format** | Static CSV committed at `config/zip_centroids.csv` (`GEOID`/`INTPTLAT`/`INTPTLONG` columns, read as `zip,lat,lon`) |
+| **Refresh** | Static — not re-downloaded or re-ingested; update the committed file if a newer Gazetteer release is needed |
+| **Used by** | `ingestion/zip_centroids.py` — haversine (straight-line) distance for `find_pharmacies`; never loaded into DuckDB |
 
 ---
 

@@ -318,6 +318,117 @@ class InsulinBeneficiaryCostRepository:
         return row is not None
 
 
+class PharmacyRepository:
+    """Pharmacy locator queries joining `pharmacies` (NPPES enrichment) with
+    `pharmacy_network` (CMS SPUF plan membership). Distance/radius filtering happens in
+    tools/pharmacy_lookup.py, not here — this repository only returns SQL-filtered
+    candidate rows."""
+
+    def __init__(self, db: DuckDBConnection | None = None) -> None:
+        self.db = db or DuckDBConnection()
+
+    def nearby_candidates(
+        self,
+        *,
+        plan_key: str | None = None,
+        preferred_only: bool | None = None,
+    ) -> list[dict]:
+        """Candidate pharmacies for distance filtering.
+
+        When ``plan_key`` is given, restricts to that plan's CMS pharmacy network
+        (optionally preferred-only). When ``plan_key`` is None, a ZIP-only locator
+        question isn't scoped to any one plan's network, so every enriched pharmacy is
+        a candidate.
+        """
+        if plan_key:
+            clauses = ["n.plan_key = ?"]
+            params: list = [plan_key]
+            if preferred_only:
+                clauses.append("n.preferred_yn = TRUE")
+            where = " AND ".join(clauses)
+            rows = self.db.fetchall(
+                f"""
+                SELECT p.npi, p.pharmacy_name, p.address_line1, p.city, p.state, p.zip_code,
+                       n.preferred_yn, n.retail_yn, n.mail_yn
+                FROM pharmacies p
+                JOIN pharmacy_network n ON p.npi = n.npi
+                WHERE {where}
+                """,
+                params,
+            )
+        else:
+            rows = self.db.fetchall(
+                """
+                SELECT npi, pharmacy_name, address_line1, city, state, zip_code,
+                       NULL, NULL, NULL
+                FROM pharmacies
+                """
+            )
+        return [
+            {
+                "npi": r[0],
+                "pharmacy_name": r[1],
+                "address_line1": r[2],
+                "city": r[3],
+                "state": r[4],
+                "zip_code": r[5],
+                "preferred_yn": bool(r[6]) if r[6] is not None else None,
+                "retail_yn": bool(r[7]) if r[7] is not None else None,
+                "mail_yn": bool(r[8]) if r[8] is not None else None,
+            }
+            for r in rows
+        ]
+
+    def enrich_stub_records(self, identifiers: list[str]) -> dict[str, dict[str, object]]:
+        """Resolve CMS ZIP-only stub rows via NPPES and persist updates."""
+        from medicare_navigator.ingestion.npi_enrichment import enrich_pharmacy_identifiers
+
+        if not identifiers:
+            return {}
+
+        placeholders = ", ".join("?" for _ in identifiers)
+        stub_rows = self.db.fetchall(
+            f"""
+            SELECT npi FROM pharmacies
+            WHERE npi IN ({placeholders})
+              AND enrichment_source = 'cms_pharmacy_zipcode'
+            """,
+            list(identifiers),
+        )
+        stub_npis = [row[0] for row in stub_rows]
+        if not stub_npis:
+            return {}
+
+        enriched = enrich_pharmacy_identifiers(stub_npis)
+        if not enriched:
+            return {}
+
+        conn = self.db.connect()
+        try:
+            for npi, record in enriched.items():
+                conn.execute(
+                    """
+                    UPDATE pharmacies
+                    SET pharmacy_name = ?, address_line1 = ?, city = ?, state = ?,
+                        zip_code = ?, phone = ?, enrichment_source = ?
+                    WHERE npi = ?
+                    """,
+                    [
+                        record.get("pharmacy_name"),
+                        record.get("address_line1"),
+                        record.get("city"),
+                        record.get("state"),
+                        record.get("zip_code"),
+                        record.get("phone"),
+                        record.get("enrichment_source"),
+                        npi,
+                    ],
+                )
+        finally:
+            conn.close()
+        return enriched
+
+
 class PricingRepository:
     def __init__(self, db: DuckDBConnection | None = None) -> None:
         self.db = db or DuckDBConnection()

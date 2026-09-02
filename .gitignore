@@ -14,5 +14,4 @@ build/
 node_modules/
 .DS_Store
 tmp_t3*
-docs/
 other_docs/

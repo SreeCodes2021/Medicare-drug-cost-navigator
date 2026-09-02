@@ -32,6 +32,7 @@ from medicare_navigator.models.response import (
     DrugCostEstimate,
     LlmUsage,
     MultiChannelDrugCostEstimate,
+    PharmacyResult,
     QueryResponse,
 )
 from medicare_navigator.session.manager import session_manager
@@ -106,6 +107,16 @@ def _record_tool_artifact(
     tool_artifacts[name] = artifact
     if name == "estimate_drug_cost_all_channels":
         tool_artifacts.setdefault(_MULTI_CHANNEL_CALLS_KEY, []).append(artifact)
+
+
+def _pharmacies_from_artifacts(tool_artifacts: dict[str, Any]) -> list[PharmacyResult]:
+    artifact = tool_artifacts.get("find_pharmacies")
+    if not artifact or artifact.get("status") != "ok":
+        return []
+    data = artifact.get("data") or []
+    if not isinstance(data, list):
+        return []
+    return [PharmacyResult.model_validate(p) for p in data]
 
 
 def _last_tool_call_key(arguments: dict[str, Any]) -> str:
@@ -635,6 +646,16 @@ class Navigator:
             resolve_mixed_basket_request,
         )
         from medicare_navigator.agent.oop_questions import resolve_oop_question
+        from medicare_navigator.agent.pharmacy_questions import (
+            build_find_pharmacies_session_call,
+            find_pharmacies_had_results,
+            resolve_nearby_pharmacy_question,
+            resolve_pharmacy_cost_question,
+            resolve_pharmacy_radius_follow_up,
+            resolve_plan_coverage_question,
+            resolve_plan_pharmacy_match_question,
+            resolve_preferred_pharmacy_question,
+        )
         from medicare_navigator.agent.tier_questions import resolve_tier_question
         from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
         from medicare_navigator.tools.batch_estimate import run_batch_estimates
@@ -715,6 +736,220 @@ class Navigator:
                 tools_invoked=tools_invoked,
                 tool_statuses={},
                 response_source="System/Alternatives",
+            )
+
+        pharmacy_radius_result = resolve_pharmacy_radius_follow_up(
+            message, session.get("last_tool_calls")
+        )
+        if pharmacy_radius_result:
+            explanation, tool_artifacts, tools_invoked, status = pharmacy_radius_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/NearbyPharmacy",
+            )
+
+        pharmacy_cost_result = await resolve_pharmacy_cost_question(
+            message,
+            filter_plan_id=filter_plan_id,
+            filter_days_supply=filter_slots.days_supply if filter_slots else None,
+            filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+            filter_drug=filter_slots.drug if filter_slots else None,
+            filter_dosage=filter_slots.dosage if filter_slots else None,
+        )
+        if pharmacy_cost_result:
+            explanation, tool_artifacts, tools_invoked, status = pharmacy_cost_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                preferred_only=True,
+                channel="preferred_retail",
+                limit=1,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PharmacyCost",
+            )
+
+        preferred_pharmacy_result = resolve_preferred_pharmacy_question(
+            message, filter_plan_id=filter_plan_id
+        )
+        if preferred_pharmacy_result:
+            explanation, tool_artifacts, tools_invoked, status = preferred_pharmacy_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                preferred_only=True,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PreferredPharmacy",
+            )
+
+        plan_pharmacy_match_result = await resolve_plan_pharmacy_match_question(
+            message,
+            filter_plan_id=filter_plan_id,
+            filter_drug=filter_slots.drug if filter_slots else None,
+            filter_dosage=filter_slots.dosage if filter_slots else None,
+        )
+        if plan_pharmacy_match_result:
+            explanation, tool_artifacts, tools_invoked, status = plan_pharmacy_match_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=None,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PlanPharmacyMatch",
+            )
+
+        plan_coverage_result = await resolve_plan_coverage_question(
+            message,
+            filter_plan_id=filter_plan_id,
+            filter_drug=filter_slots.drug if filter_slots else None,
+            filter_dosage=filter_slots.dosage if filter_slots else None,
+        )
+        if plan_coverage_result:
+            explanation, tool_artifacts, tools_invoked, status = plan_coverage_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                response_source="System/PlanCoverage",
+            )
+
+        nearby_pharmacy_result = resolve_nearby_pharmacy_question(
+            message, filter_plan_id=filter_plan_id
+        )
+        if nearby_pharmacy_result:
+            explanation, tool_artifacts, tools_invoked, status = nearby_pharmacy_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/NearbyPharmacy",
             )
 
         insulin_request = resolve_insulin_request(

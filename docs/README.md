@@ -6,17 +6,15 @@ Developer-facing documentation for the **Medicare Drug Cost & Benefit-Transparen
 |---|---|---|
 | **[Developer Guide](./developer-guide.md)** | All developers | **Start here.** Stack, architecture, setup, run, test, deploy, API, troubleshooting |
 | [Business Solution](./business-solution.md) | Product / stakeholders | Executive summary, problem statement, v1 capabilities, architecture, compliance, roadmap |
-| [National Impact and Scope](./national-impact-and-scope.md) | Stakeholders / non-technical | Plain-English, sourced case for why this matters nationally and by state — real CMS/GAO/MedPAC/ASPE figures, current scope vs. full scope |
-| [State Coverage Analysis](./state-coverage-analysis.md) | Product / data | Real CMS SPUF plan counts and beneficiary counts by state, methodology for scope-expansion decisions |
-| [Navigator Implementation Spec](./navigator-implementation-spec.md) | Product / backend | v1 scope, 8-step cost pipeline, Bugs 1–6, days-supply mapping |
+| [Navigator Implementation Spec](./navigator-implementation-spec.md) | Product / backend | Oral-drug v1 scope, 8-step cost pipeline, Bugs 1–6, days-supply mapping (insulin and catastrophic phase now shipped — see Insulin Cost Estimation) |
 | [Insulin Cost Estimation](./insulin-cost-estimation.md) | Product / backend | IRA $35/30-day statutory cap: CMS source docs, calculation methodology, empirical field-resolution evidence, implementation, worked examples |
 | [Insulin Trails (review)](./insulin_trails/README.md) | Maintainers / reviewers | Implementation review of insulin coverage: architecture summary, strengths, bugs/risks, action items, test gaps (feedback only) |
-| [Phase 6 Implementation Plan](./phase-6-implementation-plan.md) | Maintainers | What shipped in Phase 6, decisions, commit history |
 | [Deployment](./deployment.md) | DevOps | Render, cron ingest, persistent disk, monitoring |
 | [Usage Analytics](./usage-analytics.md) | Ops / backend | Privacy-safe aggregate telemetry, admin API, dashboard, configuration |
-| [Data Sources](./data-sources.md) | Data / backend | CMS SPUF, RxNorm, manifest fields (note: some Phase 1–5 sources are removed) |
+| [Data Sources](./data-sources.md) | Data / backend | CMS SPUF, RxNorm, NPPES, ZIP centroids, manifest fields (note: some Phase 1–5 sources are removed) |
+| [UI Requirements](./ui-requirements.md) | Product / frontend | Guided-form data-release display, repeatable-row caps, sub-mode tabs |
+| [Quality Test Backlog](./quality-test-todos.md) | Maintainers / QA | Tracked findings and suggested test additions from `/quality-test` runs |
 | [Build Requirements](../build-requirements.md) | Product | Long-term vision (broader than current v1 scope) |
-| Phase 1–5 plans | History | `phase-1-implementation-plan.md` … `phase-5-implementation-plan.md` |
 
 ## Quick commands
 

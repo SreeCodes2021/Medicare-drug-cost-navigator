@@ -1,16 +1,24 @@
 # Medicare Part D Drug Cost Navigator — Implementation Spec (v1, trimmed scope)
 
+> **Update:** Insulin cost-share and catastrophic-phase computation, both listed as
+> out of scope below when this spec was written, have since shipped — see
+> [insulin-cost-estimation.md](./insulin-cost-estimation.md) for insulin's separate
+> statutory-cap pipeline and `config/benefit_params.yaml` /
+> `tools/part_d_benefit_params.py` for the catastrophic-phase annual OOP cap. The
+> 8-step pipeline, Bugs 1–6, and days-supply mapping below remain the accurate spec
+> for oral, non-insulin drugs.
+
 ## 1. Scope
 
 This version handles: a single standard-tier, orally-administered generic or brand
 drug, on a plan's regular formulary, for a beneficiary receiving no low-income
-subsidy (LIS), in either the pre-deductible or initial-coverage benefit phase.
+subsidy (LIS), in the pre-deductible, initial-coverage, or catastrophic benefit
+phase. (Insulin is now also handled, via a separate statutory-cap pipeline outside
+this document's 8-step flow — see the update note above.)
 
 Explicitly out of scope for v1 (see Section 6 — Future Work):
-- Insulin (separate statutory cap, separate file, no phase logic)
 - Excluded-drug formulary entries (supplemental/enhanced-plan-only coverage)
 - Indication-based coverage restrictions
-- Catastrophic-phase computation
 - Automatic phase detection from YTD spend
 
 ## 2. Data sources (CMS SPUF, quarterly)
@@ -204,13 +212,9 @@ cost-share steps.
 
 ## 6. Future work (deferred, not fixed)
 
-- Insulin cost-share (separate file, separate $35/month cap logic, no
-  benefit-phase dependency)
 - Excluded-drugs formulary (enhanced/supplemental plan coverage only)
 - Indication-based coverage restrictions (requires matching beneficiary
   diagnosis to FDA-approved indication on file)
-- Catastrophic-phase computation (requires the annual statutory TrOOP
-  threshold, not present in any CMS SPUF file)
 - Automatic benefit-phase detection purely from YTD dollar input (v1
   requires the tier-level deductible check in Bug 2 as a manual/explicit
   step, not a fully automated inference)

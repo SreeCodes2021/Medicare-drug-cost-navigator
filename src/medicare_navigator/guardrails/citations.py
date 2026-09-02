@@ -236,6 +236,32 @@ def build_citations_from_artifacts(
     else:
         _add_estimate_citation(_primary_estimate_artifact(tool_artifacts))
 
+    pharmacy_artifact = tool_artifacts.get("find_pharmacies")
+    if pharmacy_artifact and pharmacy_artifact.get("source_id"):
+        status = pharmacy_artifact.get("status")
+        source_id = pharmacy_artifact["source_id"]
+        if status == "ok":
+            citations.append(
+                Citation(
+                    claim="Pharmacy network membership from CMS SPUF Pharmacy Network file",
+                    source_id=source_id,
+                    as_of_date=pharmacy_artifact.get("as_of_date", ""),
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
+                )
+            )
+            citations.append(
+                Citation(
+                    claim="Pharmacy name/address from the NPPES NPI Registry",
+                    source_id="nppes_npi_registry",
+                    as_of_date=pharmacy_artifact.get("as_of_date", ""),
+                    source_label=label_for_source_id("nppes_npi_registry"),
+                    url=url_for_source_id("nppes_npi_registry"),
+                )
+            )
+        elif status in _CITABLE_LOOKUP_STATUSES or status == "no_match":
+            citations.append(_citation_from_artifact(pharmacy_artifact))
+
     if citations:
         return citations
 

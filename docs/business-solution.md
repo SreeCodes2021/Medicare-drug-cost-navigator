@@ -120,6 +120,7 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Insulin session follow-up | After an insulin estimate, a follow-up that only changes YTD spend (e.g. "what if I've spent $2,200 YTD?") re-prices the same product(s) and plan from the prior turn without re-stating drug or plan names |
 | Operator analytics | Aggregate-only usage rollups (request counts, latency, LLM token/cost sums, coarse prompt-length buckets, interaction mode, two-letter state label) — no message text, drug names, or per-user identity; operator dashboard gated by shared secret — see [Usage Analytics](./usage-analytics.md) |
 | Restrictions | Prior auth and step therapy surfaced as soft caveats; quantity limits as hard stops |
+| Pharmacy lookup | Nearby- and preferred-pharmacy search by ZIP code against CMS's published pharmacy-network data (enriched with NPPES name/address), within a fixed 25-mile straight-line radius — used to name a specific in-network pharmacy before pricing a drug "at my preferred pharmacy" |
 
 ### 5.2 Out of scope (honest limitations)
 
@@ -168,6 +169,7 @@ flowchart TB
         T2["lookup_plan"]
         T3["list_plans"]
         T4["get_part_d_benefit_params"]
+        T5["find_pharmacies"]
     end
 
     subgraph GuardrailLayer["Trust Layer"]
@@ -190,7 +192,7 @@ flowchart TB
     UI1 & UI2 --> Chat --> Router --> Nav
     Nav -.-> Med -.-> LLM
     Nav --> LLM
-    Nav --> T1 & T1b & T2 & T3 & T4 --> DuckDB
+    Nav --> T1 & T1b & T2 & T3 & T4 & T5 --> DuckDB
     T1 --> RxNorm
     T1b --> RxNorm
     Nav --> GR
@@ -337,6 +339,10 @@ Maps free-text drug names to RxCUI via RxNorm REST API (NLM), with local DuckDB 
 
 When a user names insulin products alongside oral drugs for the same plan (e.g., "Lantus and lisinopril 10mg on S5921-400"), `mixed_basket_requests.py` calls the existing batch-estimate helper once per drug — each insulin product through its statutory-cap path, each oral drug through the standard tiered/deductible path — and composes one response with a per-drug breakdown and, if asked, a combined total that plainly excludes any drug that couldn't be priced. It also holds a line against three specific misreadings the model could otherwise produce: pooling the $35 insulin cap across products into one total, applying deductible logic to insulin, and following an injected instruction embedded in the user's message to state a fabricated price.
 
+#### Pharmacy locator: `find_pharmacies`
+
+Finds CMS-network pharmacies near a ZIP code — optionally scoped to a named plan's network and/or an exact pharmacy channel — within a fixed 25-mile straight-line (not driving) radius, enriched with name/address from the free NPPES NPI Registry. Used two ways: as its own answer ("what pharmacies are near me / in my plan's network"), and as a precursor to a cost estimate when a user asks what a drug costs "at my preferred pharmacy" — the system names the nearest preferred-retail pharmacy first, then prices the drug at that channel, since CMS prices at the channel level rather than per physical pharmacy address. Five common pharmacy-question shapes are answered deterministically (`agent/pharmacy_questions.py`) before the LLM is asked to route them itself.
+
 ### 7.5 Data storage
 
 | Table | CMS source | Key fields | Use |
@@ -346,6 +352,8 @@ When a user names insulin products alongside oral drugs for the same plan (e.g.,
 | `pricing` | `pricing` | `plan_key`, `ndc`, `days_supply`, `unit_cost` | Ingredient cost |
 | `beneficiary_cost` | `beneficiary_cost` | `tier`, `coverage_level`, `days_supply_code`, `copay`, `coinsurance_pct`, `ded_applies_yn` | Cost-share rules |
 | `insulin_beneficiary_cost` | `insulin beneficiary cost` | `tier` (nullable), `days_supply_code`, `pharmacy_channel`, `copay` | Insulin statutory-cap cost-share, keyed separately from `beneficiary_cost` — no `coverage_level` or deductible fields, since insulin never has a deductible phase |
+| `pharmacy_network` | `pharmacy network` | `plan_key`, `npi`, preferred/retail/mail flags | Plan-to-pharmacy membership for the pharmacy locator |
+| `pharmacies` | Runtime (NPPES enrichment) | `npi`, name, address, `zip_code` | Pharmacy directory used by the locator; not plan-specific |
 
 **Ingestion:** `medicare-ingest spuf` downloads CMS quarterly ZIP, filters by state, writes to DuckDB, updates `manifest.json`. Nightly supercronic refresh on Render. Schema migrations support persistent disks across deploys.
 
@@ -365,11 +373,11 @@ When a user names insulin products alongside oral drugs for the same plan (e.g.,
 | Asset | Coverage |
 |---|---|
 | 15-case eval suite | Cost estimates, not-found, not-covered, insulin (priced, catastrophic $0, data-gap), suppressed, quantity-limit |
-| 442 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing, channel-parity prose repair, insulin session follow-up |
+| 559 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing, channel-parity prose repair, insulin session follow-up, pharmacy locator |
 | 5 live-API integration tests | Real RxNorm and CMS catalog API calls (excluded from default run; opt-in via `pytest -m integration`) |
 | UI test harness | Guided form, mode switching, smoke messages, mandatory-field contract checks, responsive-interactions Playwright flow (viewport, touch targets, keyboard/Escape, combobox) |
 
-Current result: 15/15 eval cases passing; 442/442 default-suite tests passing; 5/5 live-API integration tests passing.
+Current result: 15/15 eval cases passing; 554/559 default-suite tests passing (5 skipped); 5/5 live-API integration tests passing.
 
 ---
 
@@ -583,7 +591,7 @@ Phase 8 restores capabilities from the original product vision (`build-requireme
 
 | Item | Detail |
 |---|---|
-| **GitHub Actions workflow** | Run `pytest` (442+ tests) and `medicare-eval` (15+ cases) on every pull request |
+| **GitHub Actions workflow** | Run `pytest` (550+ tests) and `medicare-eval` (15+ cases) on every pull request |
 | **Eval threshold** | Block merge if citation-groundedness rate drops below defined threshold |
 | **Ingest smoke test** | Verify SPUF ingest produces expected row counts for fixture zip |
 

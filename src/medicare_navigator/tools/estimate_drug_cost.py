@@ -64,25 +64,15 @@ SOURCE_ID_FALLBACK = "cms_spuf_2026_q1"
 DAYS_PER_DOSE_UNIT_DEFAULT = 1
 
 
-async def _formulary_matches_with_strength_fallback(
+async def _compute_alt_rxcuis(
     *,
-    formulary_id: str,
     rxcui: str,
     drug_name: str,
     dosage: str | None,
-) -> tuple[list, str]:
-    """Match formulary by exact RXCUI, then by RxNorm SCD/SBD strength concepts.
-
-    Bare brand names often resolve to an ingredient/brand RXCUI (e.g. Lantus → 261551)
-    while CMS SPUF formulary rows are keyed on clinical-drug SBDs (e.g. 285018 for the
-    same Lantus NDC). When the exact join misses, expand via list_strength_concepts —
-    the same multi-RXCUI approach drug_on_formulary already uses for the picker.
-    """
-    repo = BasicDrugsFormularyRepository()
-    matches = repo.get_matches(formulary_id, rxcui)
-    if matches:
-        return matches, rxcui
-
+) -> list[str]:
+    """RxNorm-network-call-heavy strength/alias expansion for a drug — independent of any
+    formulary_id, so callers checking many plans' formularies against the same drug should
+    compute this once and reuse it (see check_formulary_coverage_for_plans)."""
     lookup_names = [drug_name]
     lookup_names.extend(INSULIN_FORMULARY_ALIASES.get(drug_name.lower(), ()))
     alt_rxcuis: list[str] = []
@@ -101,7 +91,21 @@ async def _formulary_matches_with_strength_fallback(
             if dosage and not _dosage_in_name(concept_name, dosage):
                 continue
             alt_rxcuis.append(str(alt))
+    return alt_rxcuis
 
+
+def _formulary_matches_for_id(
+    formulary_id: str,
+    rxcui: str,
+    alt_rxcuis: list[str],
+    repo: BasicDrugsFormularyRepository,
+) -> tuple[list, str]:
+    """Cheap DB-only formulary check for one formulary_id given a precomputed (possibly
+    empty) alt_rxcuis fallback list. Mirrors _formulary_matches_with_strength_fallback's
+    tie-break exactly."""
+    matches = repo.get_matches(formulary_id, rxcui)
+    if matches:
+        return matches, rxcui
     if not alt_rxcuis:
         return [], rxcui
 
@@ -115,12 +119,144 @@ async def _formulary_matches_with_strength_fallback(
     return matches, rxcui
 
 
+async def _formulary_matches_with_strength_fallback(
+    *,
+    formulary_id: str,
+    rxcui: str,
+    drug_name: str,
+    dosage: str | None,
+) -> tuple[list, str]:
+    """Match formulary by exact RXCUI, then by RxNorm SCD/SBD strength concepts.
+
+    Bare brand names often resolve to an ingredient/brand RXCUI (e.g. Lantus → 261551)
+    while CMS SPUF formulary rows are keyed on clinical-drug SBDs (e.g. 285018 for the
+    same Lantus NDC). When the exact join misses, expand via list_strength_concepts —
+    the same multi-RXCUI approach drug_on_formulary already uses for the picker.
+    """
+    repo = BasicDrugsFormularyRepository()
+    matches = repo.get_matches(formulary_id, rxcui)
+    if matches:
+        return matches, rxcui
+    alt_rxcuis = await _compute_alt_rxcuis(rxcui=rxcui, drug_name=drug_name, dosage=dosage)
+    return _formulary_matches_for_id(formulary_id, rxcui, alt_rxcuis, repo)
+
+
+async def check_formulary_coverage_for_plans(
+    *,
+    formulary_ids: list[str],
+    rxcui: str,
+    drug_name: str,
+    dosage: str | None,
+) -> dict[str, tuple[list, str]]:
+    """Check formulary coverage for many plans against one already-resolved drug, without
+    redundant RxNorm calls. Every distinct formulary_id gets a cheap exact-rxcui DB check
+    first; the RxNorm-heavy alt_rxcuis expansion runs at most once total (lazily, only if
+    at least one formulary still needs the fallback), then is reused for all of them —
+    instead of once per plan.
+
+    Returns {formulary_id: (matches, matched_rxcui)}; empty matches means not covered.
+    """
+    repo = BasicDrugsFormularyRepository()
+    results: dict[str, tuple[list, str]] = {}
+    unresolved: list[str] = []
+    for formulary_id in dict.fromkeys(formulary_ids):
+        matches = repo.get_matches(formulary_id, rxcui)
+        if matches:
+            results[formulary_id] = (matches, rxcui)
+        else:
+            unresolved.append(formulary_id)
+
+    if unresolved:
+        alt_rxcuis = await _compute_alt_rxcuis(rxcui=rxcui, drug_name=drug_name, dosage=dosage)
+        for formulary_id in unresolved:
+            results[formulary_id] = _formulary_matches_for_id(formulary_id, rxcui, alt_rxcuis, repo)
+
+    return results
+
+
 def _source_id() -> str:
     return get_source_id("spuf", SOURCE_ID_FALLBACK)
 
 
 def _manifest_as_of() -> str:
     return get_as_of("spuf", "2026-01-15")
+
+
+@dataclass
+class ResolvedDrug:
+    """Plan-agnostic result of resolving a (drug_name, dosage) pair to an rxcui — reused by
+    both the single-plan pricing pipeline (_resolve_estimate_context) and multi-plan
+    coverage cross-references (agent/pharmacy_questions.py's Q4)."""
+
+    canonical_name: str
+    resolved_drug_name: str
+    resolved_dosage: str | None
+    rxcui: str
+    ingredient: str | None
+    is_insulin_drug: bool
+
+
+async def resolve_drug_for_pricing(drug_name: str, dosage: str | None) -> ToolResult | ResolvedDrug:
+    """Dosage-required gate + RxNorm resolution — the plan-agnostic subset of what pricing
+    needs, extracted so it can run once regardless of how many plans are being checked."""
+    as_of = _manifest_as_of()
+    source_id = _source_id()
+    canonical_name = canonicalize_drug_name(drug_name)
+    # Detected here (pre-RxNorm) and again below (post-RxNorm, by resolved name +
+    # ingredient) — two independent signals, kept as belt-and-suspenders. Insulin no
+    # longer hard-stops the whole request; it's priced via the statutory $35/30-day cap
+    # (tools/insulin_cost.py) instead of the general tiered/deductible pipeline below.
+    is_insulin_drug = is_insulin(canonical_name, canonical_name)
+
+    if not dosage or not str(dosage).strip():
+        if canonical_name in COMMON_DRUGS_REQUIRING_DOSAGE:
+            strength_options = await dosage_candidates_for_drug(drug_name)
+            if strength_options:
+                strengths = ", ".join(strength_options)
+                return ToolResult.failure(
+                    ToolStatus.needs_dosage,
+                    source_id=source_id,
+                    as_of_date=as_of,
+                    message=(
+                        f"Strength (dosage) is required to estimate '{canonical_name}'. "
+                        f"Common strengths: {strengths}. Please specify one before estimating."
+                    ),
+                    data={"drug_name": canonical_name, "dosage_candidates": strength_options},
+                )
+
+    norm = await normalize_drug(drug_name, dosage)
+    if norm.status != ToolStatus.ok or not norm.data:
+        return ToolResult.failure(
+            norm.status,
+            source_id=norm.source_id,
+            as_of_date=norm.as_of_date,
+            message=norm.message,
+            data=norm.data,
+        )
+    selected = norm.data.get("selected") or {}
+    resolved_drug_name = selected.get("drug_name", drug_name)
+    resolved_dosage = selected.get("dosage") or dosage
+    rxcui = selected.get("rxcui")
+    ingredient = selected.get("ingredient")
+
+    is_insulin_drug = is_insulin_drug or is_insulin(resolved_drug_name, ingredient)
+
+    if not rxcui:
+        return ToolResult.failure(
+            ToolStatus.not_found,
+            source_id=source_id,
+            as_of_date=as_of,
+            message=f"Could not resolve an RxCUI for '{drug_name}'.",
+        )
+
+    return ResolvedDrug(
+        canonical_name=canonical_name,
+        resolved_drug_name=resolved_drug_name,
+        resolved_dosage=resolved_dosage,
+        rxcui=str(rxcui),
+        ingredient=ingredient,
+        is_insulin_drug=is_insulin_drug,
+    )
 
 
 @dataclass
@@ -395,60 +531,20 @@ async def _resolve_estimate_context(
             message=BUG6_MESSAGE,
         )
 
-    canonical_name = canonicalize_drug_name(drug_name)
-    # Detected here (pre-RxNorm) and again below (post-RxNorm, by resolved name +
-    # ingredient) — two independent signals, kept as belt-and-suspenders. Insulin no
-    # longer hard-stops the whole request; it's priced via the statutory $35/30-day cap
-    # (tools/insulin_cost.py) instead of the general tiered/deductible pipeline below.
-    is_insulin_drug = is_insulin(canonical_name, canonical_name)
-
-    if not dosage or not str(dosage).strip():
-        if canonical_name in COMMON_DRUGS_REQUIRING_DOSAGE:
-            strength_options = await dosage_candidates_for_drug(drug_name)
-            if strength_options:
-                strengths = ", ".join(strength_options)
-                return ToolResult.failure(
-                    ToolStatus.needs_dosage,
-                    source_id=source_id,
-                    as_of_date=as_of,
-                    message=(
-                        f"Strength (dosage) is required to estimate '{canonical_name}'. "
-                        f"Common strengths: {strengths}. Please specify one before estimating."
-                    ),
-                    data={"drug_name": canonical_name, "dosage_candidates": strength_options},
-                )
-
-    norm = await normalize_drug(drug_name, dosage)
-    if norm.status != ToolStatus.ok or not norm.data:
-        return ToolResult.failure(
-            norm.status,
-            source_id=norm.source_id,
-            as_of_date=norm.as_of_date,
-            message=norm.message,
-            data=norm.data,
-        )
-    selected = norm.data.get("selected") or {}
-    resolved_drug_name = selected.get("drug_name", drug_name)
-    resolved_dosage = selected.get("dosage") or dosage
-    rxcui = selected.get("rxcui")
-    ingredient = selected.get("ingredient")
-
-    is_insulin_drug = is_insulin_drug or is_insulin(resolved_drug_name, ingredient)
-
-    if not rxcui:
-        return ToolResult.failure(
-            ToolStatus.not_found,
-            source_id=source_id,
-            as_of_date=as_of,
-            message=f"Could not resolve an RxCUI for '{drug_name}'.",
-        )
+    resolved = await resolve_drug_for_pricing(drug_name, dosage)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    resolved_drug_name = resolved.resolved_drug_name
+    resolved_dosage = resolved.resolved_dosage
+    rxcui = resolved.rxcui
+    is_insulin_drug = resolved.is_insulin_drug
 
     formulary_id = plan.get("formulary_id")
     if formulary_id:
         matches, rxcui = await _formulary_matches_with_strength_fallback(
             formulary_id=formulary_id,
             rxcui=str(rxcui),
-            drug_name=resolved_drug_name or canonical_name,
+            drug_name=resolved_drug_name or resolved.canonical_name,
             dosage=resolved_dosage,
         )
     else:

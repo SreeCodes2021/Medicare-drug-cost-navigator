@@ -6,12 +6,19 @@ from io import BytesIO
 import pytest
 
 from medicare_navigator.config import settings
+from medicare_navigator.ingestion.npi_enrichment import (
+    decode_cms_pharmacy_number,
+    enrich_pharmacy_identifiers,
+)
 from medicare_navigator.ingestion.schema import create_indexes, create_tables
 from medicare_navigator.ingestion.spuf import (
     IngestFilters,
     _extract_cost_shares,
+    _extract_pharmacy_network_row,
+    _find_all_members,
     _purge_states,
     _pricing_insert_row,
+    PHARMACY_NETWORK_FILE_HINTS,
     ingest_spuf,
 )
 from medicare_navigator.storage.connection import DuckDBConnection
@@ -482,3 +489,144 @@ def test_ingest_filters_resolve_empty_selection_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "ingest_states", "ZZ")
     with pytest.raises(ValueError, match="No ingest states selected"):
         IngestFilters.resolve(path=_catalog_yaml(tmp_path))
+
+
+def test_extract_pharmacy_network_row_fixture_layout():
+    row = {
+        "CONTRACT_ID": "S9999",
+        "PLAN_ID": "001",
+        "NPI": "1841304730",
+        "PHARMACY_NUMBER": "00001",
+        "PREFERRED_YN": "Y",
+        "RETAIL_YN": "Y",
+        "MAIL_YN": "N",
+        "LTC_YN": "N",
+        "HOME_INFUSION_YN": "N",
+    }
+    membership = _extract_pharmacy_network_row(row)
+    assert membership is not None
+    assert membership["npi"] == "1841304730"
+    assert membership["preferred_yn"] is True
+    assert membership["retail_yn"] is True
+    assert membership["mail_yn"] is False
+
+
+def test_decode_cms_pharmacy_number():
+    assert decode_cms_pharmacy_number("1841304730") == "1841304730"
+    assert decode_cms_pharmacy_number("101124789573") == "1124789573"
+    assert decode_cms_pharmacy_number("bad") is None
+
+
+def test_enrich_pharmacy_identifiers_maps_twelve_digit_numbers(monkeypatch):
+    def _fake_enrich(npis):
+        assert npis == ["1124789573"]
+        return {
+            "1124789573": {
+                "pharmacy_name": "TRISTATE INFUSION, LLC",
+                "address_line1": "123 Main St",
+                "city": "Bentonville",
+                "state": "AR",
+                "zip_code": "72712",
+                "phone": "555-0100",
+                "enrichment_source": "nppes_api",
+            }
+        }
+
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.npi_enrichment.enrich_npis",
+        _fake_enrich,
+    )
+    enriched = enrich_pharmacy_identifiers(["101124789573"])
+    assert enriched["101124789573"]["pharmacy_name"] == "TRISTATE INFUSION, LLC"
+
+
+def test_extract_pharmacy_network_row_cms_ppuf_layout():
+    row = {
+        "CONTRACT_ID": "H9207",
+        "PLAN_ID": "002",
+        "SEGMENT_ID": "000",
+        "PHARMACY_NUMBER": "101689685109",
+        "PHARMACY_ZIPCODE": "72712",
+        "PREFERRED_STATUS_RETAIL": "N",
+        "PREFERRED_STATUS_MAIL": "N",
+        "PHARMACY_RETAIL": "Y",
+        "PHARMACY_MAIL": "N",
+    }
+    membership = _extract_pharmacy_network_row(row)
+    assert membership == {
+        "npi": "101689685109",
+        "preferred_yn": False,
+        "retail_yn": True,
+        "mail_yn": False,
+        "ltc_yn": False,
+        "home_infusion_yn": False,
+        "zip_code": "72712",
+    }
+
+
+def test_extract_pharmacy_network_row_cms_ppuf_skips_non_channel_rows():
+    row = {
+        "PHARMACY_NUMBER": "101689685109",
+        "PHARMACY_ZIPCODE": "72712",
+        "PHARMACY_RETAIL": "N",
+        "PHARMACY_MAIL": "N",
+    }
+    assert _extract_pharmacy_network_row(row) is None
+
+
+def test_find_all_pharmacy_network_members_sorts_parts():
+    names = [
+        "pharmacy networks file  PPUF_2026Q2 part 3.zip",
+        "plan information file.txt",
+        "pharmacy networks file  PPUF_2026Q2 part 1.zip",
+        "pharmacy networks file  PPUF_2026Q2 part 2.zip",
+    ]
+    assert _find_all_members(names, PHARMACY_NETWORK_FILE_HINTS) == [
+        "pharmacy networks file  PPUF_2026Q2 part 1.zip",
+        "pharmacy networks file  PPUF_2026Q2 part 2.zip",
+        "pharmacy networks file  PPUF_2026Q2 part 3.zip",
+    ]
+
+
+def test_ingest_spuf_cms_pharmacy_network_creates_zip_stub_pharmacies(spuf_db, tmp_path, monkeypatch):
+    """CMS PPUF pharmacy-network rows use PHARMACY_NUMBER + PHARMACY_ZIPCODE, not NPI."""
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.npi_enrichment.enrich_npis",
+        lambda npis: {},
+    )
+    cms_network = tmp_path / "pharmacy networks file  PPUF_2026Q2 part 1.txt"
+    cms_network.write_text(
+        "CONTRACT_ID|PLAN_ID|SEGMENT_ID|PHARMACY_NUMBER|PHARMACY_ZIPCODE|"
+        "PREFERRED_STATUS_RETAIL|PREFERRED_STATUS_MAIL|PHARMACY_RETAIL|PHARMACY_MAIL\n"
+        "S9999|001|000|101689685109|32801|Y|N|Y|N\n",
+        encoding="utf-8",
+    )
+    for path in FIXTURE_DIR.iterdir():
+        if path.is_file() and path.name != "pharmacy network file.txt":
+            target = tmp_path / path.name
+            if not target.exists():
+                target.write_bytes(path.read_bytes())
+
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.spuf.date",
+        type("date", (), {"today": staticmethod(lambda: date(2026, 1, 15))})(),
+    )
+    ingest_spuf(
+        tmp_path,
+        filters=_fl_filters(),
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+    )
+    conn = spuf_db.connect()
+    try:
+        network_count = conn.execute(
+            "SELECT COUNT(*) FROM pharmacy_network WHERE plan_key = 'S9999-001'"
+        ).fetchone()[0]
+        pharmacy = conn.execute(
+            "SELECT pharmacy_name, zip_code, enrichment_source FROM pharmacies "
+            "WHERE npi = '101689685109'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert network_count == 1
+    assert pharmacy == ("Pharmacy near 32801", "32801", "cms_pharmacy_zipcode")
