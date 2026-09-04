@@ -55,6 +55,8 @@ SUITE_ALIASES = {
     "2g": "quality_test_2g.json",
     "pharmacy-lookup": "pharmacy_lookup.json",
     "pharmacy_lookup": "pharmacy_lookup.json",
+    "compound-questions": "compound_questions.json",
+    "compound_questions": "compound_questions.json",
 }
 
 

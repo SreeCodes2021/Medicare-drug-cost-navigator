@@ -250,6 +250,26 @@ def test_nearby_pharmacy_scopes_to_named_plan_without_preferred_wording():
     assert "Angels Pharmacy" not in explanation  # not in H8888-001's network
 
 
+def test_nearby_pharmacy_two_plan_keys_picks_the_one_near_network_wording():
+    """Regression: a message naming two plans (e.g. a multi-plan compare) but asking
+    about one specific plan's network must scope to *that* plan, not whichever plan key
+    happens to appear first in the sentence. Live-LLM finding (compound-questions suite
+    scenario CC12): "Compare lantus cost on plan S9999-001 versus plan H8888-001, and
+    what pharmacies near zip 32801 are in H8888-001's network?" previously answered with
+    S9999-001's network — the first plan key in the message — even though the pharmacy
+    question explicitly named H8888-001."""
+    resolved = resolve_nearby_pharmacy_question(
+        f"Compare lantus cost on plan {PLAN_FL_PDP} versus plan {PLAN_FL_MAPD}, and what "
+        f"pharmacies near zip 32801 are in {PLAN_FL_MAPD}'s network?"
+    )
+    assert resolved is not None
+    explanation, artifacts, tools, status = resolved
+    assert status == "ok"
+    assert PLAN_FL_MAPD in explanation
+    assert "Icon Pharmacy" in explanation  # H8888-001's only networked pharmacy
+    assert "Angels Pharmacy" not in explanation  # S9999-001-only, not H8888-001's network
+
+
 def test_nearby_pharmacy_uses_filter_plan_id_when_message_has_none():
     resolved = resolve_nearby_pharmacy_question(
         "what pharmacies are near zip 32801?",

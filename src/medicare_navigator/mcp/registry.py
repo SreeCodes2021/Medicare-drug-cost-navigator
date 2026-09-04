@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from medicare_navigator.ingestion.manifest import get_as_of, get_source_id
 from medicare_navigator.mcp.schemas import TOOL_SCHEMAS
-from medicare_navigator.models.tool_result import ToolResult
+from medicare_navigator.models.tool_result import ToolResult, ToolStatus
 from medicare_navigator.storage.repository import PlanRepository
 from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost, estimate_drug_cost_all_channels
 from medicare_navigator.tools.lookup_plan import lookup_plan
@@ -83,14 +83,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     elif name == "find_pharmacies":
         from medicare_navigator.tools.pharmacy_lookup import find_pharmacies
 
-        result = find_pharmacies(
-            zip_code=args["zip_code"],
-            plan_key=args.get("plan_key"),
-            preferred_only=args.get("preferred_only"),
-            channel=args.get("channel"),
-            radius_miles=float(args.get("radius_miles", 25)),
-            limit=int(args.get("limit", 5)),
-        )
+        zip_code = args.get("zip_code")
+        if not zip_code:
+            result = ToolResult.failure(
+                ToolStatus.not_found,
+                source_id="navigator",
+                as_of_date=_spuf_as_of(),
+                message="find_pharmacies requires zip_code.",
+            )
+        else:
+            result = find_pharmacies(
+                zip_code=zip_code,
+                plan_key=args.get("plan_key"),
+                preferred_only=args.get("preferred_only"),
+                channel=args.get("channel"),
+                radius_miles=float(args.get("radius_miles", 25)),
+                limit=int(args.get("limit", 5)),
+            )
     elif name == "get_part_d_benefit_params":
         year = args.get("contract_year")
         result = get_part_d_benefit_params(int(year) if year is not None else None)

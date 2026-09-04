@@ -49,6 +49,17 @@ def extract_plan_key(message: str) -> str | None:
     return match.group(0).upper() if match else None
 
 
+def extract_plan_keys(message: str) -> list[re.Match[str]]:
+    """Every plan-key regex match in the message, in order of appearance.
+
+    Lets callers disambiguate which plan a message is actually asking about when more
+    than one plan key is named — extract_plan_key's first-match behavior is wrong for a
+    message like "compare plan A vs plan B... what's in B's network?", where the question
+    is about the *second* plan named, not the first.
+    """
+    return list(_PLAN_KEY_RE.finditer(message))
+
+
 def is_any_plan_wording(message: str) -> bool:
     return bool(_ANY_PLAN_RE.search(message))
 

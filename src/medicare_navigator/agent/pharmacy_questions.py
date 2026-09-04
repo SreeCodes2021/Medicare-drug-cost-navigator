@@ -52,7 +52,7 @@ from medicare_navigator.agent.insulin_requests import (
     mentioned_oral_drugs_with_strength,
 )
 from medicare_navigator.agent.mixed_basket_requests import batch_result_to_artifact
-from medicare_navigator.agent.oop_questions import extract_plan_key
+from medicare_navigator.agent.oop_questions import extract_plan_key, extract_plan_keys
 from medicare_navigator.guardrails.channel_parity import cost_sentence_for_estimate
 from medicare_navigator.mcp.registry import serialize_tool_result
 from medicare_navigator.models.response import PharmacyResult
@@ -110,6 +110,40 @@ _PLAN_COVERAGE_RE = re.compile(
 _MAIL_ORDER_RE = re.compile(r"\bmail[-\s]?order\b|\bby mail\b|\bmail\s+pharmac", re.I)
 _RETAIL_ONLY_RE = re.compile(r"\bretail\b", re.I)
 _CHANNEL_NEGATION_RE = re.compile(r"\b(?:not|no|except|excluding)\b", re.I)
+
+_NETWORK_ANCHOR_RE = re.compile(r"\bnetwork\b|\bpharmac", re.I)
+
+
+def _extract_plan_key_for_pharmacy(message: str, filter_plan_id: str | None) -> str | None:
+    """Plan key for a pharmacy-network answer, disambiguated when more than one plan is
+    named in the same message.
+
+    extract_plan_key always returns the *first* plan-key-shaped token, which is wrong for
+    a message like "Compare lantus on S9999-001 vs H8888-001, and what pharmacies are in
+    H8888-001's network?" — the pharmacy question is about the second plan, not the first.
+    When multiple plan keys appear, pick whichever mention sits closest to a
+    "network"/"pharmac..." anchor word instead; fall back to the first-match behavior when
+    there's zero or one plan key, or no anchor to disambiguate with.
+    """
+    matches = extract_plan_keys(message)
+    if len(matches) <= 1:
+        return extract_plan_key(message) or filter_plan_id
+    anchors = [m.start() for m in _NETWORK_ANCHOR_RE.finditer(message)]
+    if not anchors:
+        return extract_plan_key(message) or filter_plan_id
+    nearest = min(matches, key=lambda m: min(abs(m.start() - a) for a in anchors))
+    return nearest.group(0).upper()
+
+
+def message_names_priceable_drug(message: str) -> bool:
+    """True when the message names at least one drug this file's resolvers can price
+    (oral, with strength, or insulin). Used by navigator.py to decide whether a
+    duration/date-window signal must also suppress the plan-scoped pharmacy resolvers —
+    not just the drug-cost one — so a compound "cost for the next 3 months, and any
+    preferred pharmacies nearby?" question doesn't fall through Q2 only to have Q1
+    silently answer the pharmacy half alone and still drop the multi-month cost ask."""
+    return bool(_extract_drug_dosage_pairs(message))
+
 
 _MISSING_ZIP_MESSAGE = "What ZIP code are you in? I need that to find pharmacies near you."
 _MISSING_PLAN_MESSAGE = (
@@ -381,7 +415,7 @@ def resolve_preferred_pharmacy_question(
     if not zip_code:
         return _MISSING_ZIP_MESSAGE, {}, [], "needs_clarification"
 
-    plan_key = extract_plan_key(message) or filter_plan_id
+    plan_key = _extract_plan_key_for_pharmacy(message, filter_plan_id)
     if not plan_key:
         return _MISSING_PLAN_MESSAGE, {}, [], "needs_clarification"
 
@@ -782,7 +816,7 @@ def resolve_nearby_pharmacy_question(
     if not zip_code:
         return _MISSING_ZIP_MESSAGE, {}, [], "needs_clarification"
 
-    plan_key = extract_plan_key(message) or filter_plan_id
+    plan_key = _extract_plan_key_for_pharmacy(message, filter_plan_id)
     channel_scope = _extract_channel_scope(message)
     scope_suffix = f" in plan {plan_key}'s network" if plan_key else ""
     caveat = _drug_unfiltered_caveat(message)
@@ -856,7 +890,7 @@ async def resolve_pharmacy_cost_question(
             "needs_clarification",
         )
 
-    plan_key = extract_plan_key(message) or filter_plan_id
+    plan_key = _extract_plan_key_for_pharmacy(message, filter_plan_id)
     if not plan_key:
         return _MISSING_PLAN_MESSAGE, {}, [], "needs_clarification"
 

@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Feedback — Admin</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --surface: #ffffff; --border: #d8dee9; --text: #1a2332;
+    --muted: #526174; --accent: #2563eb; --accent-soft: #eff6ff;
+    --success: #059669; --error: #dc2626; --card-bg: #f8fafc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --surface: #1a2436; --border: #303f58; --text: #e8edf5;
+      --muted: #9aabc0; --accent: #5b9dff; --accent-soft: #1c2c47;
+      --success: #34d399; --error: #f87171; --card-bg: #212d42;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .gate, .content { max-width: 1040px; margin: 0 auto; }
+  .gate {
+    max-width: 380px; margin-top: 15vh; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; padding: 24px;
+  }
+  .gate label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .gate input {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px;
+  }
+  .gate button, .toolbar button, .filters button {
+    padding: 8px 14px; border: none; border-radius: 6px;
+    background: var(--accent); color: white; font-size: 13px; cursor: pointer;
+  }
+  .gate button { margin-top: 12px; }
+  .error { color: var(--error); font-size: 13px; margin-top: 10px; display: none; }
+  .toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; gap: 16px; }
+  .toolbar > .refresh-btn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .filters {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  }
+  .filters label { font-size: 12px; color: var(--muted); }
+  .filters input[type="datetime-local"] {
+    padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  .preset-btn {
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
+  }
+  .preset-btn:hover { background: var(--accent-soft); }
+  .filters .divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .n { font-size: 20px; font-weight: 600; }
+  .card .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; background: var(--card-bg); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.message { white-space: pre-wrap; word-break: break-word; }
+  td.when { white-space: nowrap; color: var(--muted); }
+  .empty { color: var(--muted); padding: 20px; text-align: center; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .table-wrap table { border: none; border-radius: 0; }
+  .cap-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <h1>Feedback</h1>
+  <p class="sub">User-submitted feedback. Enter the admin token to continue.</p>
+  <label for="token">X-Admin-Token</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" />
+  <button id="submit">View feedback</button>
+  <p id="gateError" class="error"></p>
+</div>
+
+<div id="content" class="content hidden">
+  <div class="toolbar">
+    <div>
+      <h1>Feedback</h1>
+      <p id="subtitle" class="sub">Loading…</p>
+    </div>
+    <button id="refresh" type="button" class="refresh-btn">Refresh</button>
+  </div>
+
+  <div class="filters">
+    <button type="button" class="preset-btn" data-hours="0">All time</button>
+    <button type="button" class="preset-btn" data-hours="24">Last 24h</button>
+    <button type="button" class="preset-btn" data-hours="168">Last 7d</button>
+    <button type="button" class="preset-btn" data-hours="720">Last 30d</button>
+    <div class="divider"></div>
+    <label for="sinceInput">From</label>
+    <input id="sinceInput" type="datetime-local" />
+    <label for="untilInput">To</label>
+    <input id="untilInput" type="datetime-local" />
+    <button id="applyRange" type="button">Apply</button>
+  </div>
+
+  <div id="cards" class="cards"></div>
+
+  <div id="tableWrap" class="table-wrap"></div>
+  <p id="capNote" class="cap-note hidden"></p>
+  <p id="contentError" class="error"></p>
+</div>
+
+<script>
+(function () {
+  const gate = document.getElementById('gate');
+  const content = document.getElementById('content');
+  const tokenInput = document.getElementById('token');
+  const gateError = document.getElementById('gateError');
+  const contentError = document.getElementById('contentError');
+  const cardsEl = document.getElementById('cards');
+  const subtitleEl = document.getElementById('subtitle');
+  const sinceInput = document.getElementById('sinceInput');
+  const untilInput = document.getElementById('untilInput');
+  const tableWrap = document.getElementById('tableWrap');
+  const capNote = document.getElementById('capNote');
+
+  const RANGE_KEY = 'admin_feedback_range';
+  const LIMIT = 2000;
+
+  function toDatetimeLocalValue(isoString) {
+    const d = new Date(isoString);
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function getStoredRange() {
+    const raw = sessionStorage.getItem(RANGE_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && (parsed.since || parsed.until)) return parsed;
+    } catch (e) { /* ignore malformed storage */ }
+    return null;
+  }
+
+  function setStoredRange(since, until) {
+    sessionStorage.setItem(RANGE_KEY, JSON.stringify({ since, until }));
+    sinceInput.value = since ? toDatetimeLocalValue(since) : '';
+    untilInput.value = until ? toDatetimeLocalValue(until) : '';
+  }
+
+  function readRangeInputs() {
+    const since = sinceInput.value ? new Date(sinceInput.value).toISOString() : null;
+    const until = untilInput.value ? new Date(untilInput.value).toISOString() : null;
+    if (since && until && since >= until) {
+      throw new Error('"From" must be before "To".');
+    }
+    return { since, until };
+  }
+
+  function getToken() {
+    return sessionStorage.getItem('admin_token_feedback') || '';
+  }
+
+  function setToken(t) {
+    sessionStorage.setItem('admin_token_feedback', t);
+  }
+
+  async function fetchFeedback(token, since, until) {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (until) params.set('until', until);
+    params.set('limit', String(LIMIT));
+    const url = '/api/admin/feedback?' + params.toString();
+    const res = await fetch(url, { headers: { 'X-Admin-Token': token } });
+    if (res.status === 403) throw new Error('Invalid token.');
+    if (res.status === 404) throw new Error('Admin endpoint is not enabled (ADMIN_TOKEN not set on the server).');
+    if (res.status === 400) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || 'Invalid date range.');
+    }
+    if (!res.ok) throw new Error('Request failed (' + res.status + ').');
+    return res.json();
+  }
+
+  function renderCards(entries) {
+    const withZip = entries.filter((e) => e.zip).length;
+    const states = new Set(entries.filter((e) => e.state).map((e) => e.state));
+    const cards = [
+      ['Entries shown', entries.length],
+      ['Distinct states', states.size],
+      ['With ZIP', withZip],
+    ];
+    cardsEl.innerHTML = '';
+    cards.forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const n = document.createElement('div');
+      n.className = 'n';
+      n.textContent = String(value);
+      const l = document.createElement('div');
+      l.className = 'l';
+      l.textContent = label;
+      card.appendChild(n);
+      card.appendChild(l);
+      cardsEl.appendChild(card);
+    });
+  }
+
+  function formatWhen(isoString) {
+    const d = new Date(isoString);
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric', month: 'short', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }).format(d);
+  }
+
+  function renderTable(entries) {
+    if (!entries.length) {
+      tableWrap.innerHTML = '<div class="empty">No feedback in this range.</div>';
+      return;
+    }
+    const el = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Submitted', 'State', 'ZIP', 'Message'].forEach((label) => {
+      const th = document.createElement('th');
+      th.textContent = label;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    el.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    entries.forEach((entry) => {
+      const tr = document.createElement('tr');
+
+      const when = document.createElement('td');
+      when.className = 'when';
+      when.textContent = formatWhen(entry.submitted_at);
+      tr.appendChild(when);
+
+      const state = document.createElement('td');
+      state.textContent = entry.state || '—';
+      tr.appendChild(state);
+
+      const zip = document.createElement('td');
+      zip.textContent = entry.zip || '—';
+      tr.appendChild(zip);
+
+      const message = document.createElement('td');
+      message.className = 'message';
+      message.textContent = entry.message;
+      tr.appendChild(message);
+
+      tbody.appendChild(tr);
+    });
+    el.appendChild(tbody);
+    tableWrap.innerHTML = '';
+    tableWrap.appendChild(el);
+  }
+
+  function applyData(data) {
+    subtitleEl.textContent = data.entries.length === 1
+      ? '1 feedback entry.'
+      : data.entries.length + ' feedback entries.';
+    renderCards(data.entries);
+    renderTable(data.entries);
+    capNote.classList.toggle('hidden', data.count < LIMIT);
+    capNote.textContent = 'Showing the most recent ' + LIMIT + ' entries — narrow the date range to see older feedback.';
+  }
+
+  async function load(token, since, until) {
+    contentError.style.display = 'none';
+    try {
+      const data = await fetchFeedback(token, since, until);
+      setStoredRange(since, until);
+      applyData(data);
+    } catch (err) {
+      contentError.textContent = err.message;
+      contentError.style.display = 'block';
+    }
+  }
+
+  async function tryEnter(token) {
+    gateError.style.display = 'none';
+    try {
+      const stored = getStoredRange();
+      const since = stored ? stored.since : null;
+      const until = stored ? stored.until : null;
+      const data = await fetchFeedback(token, since, until);
+      setToken(token);
+      setStoredRange(since, until);
+      gate.classList.add('hidden');
+      content.classList.remove('hidden');
+      applyData(data);
+    } catch (err) {
+      gateError.textContent = err.message;
+      gateError.style.display = 'block';
+    }
+  }
+
+  function applyRange() {
+    contentError.style.display = 'none';
+    try {
+      const { since, until } = readRangeInputs();
+      load(getToken(), since, until);
+    } catch (err) {
+      contentError.textContent = err.message;
+      contentError.style.display = 'block';
+    }
+  }
+
+  function applyPreset(hours) {
+    if (hours === 0) {
+      load(getToken(), null, null);
+      return;
+    }
+    const until = new Date();
+    const since = new Date(until.getTime() - hours * 3600000);
+    load(getToken(), since.toISOString(), until.toISOString());
+  }
+
+  document.getElementById('submit').addEventListener('click', () => {
+    const t = tokenInput.value.trim();
+    if (t) tryEnter(t);
+  });
+  tokenInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('submit').click();
+  });
+  document.getElementById('refresh').addEventListener('click', () => {
+    const stored = getStoredRange();
+    load(getToken(), stored ? stored.since : null, stored ? stored.until : null);
+  });
+  document.getElementById('applyRange').addEventListener('click', applyRange);
+  [sinceInput, untilInput].forEach((el) => el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') applyRange();
+  }));
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => applyPreset(Number(btn.dataset.hours)));
+  });
+
+  const existing = getToken();
+  if (existing) {
+    tryEnter(existing);
+  }
+})();
+</script>
+
+</body>
+</html>
