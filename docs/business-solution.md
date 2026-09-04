@@ -248,6 +248,8 @@ sequenceDiagram
 | **Sources panel** | Citations, data-as-of badge, tool status footer |
 | **Error handling** | Parses 502/503 API errors into user-visible messages |
 | **Responsive layout** | Mobile/tablet/desktop smoke-tested for horizontal scroll, 44px touch targets, keyboard/Escape on menus and modals |
+| **Feedback modal** | Top-bar and inline **Send feedback** after an assistant reply; optional state/ZIP; posts to `POST /api/feedback` |
+| **Shareable chat URLs** | Address bar syncs `?q=` and filter params on send; page load hydrates from query string |
 
 Dollar figures appear in the chat transcript. The Sources panel provides auditability, not a separate guarantee card.
 
@@ -262,6 +264,7 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 | `GET /api/meta/as-of` | Data freshness manifest |
 | `GET /api/disclaimer` | Canonical disclaimer text + short privacy pointer |
 | `GET /api/privacy` | Full privacy policy text |
+| `POST /api/feedback` | User feedback (append-only `feedback.jsonl` on persistent disk) |
 | `GET /api/admin/usage` | Aggregate usage rollups (shared-secret gate; hidden when unset) — see [Usage Analytics](./usage-analytics.md) |
 
 ### 7.3 Navigator agent (`src/medicare_navigator/agent/`)

@@ -227,6 +227,16 @@ body {
   justify-self: center;
   min-width: 0;
   max-width: 100%;
+  text-align: center;
+}
+
+.topbar-title-btn {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
   font-size: 0.92rem;
   font-weight: 600;
   color: var(--text);
@@ -234,6 +244,103 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.topbar-title-btn:hover {
+  color: var(--accent);
+}
+
+
+.topbar-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 36px;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.topbar-action-btn svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.topbar-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.feedback-modal-panel {
+  width: min(32rem, 100%);
+}
+
+.feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0 1rem 1rem;
+}
+
+.feedback-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.feedback-field span {
+  font-weight: 500;
+}
+
+.field-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.feedback-field textarea,
+.feedback-field select,
+.feedback-field input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.feedback-optional-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.feedback-status {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.feedback-status.is-error {
+  color: #b91c1c;
+}
+
+.feedback-status.is-success {
+  color: var(--accent);
 }
 
 /* ── Info modal (About / Disclaimer / Privacy) ── */
@@ -1036,24 +1143,11 @@ body.modal-open {
   margin: 0 auto;
 }
 
-.hero-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.hero-subtitle {
-  color: var(--muted);
-  font-size: 0.95rem;
-  margin-top: 0.4rem;
-  line-height: 1.45;
-}
-
 .prompt-chips {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  margin-top: 1.5rem;
+  margin-top: 0.5rem;
   text-align: left;
 }
 
@@ -1138,6 +1232,34 @@ body.modal-open {
 
 .composer-hint.hidden {
   display: none;
+}
+
+.chat-feedback-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.15rem 0.35rem;
+}
+
+.chat-feedback-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-feedback-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.chat-feedback-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  text-decoration: none;
 }
 
 #send-btn,
@@ -1805,8 +1927,16 @@ body.modal-open {
     gap: 0.5rem;
   }
 
-  .topbar-title {
+  .topbar-title-btn {
     font-size: 0.85rem;
+  }
+
+  .topbar-action-label {
+    display: none;
+  }
+
+  .feedback-optional-fields {
+    grid-template-columns: 1fr;
   }
 
   .main-header-controls {
@@ -1922,10 +2052,6 @@ body.modal-open {
     padding: 1rem 0.25rem;
     font-size: 0.88rem;
     line-height: 1.45;
-  }
-
-  .hero-title {
-    font-size: 1.4rem;
   }
 
   .prompt-chips {

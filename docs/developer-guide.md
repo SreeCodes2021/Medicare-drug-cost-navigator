@@ -347,6 +347,7 @@ flowchart LR
 | `/data/navigator.duckdb` | SPUF tables |
 | `/data/manifest.json` | Ingest metadata, freshness |
 | `/data/raw/` | Cached CMS zip files |
+| `/data/feedback.jsonl` | User feedback submissions |
 
 ---
 
@@ -377,6 +378,7 @@ Medicare-drug-cost-navigator/
 │   ├── analytics/            # Aggregate usage collector + background DuckDB flush
 │   ├── api/                  # FastAPI app
 │   ├── eval/                 # Offline eval suite (queries.jsonl)
+│   ├── feedback/             # User feedback append-only JSONL store
 │   ├── guardrails/           # Citation enforcement
 │   ├── ingestion/            # SPUF ingest, schema, CMS download
 │   ├── llm/                  # Provider adapter + mock
@@ -905,6 +907,7 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 | `POST` | `/api/query` | None | Structured query (legacy-compatible) |
 | `POST` | `/api/chat` | None | Conversational turn with optional filters and `model` override |
 | `POST` | `/api/estimate` | None | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels` only, no LLM call) |
+| `POST` | `/api/feedback` | None | User feedback — appends to `{DATA_DIR}/feedback.jsonl` |
 | `GET` | `/api/admin/usage` | `X-Admin-Token` | Aggregate usage rollups; 404 when `ADMIN_TOKEN` unset — see [usage-analytics.md](./usage-analytics.md) |
 | `GET` | `/` | None | SPA shell (`frontend/dist/index.html`) |
 
@@ -958,6 +961,28 @@ Optional `region` (two-letter state from the UI state picker) and `mode` (`chat`
 
 `mediator_llm_usage` / `total_llm_usage` are only populated when `MEDIATOR_ENABLED=1` and the mediator actually ran for that turn.
 
+### `POST /api/feedback`
+
+**Request:**
+
+```json
+{
+  "message": "The pharmacy lookup was confusing.",
+  "state": "TX",
+  "zip": "75001"
+}
+```
+
+`state` and `zip` are optional. Validation: non-empty `message` (max 2000 chars), 2-letter `state`, 5-digit `zip`.
+
+**Response:**
+
+```json
+{ "status": "ok", "submitted_at": "2026-09-04T04:12:00+00:00" }
+```
+
+Each submission appends one JSON line to `{DATA_DIR}/feedback.jsonl` (thread-safe append). Not counted in usage analytics.
+
 ### Error codes
 
 | HTTP | Cause |
@@ -1002,6 +1027,8 @@ flowchart LR
 | Error display | `chatErrorMessage()` parses FastAPI `detail` (JSON, text, validation arrays) |
 | Session | Stores `session_id` from first response; sends on subsequent turns |
 | Analytics labels | Sends `region` and `mode` on `POST /api/chat` for aggregate usage stats |
+| Feedback modal | Top-bar **Feedback** button and inline **Send feedback** (enabled after first assistant reply); posts to `POST /api/feedback`; pre-fills state/ZIP from the active chat or guided form |
+| Shareable URLs | Chat sends sync `?q=` (and optional filter params) into the address bar; page load hydrates from query string |
 | Cache busting | `?v=` query params on assets; server `Cache-Control: no-cache` |
 
 ### 11.3 Admin pages
@@ -1170,7 +1197,7 @@ Default: **integration tests deselected** (`-m 'not integration'` in `pyproject.
 pytest tests/ -v -m integration
 ```
 
-Current suite: **559 tests** run by default (554 passing, 5 skipped), plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 564 total. Run `pytest --collect-only -q` to confirm the current count.
+Current suite: **562 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — **567 total**. Run `pytest --collect-only -q` to confirm the current count.
 
 ### 14.2 Test categories
 
@@ -1187,6 +1214,7 @@ flowchart TB
         T12[test_mixed_basket — insulin + oral baskets]
         T13[test_early_return_questions — enrollment, invalid input]
         T14[test_channel_parity — uniform-channel prose repair]
+        T15[test_feedback — POST /api/feedback validation + JSONL store]
     end
     subgraph Integration
         T6[test_navigator — E2E agent]

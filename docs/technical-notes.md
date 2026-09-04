@@ -693,7 +693,7 @@ SCHEMA_MIGRATIONS = (
 
 ## 10. API reference
 
-Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
+Base URL: `http://localhost:8000` (dev) or `https://medicare-drug-cost.onrender.com` (prod).
 
 ### 10.1 Endpoints
 
@@ -707,6 +707,7 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `POST` | `/api/query` | Structured + message query → `QueryResponse` |
 | `POST` | `/api/chat` | Conversational turn → `ChatResponse` (accepts optional `model` override) |
 | `POST` | `/api/estimate` | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels`, no LLM call) |
+| `POST` | `/api/feedback` | User feedback — appends to `{DATA_DIR}/feedback.jsonl` |
 | `GET` | `/` | SPA (`frontend/dist/index.html`) |
 
 ### 10.2 `POST /api/chat`
@@ -758,7 +759,17 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 
 **HTTP errors:** `503` (LLM not configured), `502` (LLM request failed after retries).
 
-### 10.3 `GET /api/health` fields
+### 10.3 `POST /api/feedback`
+
+Appends user feedback to `{DATA_DIR}/feedback.jsonl` (one JSON object per line). Not counted in usage analytics.
+
+**Request:** `{ "message": "…", "state": "TX", "zip": "75001" }` — `state` and `zip` optional; validated as 2-letter state and 5-digit ZIP.
+
+**Response:** `{ "status": "ok", "submitted_at": "…" }`
+
+**HTTP errors:** `400` (empty message, invalid state/ZIP, message > 2000 chars).
+
+### 10.4 `GET /api/health` fields
 
 | Field | Meaning |
 |---|---|
@@ -1064,7 +1075,7 @@ flowchart TB
 
 1. Push to GitHub.
 2. Render → **New Blueprint** → `render.yaml`.
-3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<app>.onrender.com`.
+3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
 4. After first deploy, Shell:
 
    ```bash

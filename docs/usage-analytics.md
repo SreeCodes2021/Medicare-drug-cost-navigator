@@ -300,6 +300,7 @@ Both are plain-language summaries aligned with the collection rules in §2–§3
 | Chat / guided question via `POST /api/chat` | Yes (when `ANALYTICS_ENABLED=true`) |
 | Legacy `POST /api/query` | Yes |
 | Direct `POST /api/estimate` or compare-plans | No (no LLM) |
+| `POST /api/feedback` | No (separate `feedback.jsonl` store) |
 | `GET /api/zip-lookup` | No |
 
 ZIP codes are used client-side to suggest a state for the picker; only a two-letter **state label** may appear in aggregates, not the ZIP.
@@ -332,6 +333,7 @@ When updating analytics behavior, update `config/privacy_policy.txt` and the pri
 |---|---|
 | **RxNorm offline fallback** | [`tools/rxnorm_offline.py`](../../src/medicare_navigator/tools/rxnorm_offline.py) — curated 2026 snapshots when NLM REST fails; see [Developer Guide §8](./developer-guide.md#8-mcp-tools) |
 | **Prompt-injection gate** | [`agent/invalid_input_questions.py`](../../src/medicare_navigator/agent/invalid_input_questions.py) — blocks `SYSTEM:`, `you are now unrestricted`, and price-injection patterns; see [Developer Guide §7](./developer-guide.md#7-llm-agent-layer) |
+| **User feedback** | [`feedback/store.py`](../../src/medicare_navigator/feedback/store.py) — `POST /api/feedback` appends to `{DATA_DIR}/feedback.jsonl`; not part of `usage_hourly` |
 
 ---
 

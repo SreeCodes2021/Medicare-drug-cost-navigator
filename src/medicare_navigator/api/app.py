@@ -394,6 +394,34 @@ async def get_privacy_policy():
     return {"text": settings.privacy_policy_text}
 
 
+class FeedbackRequest(BaseModel):
+    message: str
+    state: str | None = None
+    zip: str | None = None
+
+
+@app.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    if len(message) > 2000:
+        raise HTTPException(status_code=400, detail="message must be 2000 characters or fewer")
+
+    state = req.state.strip().upper() if req.state else None
+    if state and (len(state) != 2 or not state.isalpha()):
+        raise HTTPException(status_code=400, detail="state must be a 2-letter code")
+
+    zip_code = req.zip.strip() if req.zip else None
+    if zip_code and (len(zip_code) != 5 or not zip_code.isdigit()):
+        raise HTTPException(status_code=400, detail="zip must be a 5-digit code")
+
+    from medicare_navigator.feedback.store import append_feedback
+
+    entry = append_feedback(message=message, state=state, zip_code=zip_code)
+    return {"status": "ok", "submitted_at": entry["submitted_at"]}
+
+
 @app.post("/api/estimate", response_model=EstimateApiResponse)
 async def estimate_costs(req: EstimateRequest):
     from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels

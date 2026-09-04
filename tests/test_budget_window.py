@@ -4,7 +4,8 @@ the mediator's explicit-date extraction into the deterministic insulin remaining
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,6 +18,15 @@ from tests.spuf_fixture import PLAN_FL_PDP
 @pytest.fixture(autouse=True)
 def _spuf(spuf_db):
     pass
+
+
+def _freeze_datetime(monkeypatch, fixed: datetime) -> None:
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is None else fixed.astimezone(tz)
+
+    monkeypatch.setattr("medicare_navigator.agent.datetime_context.datetime", _FixedDatetime)
 
 
 @pytest.mark.asyncio
@@ -61,6 +71,10 @@ async def test_mediator_extracted_start_date_flows_into_deterministic_insulin_re
     """End to end: 'starting September 1' phrasing, mediator enabled, resolves through the
     deterministic insulin path (not the general agent loop) using the explicit start date —
     not silently substituting today's date."""
+    _freeze_datetime(
+        monkeypatch,
+        datetime(2026, 8, 3, 12, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
     monkeypatch.setattr(settings, "mediator_enabled", True)
 
     response = await navigator.run(

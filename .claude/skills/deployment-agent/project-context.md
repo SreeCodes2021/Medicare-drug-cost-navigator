@@ -4,7 +4,7 @@ Reference for `/deployment-agent`. Read when correlating MCP output with this re
 
 ## Service topology
 
-Single **Docker web service** (`medicare-navigator`):
+Single **Docker web service** (`medicare-drug-cost`):
 
 - **Image entry:** [`scripts/docker-start.sh`](../../../scripts/docker-start.sh)
 - **API:** `uvicorn medicare_navigator.api.app:app --host 0.0.0.0 --port $PORT`
@@ -18,6 +18,7 @@ Single **Docker web service** (`medicare-navigator`):
 | `/data/navigator.duckdb` | Plan/formulary data (DuckDB) |
 | `/data/chroma` | Policy retrieval index |
 | `/data/manifest.json` | Ingest freshness metadata |
+| `/data/feedback.jsonl` | User feedback from `POST /api/feedback` |
 
 Env defaults in [`render.yaml`](../../../render.yaml): `DATA_DIR`, `DUCKDB_PATH`, `CHROMA_PATH`.
 
@@ -32,7 +33,7 @@ Render cron jobs **cannot** mount this disk — ingest must run in-container via
 - `llm_configured`: whether Anthropic/OpenAI key is set
 - `navigator_mode`: typically `mcp_agent`
 
-Production URL: `https://<medicare-navigator>.onrender.com/api/health`
+Production URL: `https://medicare-drug-cost.onrender.com/api/health`
 
 ## Secrets (Render dashboard only)
 
