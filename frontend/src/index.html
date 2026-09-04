@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Drug Cost Navigator" />
-  <link rel="stylesheet" href="/styles.css?v=37" />
+  <link rel="stylesheet" href="/styles.css?v=39" />
 </head>
 <body>
   <header class="topbar">
@@ -55,9 +55,19 @@
       </div>
     </div>
 
-    <span class="topbar-title">Drug Cost Navigator</span>
+    <span class="topbar-title">
+      <button type="button" id="topbar-home" class="topbar-title-btn">Drug Cost Navigator</button>
+    </span>
 
     <div class="main-header-controls">
+      <button type="button" id="topbar-new-chat" class="topbar-action-btn" title="Start a new chat">
+        <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="topbar-action-label">New chat</span>
+      </button>
+      <button type="button" id="topbar-feedback" class="topbar-action-btn" title="Send feedback">
+        <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3.5 4.5h13v9h-4.2L10 16.5 7.7 13.5H3.5v-9Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <span class="topbar-action-label">Feedback</span>
+      </button>
       <span id="session-usage" class="session-usage" title="Session token and cost totals">0 tokens · $0.00</span>
       <span id="turn-counter" class="turn-counter">0/5 turns</span>
     </div>
@@ -87,12 +97,11 @@
       <div id="mode-chat" class="mode-panel" role="tabpanel" aria-labelledby="mode-tab-chat">
         <div id="chat-messages" class="chat-messages" aria-live="polite">
           <div class="empty-state" id="empty-state">
-            <h1 class="hero-title">Drug Cost Navigator</h1>
-            <p class="hero-subtitle">Ask about a drug's cost on a Medicare plan — include the drug, dosage, and plan ID.</p>
             <div class="prompt-chips">
-              <button type="button" class="chip">How much will lovastatin 40mg cost on Medicare plan S5921-400? I have not spent anything out of pocket yet this year.</button>
-              <button type="button" class="chip">How much will lovastatin 40mg cost on plan S5921-400 for a 90-day supply?</button>
-              <button type="button" class="chip">What's the cost for lovastatin 40mg on plan S5921-400 if I've already spent $800 this year?</button>
+              <button type="button" class="chip">How much will metformin 500mg cost on Texas Medicare plan S5921-403? I have not spent anything out of pocket yet this year.</button>
+              <button type="button" class="chip">How much will lovastatin 40mg cost on plan S5921-403 for a 90-day supply?</button>
+              <button type="button" class="chip">What's the cost for metformin 500mg on plan S5921-403 if I've already spent $800 this year?</button>
+              <button type="button" class="chip">What's the cost of metformin 500mg at my nearest preferred pharmacy near zip 72201 on plan S5921-400?</button>
             </div>
           </div>
         </div>
@@ -148,7 +157,7 @@
 
         <div class="composer">
           <form id="chat-form" class="chat-form">
-            <textarea id="chat-input" rows="1" placeholder="Ask anything — e.g. lovastatin 40mg on S5921-400, 90-day supply, spent $800 YTD" required></textarea>
+            <textarea id="chat-input" rows="1" placeholder="Ask anything — e.g. metformin 500mg on S5921-403, 90-day supply, spent $800 YTD" required></textarea>
             <div class="input-toolbar">
               <span id="chat-composer-hint" class="composer-hint hidden">Ask a follow-up</span>
               <div class="input-toolbar-right">
@@ -157,6 +166,11 @@
               </div>
             </div>
           </form>
+          <div class="chat-feedback-bar">
+            <button type="button" id="chat-feedback-btn" class="chat-feedback-btn" disabled aria-disabled="true">
+              Send feedback
+            </button>
+          </div>
         </div>
 
         <section class="results-panel" id="results-panel">
@@ -426,6 +440,11 @@
                 </div>
               </div>
             </form>
+            <div class="chat-feedback-bar">
+              <button type="button" id="guided-feedback-btn" class="chat-feedback-btn" disabled aria-disabled="true">
+                Send feedback
+              </button>
+            </div>
           </section>
 
           <section class="results-panel guided-results-panel" id="guided-results-panel">
@@ -455,6 +474,41 @@
     </div>
   </div>
 
-  <script src="/app.js?v=38"></script>
+  <div id="feedback-modal" class="info-modal hidden" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+    <div class="info-modal-backdrop" data-action="close-feedback-modal"></div>
+    <div class="info-modal-panel feedback-modal-panel">
+      <div class="info-modal-header">
+        <h2 id="feedback-modal-title">Send feedback</h2>
+        <button type="button" id="feedback-modal-close" class="info-modal-close" aria-label="Close">
+          <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form id="feedback-form" class="feedback-form">
+        <label class="feedback-field">
+          <span>Message</span>
+          <textarea id="feedback-message" rows="4" required maxlength="2000" placeholder="Tell us what worked, what didn't, or what you'd like to see."></textarea>
+        </label>
+        <div class="feedback-optional-fields">
+          <label class="feedback-field">
+            <span>State <span class="field-optional">(optional)</span></span>
+            <select id="feedback-state">
+              <option value="">Select a state</option>
+            </select>
+          </label>
+          <label class="feedback-field">
+            <span>ZIP code <span class="field-optional">(optional)</span></span>
+            <input type="text" id="feedback-zip" inputmode="numeric" maxlength="5" placeholder="e.g. 72201" />
+          </label>
+        </div>
+        <p id="feedback-status" class="feedback-status hidden" aria-live="polite"></p>
+        <div class="feedback-actions">
+          <button type="button" id="feedback-cancel" class="btn-secondary">Cancel</button>
+          <button type="submit" id="feedback-submit" class="btn-primary">Send feedback</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js?v=40"></script>
 </body>
 </html>

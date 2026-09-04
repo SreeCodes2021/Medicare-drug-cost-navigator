@@ -12,6 +12,7 @@ A Phase 6 system that computes the out-of-pocket cost of one or more prescriptio
 - **Optional mediator pass** (`MEDIATOR_ENABLED`, off by default) — a second, independently-configured LLM call that runs before the main agent loop on every message, solely to normalize phrasing and extract date/duration components; it never routes requests, computes cost, or gives advice, always fails safe to the raw message, and never sees or affects the safety-gate refusal checks
 - **Mandatory guardrails** — every `$` figure in the LLM's answer is checked against the tool's `cost_low`/`cost_high`; safety-critical caveats are force-appended verbatim if the LLM drops or paraphrases them
 - **DuckDB** embedded store for CMS SPUF data (plans, formulary, pricing, cost-share, insulin cost-share) — no external database or vector store required
+- **User feedback** — in-app modal (top bar or inline after an assistant reply) posts to `POST /api/feedback`; entries append to `DATA_DIR/feedback.jsonl` on the persistent disk
 - **Fixed disclaimer banner** always visible on screen
 
 ## Quick start
@@ -108,6 +109,7 @@ Without a configured API key **and** without `LLM_MOCK=1`, `/api/health` reports
 | `POST` | `/api/query` | Structured query |
 | `POST` | `/api/chat` | Conversational turn |
 | `POST` | `/api/estimate` | Structured, non-chat cost estimate (all pharmacy channels, no LLM call) |
+| `POST` | `/api/feedback` | User feedback (message required; optional state and ZIP) — appends to `feedback.jsonl` |
 
 ## Project structure
 
@@ -116,6 +118,7 @@ src/medicare_navigator/
 ├── agent/          # Navigator agent (LLM tool-calling loop), mediator, insulin/mixed-basket resolvers, system prompt
 ├── api/             # FastAPI app and HTTP endpoints
 ├── eval/            # Offline evaluation suite (queries.jsonl, run_eval.py)
+├── feedback/        # User feedback append-only JSONL store
 ├── guardrails/      # Citation building + verbatim-caveat / dollar-traceability enforcement
 ├── ingestion/       # CMS SPUF download, parsing, and DuckDB schema
 ├── llm/             # Provider-agnostic LLM client (Anthropic / OpenAI / mock)
@@ -148,7 +151,8 @@ Start at **[docs/README.md](docs/README.md)** for the full documentation index. 
 
 1. Push this repo to GitHub.
 2. [Render](https://render.com) → **New Blueprint** → connect repo (`render.yaml`).
-3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<your-app>.onrender.com`.
+3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
+   If renaming an existing service in the Render Dashboard, update `CORS_ORIGINS` to match the new `*.onrender.com` URL.
 4. After first deploy, **Shell** on the web service:
 
 ```bash

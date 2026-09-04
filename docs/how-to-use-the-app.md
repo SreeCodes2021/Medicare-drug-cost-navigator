@@ -25,7 +25,7 @@ The **Drug Cost Navigator** estimates what a specific prescription drug will cos
 
 When the page loads, you will see:
 
-- A **top bar** with the app title, session usage, and turn counter
+- A **top bar** with the app title (tap to open About), **New chat**, **Feedback**, session usage, and turn counter
 - An **Important notice** banner (tap to expand the full disclaimer)
 - Two main tabs: **Chat** and **Guided form**
 
@@ -35,7 +35,25 @@ When the page loads, you will see:
 
 ## Top bar and menu
 
+### App title
 
+Tap **Drug Cost Navigator** in the center of the top bar to open the **About app** modal.
+
+### New chat
+
+The **New chat** button in the top bar clears the Chat tab conversation, results, and turn counter — the same as **New chat** in the menu.
+
+### Feedback
+
+Use **Feedback** in the top bar (or **Send feedback** below the chat after you receive an answer) to tell us what worked, what didn't, or what you'd like to see.
+
+The form asks for:
+
+1. **Message** (required) — up to 2,000 characters
+2. **State** (optional) — pre-filled when you've already picked a state in chat or the guided form
+3. **ZIP code** (optional) — pre-filled from your chat or guided-form ZIP when available
+
+After you send, you'll see a short confirmation. Feedback is stored on the server so the team can review it later; it is not used to change your current estimate.
 
 ### Turn counter
 
@@ -135,6 +153,12 @@ While the app is working, you will see a loading spinner and **Estimating cost�
 ### Follow-ups in Chat
 
 After the first answer, type a follow-up in the same chat box (for example *"What if I use mail-order instead?"* or *"Compare that to a 90-day supply"*). Each send uses one turn until you reach **5/5 turns**.
+
+**Send feedback** appears below the chat once you've received at least one assistant reply — use it to report issues or suggestions without leaving the conversation.
+
+### Shareable links
+
+When you send a chat message, the browser address bar updates with your question (and any active filters) as query parameters. Opening that link in a new tab replays the same question automatically — useful for bookmarking or sharing a specific lookup.
 
 Use **Menu → New chat** to start over.
 

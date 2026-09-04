@@ -17,7 +17,8 @@ Single Docker web service with persistent disk at `/data` and in-container super
 ### First deploy on Render
 
 1. Connect GitHub → **New Blueprint** → apply `render.yaml`.
-2. Set dashboard secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<your-app>.onrender.com`.
+2. Set dashboard secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
+   If you rename the service in the Render Dashboard, update `CORS_ORIGINS` to match the new `*.onrender.com` URL.
 3. After deploy, **Shell** on the web service:
 
 ```bash
@@ -47,12 +48,28 @@ Aggregate-only usage stats are collected by default and stored in the `usage_hou
 | Step | Action |
 |---|---|
 | Enable dashboard | Set `ADMIN_TOKEN` on the web service (Dashboard → Environment). Treat it like a password — do not commit it. |
-| Open UI | `https://<your-app>.onrender.com/admin/usage.html` (not linked from the main app) |
+| Open UI | `https://medicare-drug-cost.onrender.com/admin/usage.html` (not linked from the main app) |
 | API | `curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<host>/api/admin/usage` |
 | Widen/narrow default window | Optional `ADMIN_USAGE_HOURS` (default `2160` ≈ 3 months) |
 | Disable collection | `ANALYTICS_ENABLED=false` stops the in-memory collector and background flush task |
 
 Full detail: [usage-analytics.md](./usage-analytics.md).
+
+### User feedback
+
+The main UI exposes a **Feedback** button (top bar and inline after an assistant reply). Submissions go to `POST /api/feedback` and append one JSON line per entry to `{DATA_DIR}/feedback.jsonl` (on Render: `/data/feedback.jsonl` on the same persistent disk as DuckDB).
+
+| Field | Required | Notes |
+|---|---|---|
+| `message` | Yes | 1–2000 characters |
+| `state` | No | Two-letter US state code |
+| `zip` | No | Five-digit ZIP |
+
+Nightly SPUF ingest does not touch `feedback.jsonl`. Operators can inspect entries from Render Shell:
+
+```bash
+tail -n 20 /data/feedback.jsonl
+```
 
 ## Architecture
 
@@ -103,6 +120,7 @@ medicare-ingest spuf --download --preserve-other
 | `manifest.json` | Source IDs, `seeded_at`, dataset versions |
 | `raw/` | CMS zip cache (reused when filename unchanged) |
 | `chroma/` | Policy vectors (optional; empty until corpus loader exists) |
+| `feedback.jsonl` | Append-only user feedback from `POST /api/feedback` |
 
 ```bash
 DATA_DIR=/data

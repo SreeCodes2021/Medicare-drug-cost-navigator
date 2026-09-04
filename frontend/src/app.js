@@ -657,6 +657,124 @@ function closeInfoModal() {
   document.body.classList.remove("modal-open");
 }
 
+function populateFeedbackStateOptions() {
+  const select = el("feedback-state");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Select a state</option>';
+  for (const state of availableStates) {
+    const option = document.createElement("option");
+    option.value = state;
+    option.textContent = state;
+    select.appendChild(option);
+  }
+  if (current && availableStates.includes(current)) select.value = current;
+}
+
+function setFeedbackStatus(message, type = "") {
+  const status = el("feedback-status");
+  status.textContent = message;
+  status.classList.remove("hidden", "is-error", "is-success");
+  if (type) status.classList.add(type === "error" ? "is-error" : "is-success");
+}
+
+function clearFeedbackStatus() {
+  const status = el("feedback-status");
+  status.textContent = "";
+  status.classList.add("hidden");
+  status.classList.remove("is-error", "is-success");
+}
+
+function hasAssistantMessages(containerId) {
+  const container = el(containerId);
+  return Boolean(container?.querySelector(".message.assistant"));
+}
+
+function setInlineFeedbackEnabled(buttonId, enabled) {
+  const button = el(buttonId);
+  if (!button) return;
+  button.disabled = !enabled;
+  button.setAttribute("aria-disabled", enabled ? "false" : "true");
+}
+
+function updateInlineFeedbackAvailability() {
+  setInlineFeedbackEnabled("chat-feedback-btn", hasAssistantMessages("chat-messages"));
+  setInlineFeedbackEnabled("guided-feedback-btn", hasAssistantMessages("guided-chat-messages"));
+}
+
+function openFeedbackModal() {
+  closeMenu();
+  clearFeedbackStatus();
+  el("feedback-message").value = "";
+  el("feedback-zip").value = "";
+  populateFeedbackStateOptions();
+  const guidedPanel = el("mode-guided");
+  const inGuidedMode = guidedPanel && !guidedPanel.classList.contains("hidden");
+  if (inGuidedMode) {
+    const guidedZip = el("guided-zip-input")?.value.trim();
+    if (guidedZip) el("feedback-zip").value = guidedZip;
+    if (guidedState) el("feedback-state").value = guidedState;
+  } else {
+    const chatZip = getChatZip();
+    if (chatZip) el("feedback-zip").value = chatZip;
+    if (chatState) el("feedback-state").value = chatState;
+  }
+  el("feedback-modal").classList.remove("hidden");
+  document.documentElement.classList.add("modal-open");
+  document.body.classList.add("modal-open");
+  el("feedback-message").focus();
+}
+
+function closeFeedbackModal() {
+  el("feedback-modal").classList.add("hidden");
+  document.documentElement.classList.remove("modal-open");
+  document.body.classList.remove("modal-open");
+  clearFeedbackStatus();
+}
+
+async function submitFeedbackForm(event) {
+  event.preventDefault();
+  const message = el("feedback-message").value.trim();
+  const state = el("feedback-state").value.trim();
+  const zip = el("feedback-zip").value.trim();
+  if (!message) {
+    setFeedbackStatus("Please enter a message before sending.", "error");
+    return;
+  }
+
+  const submitBtn = el("feedback-submit");
+  submitBtn.disabled = true;
+  clearFeedbackStatus();
+  try {
+    const res = await fetch(`${API}/api/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        state: state || null,
+        zip: zip || null,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail;
+      const errorText = Array.isArray(detail)
+        ? detail.map((item) => item.msg || item).join(" ")
+        : detail || "Could not send feedback. Please try again.";
+      setFeedbackStatus(errorText, "error");
+      return;
+    }
+    setFeedbackStatus("Thanks — your feedback was sent.", "success");
+    el("feedback-message").value = "";
+    window.setTimeout(() => closeFeedbackModal(), 1200);
+  } catch (err) {
+    console.error(err);
+    setFeedbackStatus("Could not send feedback. Please try again.", "error");
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
 const ABOUT_APP_HTML = `
   <p>Estimates what a specific prescription drug will cost on a specific Medicare Part D or Medicare Advantage-with-Part-D plan, using CMS's own published formulary and pricing data — before you go to the pharmacy.</p>
   <p>Every dollar figure traces back to a specific CMS record; it isn't guessed by the AI model.</p>
@@ -734,6 +852,8 @@ function resetChat() {
   el("chat-input").value = "";
   el("chat-input").focus();
   updateChatComposerHint();
+  updateInlineFeedbackAvailability();
+  clearSearchUrl();
 }
 
 function updateChatComposerHint() {
@@ -1225,6 +1345,7 @@ async function loadStates() {
     console.warn("Could not load states", e);
     availableStates = [];
   }
+  populateFeedbackStateOptions();
   return availableStates;
 }
 
@@ -2439,6 +2560,77 @@ function getFilters() {
   return Object.keys(filters).length ? filters : null;
 }
 
+function getChatZip() {
+  const input = el("chat-zip-input");
+  return input ? input.value.trim() : "";
+}
+
+function buildSearchParams({ message, filters, zip } = {}) {
+  const params = new URLSearchParams();
+  if (message?.trim()) params.set("q", message.trim());
+  const f = filters || getFilters() || {};
+  if (f.drug) params.set("drug", f.drug);
+  if (f.dosage) params.set("dosage", f.dosage);
+  if (f.plan_id) params.set("plan", f.plan_id);
+  if (f.days_supply) params.set("days", String(f.days_supply));
+  if (f.ytd_oop_spend) params.set("ytd", String(f.ytd_oop_spend));
+  const zipCode = zip ?? getChatZip();
+  if (zipCode) params.set("zip", zipCode);
+  return params;
+}
+
+function syncUrlFromSearch({ message, filters, zip } = {}) {
+  const params = buildSearchParams({ message, filters, zip });
+  const qs = params.toString();
+  const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  history.replaceState(null, "", newUrl);
+}
+
+function clearSearchUrl() {
+  history.replaceState(null, "", window.location.pathname);
+}
+
+function composeMessageFromParams(params) {
+  const drug = params.get("drug");
+  const dosage = params.get("dosage");
+  const plan = params.get("plan");
+  const zip = params.get("zip");
+  const days = params.get("days");
+  const ytd = params.get("ytd");
+
+  if (!drug && !plan && !zip) return "";
+
+  if (drug) {
+    let message = `How much will ${drug}`;
+    if (dosage) message += ` ${dosage}`;
+    message += " cost";
+    if (plan) message += ` on plan ${plan}`;
+    if (zip) message += ` near zip ${zip}`;
+    if (days) message += ` for a ${days}-day supply`;
+    if (ytd) message += ` if I've already spent $${ytd} this year`;
+    return `${message}?`;
+  }
+  if (zip && plan) return `What pharmacies are near zip ${zip} on plan ${plan}?`;
+  if (zip) return `What pharmacies are near zip ${zip}?`;
+  return "";
+}
+
+function hydrateFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const q = params.get("q");
+  if (q) {
+    void sendMessage(q);
+    return;
+  }
+  const zip = params.get("zip");
+  if (zip) {
+    const zipInput = el("chat-zip-input");
+    if (zipInput) zipInput.value = zip;
+  }
+  const message = composeMessageFromParams(params);
+  if (message) void sendMessage(message);
+}
+
 function escapeAttr(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -2789,6 +2981,7 @@ function appendMessage(role, text, source, citations, usage, containerId = "chat
 
   container.appendChild(div);
   div.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (role === "assistant") updateInlineFeedbackAvailability();
 }
 
 function showLoading(text) {
@@ -3095,6 +3288,7 @@ function chatErrorMessage(res, data) {
 async function sendMessage(message, { switchToChat = false } = {}) {
   if (!message.trim()) return;
   appendMessage("user", message);
+  syncUrlFromSearch({ message });
   el("chat-input").value = "";
   el("send-btn").disabled = true;
   el("guided-submit").disabled = true;
@@ -3220,6 +3414,7 @@ function resetGuidedConversation() {
   el("guided-chat-input").value = "";
   el("guided-chat-input").disabled = true;
   el("guided-send-btn").disabled = true;
+  updateInlineFeedbackAvailability();
 }
 
 function renderGuidedResponse(resp) {
@@ -3429,13 +3624,24 @@ el("menu-btn").addEventListener("click", (event) => {
   event.stopPropagation();
   toggleMenu();
 });
+el("topbar-home").addEventListener("click", resetChat);
+el("topbar-new-chat").addEventListener("click", resetChat);
 el("menu-new-chat").addEventListener("click", resetChat);
+el("topbar-feedback").addEventListener("click", openFeedbackModal);
+el("chat-feedback-btn").addEventListener("click", openFeedbackModal);
+el("guided-feedback-btn").addEventListener("click", openFeedbackModal);
 el("menu-about").addEventListener("click", showAboutModal);
 el("menu-disclaimer").addEventListener("click", showDisclaimerModal);
 el("menu-privacy").addEventListener("click", showPrivacyModal);
 el("info-modal-close").addEventListener("click", closeInfoModal);
 el("info-modal").addEventListener("click", (event) => {
   if (event.target.dataset.action === "close-info-modal") closeInfoModal();
+});
+el("feedback-modal-close").addEventListener("click", closeFeedbackModal);
+el("feedback-cancel").addEventListener("click", closeFeedbackModal);
+el("feedback-form").addEventListener("submit", submitFeedbackForm);
+el("feedback-modal").addEventListener("click", (event) => {
+  if (event.target.dataset.action === "close-feedback-modal") closeFeedbackModal();
 });
 
 document.addEventListener("click", (event) => {
@@ -3447,6 +3653,10 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (!el("feedback-modal").classList.contains("hidden")) {
+    closeFeedbackModal();
+    return;
+  }
   if (!el("info-modal").classList.contains("hidden")) {
     closeInfoModal();
     return;
@@ -3478,6 +3688,7 @@ loadStates();
 async function initDataAndPlans() {
   await loadDataRelease();
   await pollPlansUntilLoaded();
+  hydrateFromUrl();
 }
 void initDataAndPlans();
 resetGuidedConversation();
