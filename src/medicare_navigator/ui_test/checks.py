@@ -655,7 +655,7 @@ def check_api_contract(getter: HttpGetter) -> CheckReport:
             group="api",
         )
 
-    status, zip_body = getter.get("/api/zip-lookup?zip=72201")
+    status, zip_body = getter.get("/api/zip-lookup?zip=72712")
     report.add(
         "api:zip-lookup:known_zip",
         status == 200,
