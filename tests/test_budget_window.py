@@ -70,7 +70,12 @@ async def test_mediator_extracted_start_date_flows_into_deterministic_insulin_re
 ):
     """End to end: 'starting September 1' phrasing, mediator enabled, resolves through the
     deterministic insulin path (not the general agent loop) using the explicit start date —
-    not silently substituting today's date."""
+    not silently substituting today's date.
+
+    Time is frozen to 2026-08-03 so September 1 is still in the future; after Sep 1 passes,
+    resolve_explicit_start_date rolls to next year and the remaining-year window zeros out.
+    Live complement: /quality-test §2h scenario #2 (use a future month/day each run).
+    """
     _freeze_datetime(
         monkeypatch,
         datetime(2026, 8, 3, 12, 0, tzinfo=ZoneInfo("America/Chicago")),

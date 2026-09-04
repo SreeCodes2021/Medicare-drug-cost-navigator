@@ -351,7 +351,7 @@ phrasing is not.
 | # | Scenario | Example shape (rephrase each run) | Pass criteria |
 |---|----------|-----------------------------------|----------------|
 | 1 | **Remaining-year budget, no explicit start** | "How much will \<insulin\> cost me for the rest of the year on \<plan_key\>?" | `response_source` is the deterministic insulin path; explanation states a multi-fill remaining-year total (not a single 30-day fill); fill count/total roughly matches `window_days_remaining` math for today → Dec 31 |
-| 2 | **Explicit start date narrows the window** | "\<insulin\> on \<plan_key\> for the rest of the year starting \<a future month/day, e.g. "September 1"\>" | Remaining-year total reflects the later start date (fewer days/fills than #1's today-anchored total), not today's date silently substituted |
+| 2 | **Explicit start date narrows the window** | "\<insulin\> on \<plan_key\> for the rest of the year starting \<a month/day still in the future relative to today's date\>" (rephrase each run; **do not** hard-code "September 1" year-round — see calendar note below) | Remaining-year total reflects the later start date (fewer days/fills than #1's today-anchored total), not today's date silently substituted; explanation includes multi-fill remaining-year wording (`remaining`, `fill`) |
 | 3 | **Duration phrase on a mixed basket must not silently single-fill** | "Budget \<insulin\> and \<a regular oral drug with strength\> for the next \<2–4\> months \<optionally "starting <month> <day>"\> on \<plan_key\>" | `response_source` is **not** `System/MixedBasket` (duration signal must force the general agent loop, not the duration-blind deterministic batch path); explanation reflects a multi-month total, not one fill each |
 | 4 | **Mixed basket with no duration still uses the fast deterministic path (control)** | "\<insulin\> and \<a regular oral drug with strength\> on \<plan_key\>" (no date/duration wording) | `response_source` **is** `System/MixedBasket`; confirms #3's routing change is scoped to date/duration signals only, not a general regression |
 
@@ -370,6 +370,21 @@ print(window_days_remaining(2026, None))
 (`add_months`, `window_days_remaining`, `resolve_explicit_start_date` — all deterministic,
 stdlib-only); `tests/test_budget_window.py` for the exact pytest equivalents of scenarios 2
 and 3 above.
+
+**Calendar-dependent dates — offline pytest + live §2h (dual layer):**
+
+`resolve_explicit_start_date` rolls a month/day **without a year** forward to the **next**
+calendar occurrence. After that date passes in the current year, it jumps to next year — which
+can zero out `window_days_remaining` for the current contract year and make scenario #2 look
+like a single 30-day fill instead of a remaining-year total.
+
+| Layer | What runs | Example |
+|-------|-----------|---------|
+| **Offline (commit-push)** | `pytest tests/test_budget_window.py tests/test_mediator.py tests/test_datetime_context.py -v` | `test_mediator_extracted_start_date_flows_into_deterministic_insulin_response` freezes time to **2026-08-03** so `"starting September 1"` resolves to 2026-09-01 and asserts `remaining` + `fill` in the insulin explanation |
+| **Live (this §2h)** | Scenario #2 query each run | Pick a start month/day **still in the future** from today's date (e.g. in August ask for "starting December 1"; in January ask for "starting March 15"), or include an explicit year in the phrasing |
+
+If scenario #2 fails live but offline pytest passes, check whether the chosen anchor date has
+already passed this calendar year before filing a product bug.
 
 ### 2i. Multi-turn conversation depth (mandatory — 30 queries every run)
 
@@ -502,7 +517,7 @@ Follow [`exploratory-qa/SKILL.md`](../utils/exploratory-qa/SKILL.md) — invent 
 | Scenario | Model | Expected | Actual | Verdict | Notes |
 |----------|-------|----------|--------|---------|-------|
 | Remaining-year budget, no explicit start | … | Multi-fill remaining-year total via deterministic insulin path | … | PASS/FAIL | |
-| Explicit start date narrows window | … | Later start → fewer remaining days/fills than #1 | … | PASS/FAIL | |
+| Explicit start date narrows window | … | Later start → fewer remaining days/fills than #1; `remaining` + `fill` in explanation | … | PASS/FAIL | Anchor month/day must still be in the future (see §2h calendar note) |
 | Duration on mixed basket forces agent loop | … | `response_source != System/MixedBasket`; multi-month total | … | PASS/FAIL | |
 | No-duration mixed basket control | … | `response_source == System/MixedBasket` | … | PASS/FAIL | |
 
