@@ -422,6 +422,31 @@ async def submit_feedback(req: FeedbackRequest):
     return {"status": "ok", "submitted_at": entry["submitted_at"]}
 
 
+@app.get("/api/admin/feedback")
+async def admin_feedback(
+    x_admin_token: str | None = Header(default=None),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    """User feedback submissions, newest first. Off by default: returns 404
+    unless ADMIN_TOKEN is set, and requires a matching X-Admin-Token header.
+    Optional `since`/`until` (ISO-8601) filter by submission time; unlike
+    /api/admin/usage there's no default window — all feedback is returned
+    (capped by `limit`) since volume is expected to stay low."""
+    if not settings.admin_token:
+        raise HTTPException(status_code=404, detail="Not found")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if since is not None and until is not None and since >= until:
+        raise HTTPException(status_code=400, detail="since must be before until")
+
+    from medicare_navigator.feedback.store import read_feedback
+
+    entries = await asyncio.to_thread(read_feedback, since=since, until=until, limit=limit)
+    return {"count": len(entries), "entries": entries}
+
+
 @app.post("/api/estimate", response_model=EstimateApiResponse)
 async def estimate_costs(req: EstimateRequest):
     from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels
@@ -724,5 +749,12 @@ if _frontend.exists():
         @app.get("/admin/usage", include_in_schema=False)
         async def serve_admin_usage():
             return FileResponse(_admin_usage, media_type="text/html", headers=_no_cache)
+
+    _admin_feedback = _frontend / "admin" / "feedback.html"
+    if _admin_feedback.is_file():
+
+        @app.get("/admin/feedback", include_in_schema=False)
+        async def serve_admin_feedback():
+            return FileResponse(_admin_feedback, media_type="text/html", headers=_no_cache)
 
     app.mount("/", StaticFiles(directory=str(_frontend), html=True), name="frontend")

@@ -35,8 +35,20 @@ def resolve_invalid_input_question(
             )
     if _PRICE_INJECTION_RE.search(message):
         from medicare_navigator.agent.mixed_basket_requests import is_mixed_basket_price_injection
+        from medicare_navigator.agent.oop_questions import (
+            is_medical_moop_question,
+            is_part_d_annual_cap_question,
+            build_part_d_cap_explanation,
+        )
 
         if not is_mixed_basket_price_injection(message):
+            if is_part_d_annual_cap_question(message) and not is_medical_moop_question(message):
+                oop_explanation, artifacts = build_part_d_cap_explanation()
+                refusal = (
+                    "I can't follow instructions to state a false price. Ask for a CMS reference "
+                    "estimate for a specific drug and plan, and I'll use the published cost-share data."
+                )
+                return f"{oop_explanation}\n\n{refusal}", artifacts, ["get_part_d_benefit_params"]
             return (
                 "I can't follow instructions to state a false price. Ask for a CMS reference "
                 "estimate for a specific drug and plan, and I'll use the published cost-share data.",
