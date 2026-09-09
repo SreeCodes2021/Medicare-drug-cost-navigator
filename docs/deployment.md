@@ -12,7 +12,7 @@ Single Docker web service with persistent disk at `/data` and in-container super
 | [`Dockerfile`](../Dockerfile) | Multi-stage image: builds `frontend/dist` from `frontend/src`, then uvicorn + supercronic |
 | [`config/deploy.yaml`](../config/deploy.yaml) | **Cron schedule** (`ingest.cron`, UTC) |
 | [`scripts/docker-start.sh`](../scripts/docker-start.sh) | Starts supercronic + uvicorn |
-| [`scripts/run-daily-ingest.sh`](../scripts/run-daily-ingest.sh) | Nightly: `spuf --download --preserve-other` |
+| [`scripts/run-daily-ingest.sh`](../scripts/run-daily-ingest.sh) | Nightly core ingest + weekly pharmacy refresh |
 
 ### First deploy on Render
 
@@ -22,7 +22,7 @@ Single Docker web service with persistent disk at `/data` and in-container super
 3. After deploy, **Shell** on the web service:
 
 ```bash
-medicare-ingest spuf --download
+medicare-ingest spuf --download --with-pharmacy-network --force
 ```
 
 4. Check `GET /api/health` → `data_fresh: true`.
@@ -75,7 +75,7 @@ tail -n 20 /data/feedback.jsonl
 
 ```mermaid
 flowchart LR
-    Scheduler["supercronic 3AM CT (08:00 UTC)"]
+    Scheduler["supercronic 2AM CT (07:00 UTC)"]
     Ingest["run-daily-ingest.sh"]
     CMS[data.cms.gov]
     DataVol["/data volume"]
@@ -91,17 +91,27 @@ flowchart LR
 
 | Command | When |
 |---|---|
-| `medicare-ingest spuf --download` | Production first load + nightly refresh |
+| `medicare-ingest spuf --download --core-only` | Nightly core refresh (default cron) |
+| `medicare-ingest spuf --download --with-pharmacy-network --force` | First load / weekly pharmacy / recovery |
 | `medicare-ingest spuf --source path` | Offline fixture or local zip |
 | `medicare-ingest fetch` | Download CMS zip to `data/raw/` only |
-| `scripts/run-daily-ingest.sh` | Cron entrypoint (`--preserve-other`) |
+| `scripts/run-daily-ingest.sh` | Cron entrypoint (`--preserve-other --core-only`) |
 
 ## Daily schedule
 
-Default: `0 3 * * *` UTC in `config/deploy.yaml`. Equivalent manual run:
+From [`config/deploy.yaml`](../config/deploy.yaml):
+
+| Job | Cron (UTC) | Command |
+|-----|------------|---------|
+| Nightly core | `0 7 * * *` (2:00 AM US Central CDT) | `scripts/run-daily-ingest.sh` |
+| Weekly pharmacy | `0 8 * * 0` (Sunday 3:00 AM CDT) | `scripts/run-daily-ingest.sh --with-pharmacy-network --force` |
+
+Nightly core ingest **skips** when the CMS zip version and `INGEST_STATES` already match `manifest.json` (use `--force` to override). Typical nights with no new CMS release finish in under a minute.
+
+Equivalent manual core run:
 
 ```bash
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
 ```
 
 ### Other platforms
@@ -133,7 +143,8 @@ CHROMA_PATH=/data/chroma
 | Layer | Cleared on nightly ingest? |
 |-------|----------------------------|
 | CMS zip files in `data/raw/` | **No** (reused unless `--force-download`) |
-| SPUF tables (plans, formulary, pricing, beneficiary_cost, insulin_beneficiary_cost) | **Replaced** each run |
+| Core SPUF tables (plans, formulary, pricing, beneficiary_cost, insulin_beneficiary_cost) | **Replaced** each core run |
+| `pharmacy_network` / `pharmacies` | **Kept** on nightly `--core-only`; **replaced** on weekly `--with-pharmacy-network` |
 | Other DuckDB tables | **Kept** when using `--preserve-other` (default in `run-daily-ingest.sh`) |
 | Chroma | **Not touched** by SPUF ingest |
 
@@ -209,7 +220,13 @@ medicare-ingest spuf --download --states CA --merge-states
 **Reload active states** (nightly cron equivalent — uses `INGEST_STATES` env or yaml `states` default):
 
 ```bash
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
+```
+
+**Recovery after a failed ingest** (full core + pharmacy reload):
+
+```bash
+medicare-ingest spuf --download --preserve-other --with-pharmacy-network --force
 ```
 
 After ingest, confirm with the DuckDB state query above or `cat /data/manifest.json`.

@@ -1,11 +1,11 @@
-# Kubernetes CronJob: daily CMS SPUF ingest at 3:00 AM (cluster local time).
+# Kubernetes CronJob: daily CMS SPUF core ingest at 07:00 UTC (2:00 AM US Central CDT).
 # Adjust schedule/timezone and image tag for your environment.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: medicare-spuf-ingest
 spec:
-  schedule: "0 8 * * *"
+  schedule: "0 7 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

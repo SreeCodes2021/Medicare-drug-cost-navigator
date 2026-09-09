@@ -69,6 +69,7 @@ def load_spuf_fixture(
         db=db,
         version="SPUF.2026.20260115",
         preserve_non_spuf_tables=True,
+        include_pharmacy_network=True,
     )
 
 

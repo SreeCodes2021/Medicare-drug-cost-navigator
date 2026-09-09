@@ -616,6 +616,7 @@ def test_ingest_spuf_cms_pharmacy_network_creates_zip_stub_pharmacies(spuf_db, t
         filters=_fl_filters(),
         db=spuf_db,
         version="SPUF.2026.20260115",
+        include_pharmacy_network=True,
     )
     conn = spuf_db.connect()
     try:

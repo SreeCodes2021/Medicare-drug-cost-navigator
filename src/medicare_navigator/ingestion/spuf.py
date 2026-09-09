@@ -70,6 +70,9 @@ INSULIN_PHARMACY_CHANNEL_COLUMNS: dict[str, str] = {
 _PROGRESS_INTERVAL = 500_000
 _WRITE_PARTS = 10
 _FORMULARY_WRITE_PARTS = 100
+# Stream pharmacy-network inserts in fixed batches so we never hold a full CMS part (~5M
+# rows) in memory, and never accumulate rows across parts (OOM on Render Starter).
+_PHARMACY_NETWORK_BATCH = 50_000
 
 _FORMULARY_INSERT_SQL = """
 INSERT INTO basic_drugs_formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -142,6 +145,89 @@ def _insert_in_parts(
         inserted += len(batch)
         _progress(
             f"wrote part {part_num}/{parts} ({inserted:,}/{total:,} rows)",
+            file=label,
+        )
+    return inserted
+
+
+def _insert_pharmacy_network_part(
+    conn,
+    source: Path,
+    pharmacy_member: str | Path,
+    plans: dict[str, dict[str, Any]],
+    *,
+    as_of: str,
+    part_index: int,
+    total_parts: int,
+    pharmacy_network_npis: set[str],
+    pharmacy_zip_by_npi: dict[str, str],
+) -> int:
+    """Scan one CMS pharmacy-network file and insert matching rows."""
+    from medicare_navigator.ingestion.bulk_load import (
+        bulk_insert_pharmacy_network_part,
+        materialize_spuf_member,
+        use_bulk_load,
+    )
+
+    member_path = materialize_spuf_member(source, pharmacy_member)
+    if use_bulk_load(member_path):
+        count, zip_by_npi, npis = bulk_insert_pharmacy_network_part(
+            conn,
+            source,
+            pharmacy_member,
+            as_of=as_of,
+            part_index=part_index,
+            total_parts=total_parts,
+        )
+        pharmacy_network_npis.update(npis)
+        pharmacy_zip_by_npi.update(zip_by_npi)
+        return count
+
+    batch: list[list[Any]] = []
+    inserted = 0
+    label = pharmacy_member
+    for row in _iter_rows(source, pharmacy_member):
+        contract_id = row.get("CONTRACT_ID", "").strip()
+        plan_id = row.get("PLAN_ID", "").strip()
+        plan_key = f"{contract_id}-{plan_id}"
+        if plan_key not in plans:
+            continue
+        membership = _extract_pharmacy_network_row(row)
+        if membership is None:
+            continue
+        npi = membership["npi"]
+        pharmacy_network_npis.add(npi)
+        zip_code = membership.get("zip_code")
+        if zip_code:
+            pharmacy_zip_by_npi[npi] = zip_code
+        batch.append(
+            [
+                plan_key,
+                npi,
+                membership["preferred_yn"],
+                membership["retail_yn"],
+                membership["mail_yn"],
+                membership["ltc_yn"],
+                membership["home_infusion_yn"],
+                as_of,
+            ]
+        )
+        if len(batch) < _PHARMACY_NETWORK_BATCH:
+            continue
+        conn.executemany(_PHARMACY_NETWORK_INSERT_SQL, batch)
+        inserted += len(batch)
+        _progress(
+            f"inserted {inserted:,} pharmacy network row(s) from part "
+            f"{part_index}/{total_parts}...",
+            file=label,
+        )
+        batch = []
+    if batch:
+        conn.executemany(_PHARMACY_NETWORK_INSERT_SQL, batch)
+        inserted += len(batch)
+    if inserted:
+        _progress(
+            f"finished part {part_index}/{total_parts}: {inserted:,} pharmacy network row(s).",
             file=label,
         )
     return inserted
@@ -702,6 +788,7 @@ def ingest_spuf(
     version: str | None = None,
     preserve_non_spuf_tables: bool = False,
     merge_states: bool = False,
+    include_pharmacy_network: bool = False,
 ) -> dict[str, Any]:
     """Load CMS SPUF into DuckDB. Source may be a .zip or directory of pipe-delimited files."""
     filters = filters or IngestFilters.resolve()
@@ -717,33 +804,44 @@ def ingest_spuf(
     ingest_quarter = calendar_quarter_from_date(date.today())
     source_id = f"cms_spuf_{filters.contract_year}_q{ingest_quarter}"
 
+    from medicare_navigator.ingestion.bulk_load import configure_ingest_connection
+
     db = db or DuckDBConnection()
     conn = db.connect()
+    configure_ingest_connection(conn)
     _progress(
         f"Ingesting SPUF into {db.path} "
-        f"(states={','.join(filters.states)}, merge_states={merge_states})...",
+        f"(states={','.join(filters.states)}, merge_states={merge_states}, "
+        f"pharmacy_network={include_pharmacy_network})...",
         file=source,
     )
     try:
+        core_spuf_tables = (
+            "plans",
+            "basic_drugs_formulary",
+            "beneficiary_cost",
+            "insulin_beneficiary_cost",
+            "pricing",
+        )
         if merge_states:
             create_tables(conn, drop_existing=False)
             purged = _purge_states(conn, filters.states)
             if purged:
                 _progress(f"Purged {purged} existing plan(s) for merge.", file="plans")
         elif preserve_non_spuf_tables:
-            for table in (
-                "plans",
-                "basic_drugs_formulary",
-                "beneficiary_cost",
-                "insulin_beneficiary_cost",
-                "pricing",
-                "pharmacy_network",
-            ):
+            for table in core_spuf_tables:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
+            if include_pharmacy_network:
+                conn.execute("DROP TABLE IF EXISTS pharmacy_network")
             create_tables(conn, drop_existing=False)
             purged = 0
         else:
-            create_tables(conn, drop_existing=True)
+            if include_pharmacy_network:
+                create_tables(conn, drop_existing=True)
+            else:
+                for table in core_spuf_tables:
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
+                create_tables(conn, drop_existing=False)
             purged = 0
 
         plans: dict[str, dict[str, Any]] = {}
@@ -852,6 +950,7 @@ def ingest_spuf(
             formulary_by_version.setdefault(fid, {}).setdefault(version_str, []).append(formulary_row)
 
         formulary_drugs = _select_max_version_rows(formulary_by_version)
+        del formulary_by_version
         matched_drugs = sum(len(v) for v in formulary_drugs.values())
         _progress(
             f"scan done: {formulary_scanned:,} rows scanned, "
@@ -897,6 +996,7 @@ def ingest_spuf(
                     len(beneficiary_cost_rows),
                     label=files["beneficiary_cost"],
                 )
+            del beneficiary_cost_rows
 
         insulin_beneficiary_cost_rows: list[list[Any]] = []
         if files.get("insulin_beneficiary_cost"):
@@ -932,60 +1032,50 @@ def ingest_spuf(
                     len(insulin_beneficiary_cost_rows),
                     label=files["insulin_beneficiary_cost"],
                 )
+            del insulin_beneficiary_cost_rows
 
-        pharmacy_network_rows: list[list[Any]] = []
+        formulary_total = _count_formulary_insert_rows(formulary_drugs)
+        _progress(
+            f"Inserting {formulary_total:,} basic_drugs_formulary row(s) into DuckDB "
+            f"in {_FORMULARY_WRITE_PARTS} parts...",
+            file="basic_drugs_formulary",
+        )
+        formulary_inserted = _insert_in_parts(
+            conn,
+            _FORMULARY_INSERT_SQL,
+            _iter_formulary_insert_rows(formulary_drugs, as_of=as_of),
+            formulary_total,
+            label="basic_drugs_formulary",
+            parts=_FORMULARY_WRITE_PARTS,
+        )
+        _progress(
+            f"inserted {formulary_inserted:,} basic_drugs_formulary row(s).",
+            file="basic_drugs_formulary",
+        )
+        del formulary_drugs
+
         pharmacy_network_npis: set[str] = set()
         pharmacy_zip_by_npi: dict[str, str] = {}
         pharmacy_network_parts = files.get("pharmacy_network_parts") or []
         if not pharmacy_network_parts and files.get("pharmacy_network"):
             pharmacy_network_parts = [files["pharmacy_network"]]
-        if pharmacy_network_parts:
+        if include_pharmacy_network and pharmacy_network_parts:
             for part_index, pharmacy_member in enumerate(pharmacy_network_parts, start=1):
                 _progress(
                     f"Loading pharmacy network part {part_index}/{len(pharmacy_network_parts)}...",
                     file=pharmacy_member,
                 )
-                part_rows: list[list[Any]] = []
-                for row in _iter_rows(source, pharmacy_member):
-                    contract_id = row.get("CONTRACT_ID", "").strip()
-                    plan_id = row.get("PLAN_ID", "").strip()
-                    plan_key = f"{contract_id}-{plan_id}"
-                    if plan_key not in plans:
-                        continue
-                    membership = _extract_pharmacy_network_row(row)
-                    if membership is None:
-                        continue
-                    npi = membership["npi"]
-                    pharmacy_network_npis.add(npi)
-                    zip_code = membership.get("zip_code")
-                    if zip_code:
-                        pharmacy_zip_by_npi[npi] = zip_code
-                    part_rows.append(
-                        [
-                            plan_key,
-                            npi,
-                            membership["preferred_yn"],
-                            membership["retail_yn"],
-                            membership["mail_yn"],
-                            membership["ltc_yn"],
-                            membership["home_infusion_yn"],
-                            as_of,
-                        ]
-                    )
-                if part_rows:
-                    _progress(
-                        f"Inserting {len(part_rows):,} pharmacy network row(s) from part "
-                        f"{part_index}/{len(pharmacy_network_parts)} in {_WRITE_PARTS} parts...",
-                        file=pharmacy_member,
-                    )
-                    _insert_in_parts(
-                        conn,
-                        _PHARMACY_NETWORK_INSERT_SQL,
-                        iter(part_rows),
-                        len(part_rows),
-                        label=pharmacy_member,
-                    )
-                    pharmacy_network_rows.extend(part_rows)
+                _insert_pharmacy_network_part(
+                    conn,
+                    source,
+                    pharmacy_member,
+                    plans,
+                    as_of=as_of,
+                    part_index=part_index,
+                    total_parts=len(pharmacy_network_parts),
+                    pharmacy_network_npis=pharmacy_network_npis,
+                    pharmacy_zip_by_npi=pharmacy_zip_by_npi,
+                )
 
             # `pharmacies` is not plan-key-keyed and is never dropped/purged on a state
             # reingest (same NPI can serve multiple states' networks) — dedupe against
@@ -1044,38 +1134,32 @@ def ingest_spuf(
                     )
                 _progress(f"enriched {len(pharmacy_rows):,} pharmacy record(s).", file="pharmacies")
 
-        formulary_total = _count_formulary_insert_rows(formulary_drugs)
-        _progress(
-            f"Inserting {formulary_total:,} basic_drugs_formulary row(s) into DuckDB "
-            f"in {_FORMULARY_WRITE_PARTS} parts...",
-            file="basic_drugs_formulary",
-        )
-        formulary_inserted = _insert_in_parts(
-            conn,
-            _FORMULARY_INSERT_SQL,
-            _iter_formulary_insert_rows(formulary_drugs, as_of=as_of),
-            formulary_total,
-            label="basic_drugs_formulary",
-            parts=_FORMULARY_WRITE_PARTS,
-        )
-        _progress(f"inserted {formulary_inserted:,} basic_drugs_formulary row(s).", file="basic_drugs_formulary")
-
         if files.get("pricing"):
-            _progress("Counting matching pricing rows...", file=files["pricing"])
-            pricing_total = _count_pricing_rows(source, files["pricing"], plans)
-            _progress(
-                f"Inserting {pricing_total:,} pricing row(s) in {_WRITE_PARTS} parts "
-                "(scanning pricing file; may take 20–40 min on Starter)...",
-                file=files["pricing"],
+            from medicare_navigator.ingestion.bulk_load import (
+                bulk_insert_pricing,
+                materialize_spuf_member,
+                use_bulk_load,
             )
-            pricing_inserted = _insert_in_parts(
-                conn,
-                _PRICING_INSERT_SQL,
-                _iter_pricing_insert_rows(source, files["pricing"], plans),
-                pricing_total,
-                label=files["pricing"],
-            )
-            _progress(f"inserted {pricing_inserted:,} pricing row(s).", file=files["pricing"])
+
+            pricing_path = materialize_spuf_member(source, files["pricing"])
+            if use_bulk_load(pricing_path):
+                _progress("Bulk-loading pricing rows (SQL)...", file=files["pricing"])
+                bulk_insert_pricing(conn, source, files["pricing"])
+            else:
+                _progress("Counting matching pricing rows...", file=files["pricing"])
+                pricing_total = _count_pricing_rows(source, files["pricing"], plans)
+                _progress(
+                    f"Inserting {pricing_total:,} pricing row(s) in {_WRITE_PARTS} parts...",
+                    file=files["pricing"],
+                )
+                pricing_inserted = _insert_in_parts(
+                    conn,
+                    _PRICING_INSERT_SQL,
+                    _iter_pricing_insert_rows(source, files["pricing"], plans),
+                    pricing_total,
+                    label=files["pricing"],
+                )
+                _progress(f"inserted {pricing_inserted:,} pricing row(s).", file=files["pricing"])
 
         _progress("Creating indexes...", file="navigator.duckdb")
         create_indexes(conn)

@@ -42,6 +42,7 @@ def _ingest_cms_network_at_zip(tmp_path: Path, *, zip_code: str, plan_key: str =
         ),
         db=db,
         version="SPUF.2026.20260115",
+        include_pharmacy_network=True,
     )
     return db
 

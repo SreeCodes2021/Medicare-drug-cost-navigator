@@ -335,7 +335,7 @@ flowchart LR
     CMS[data.cms.gov]
     User[Users]
 
-    SC -->|0 3 * * * UTC| ING
+    SC -->|0 7 * * * UTC| ING
     ING --> CMS
     ING --> Disk
     UV --> Disk
@@ -629,7 +629,7 @@ Only states present in **both** the requested list and `pdp_region_codes` are in
 | `pdp_region_codes` | all 50 states + DC + territories | Full catalog; MA-PD uses `STATE`, PDP uses region code |
 | `plan_type_prefixes` | S, H | S=PDP, H=local MA-PD |
 
-**Nightly cron** (`run-daily-ingest.sh`) uses `INGEST_STATES` (or yaml defaults) with `--preserve-other` — it **replaces all SPUF tables** with only the active states. To add a state without wiping others, run manually with `--merge-states` (e.g. `medicare-ingest spuf --download --states CA --merge-states`).
+**Nightly cron** (`run-daily-ingest.sh`) uses `INGEST_STATES` (or yaml defaults) with `--preserve-other --core-only`. It reloads plans, formulary, cost shares, and pricing for active states, **skips** when the CMS zip version is unchanged, and **leaves `pharmacy_network` intact**. A weekly job runs `--with-pharmacy-network --force`. To add a state without wiping others, run manually with `--merge-states` (e.g. `medicare-ingest spuf --download --states CA --merge-states`).
 
 ### 5.8 Typical data volumes (2026 AR+TX ingest, default)
 
@@ -1084,7 +1084,7 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | File | Purpose |
 |---|---|
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
-| `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
+| `config/deploy.yaml` | Ingest cron (`0 7 * * *` UTC core, `0 8 * * 0` UTC pharmacy), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
 | `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
 | `config/disclaimer.txt` | UI disclaimer banner + modal; includes a short privacy pointer to the full policy |
 | `config/privacy_policy.txt` | Full privacy policy (`GET /api/privacy`, Privacy menu modal) |
@@ -1304,8 +1304,8 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 
 ### 16.2 Nightly ingest
 
-- Schedule: `config/deploy.yaml` → `ingest.cron: "0 3 * * *"` UTC
-- Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other`
+- Schedule: `config/deploy.yaml` → `ingest.cron: "0 7 * * *"` UTC (core), `ingest.pharmacy_cron: "0 8 * * 0"` UTC (pharmacy)
+- Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other --core-only --core-only`
 - Active states: `INGEST_STATES` env (e.g. `AR,TX,CA`) intersected with `pdp_region_codes` in yaml; falls back to yaml `states` when unset
 - Runs inside container via supercronic (not Render Cron Jobs — disks cannot mount there)
 - **Note:** nightly run reloads only the active states — list every state you want to keep in `INGEST_STATES`. Use `--merge-states` in Shell to add one state without wiping others.
@@ -1338,7 +1338,7 @@ medicare-ingest spuf --source tests/fixtures/spuf
 medicare-ingest spuf --download
 medicare-ingest spuf --download --states AR --merge-states
 medicare-ingest spuf --download --states CA --merge-states
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
 medicare-ingest spuf --source path/to.zip --states AR
 ```
 
@@ -1348,7 +1348,10 @@ medicare-ingest spuf --source path/to.zip --states AR
 | `--source PATH` | Local zip or extracted fixture directory |
 | `--states AR` | Override `INGEST_STATES` env and yaml defaults |
 | `--merge-states` | Replace only listed states (keep others in DB) |
-| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`); nightly cron reloads all SPUF tables for active states only |
+| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`); nightly cron reloads core SPUF tables for active states only |
+| `--core-only` | Skip `pharmacy_network` reload (default for nightly cron) |
+| `--with-pharmacy-network` | Also reload pharmacy network and enrich pharmacies |
+| `--force` | Run ingest even when manifest already has the current CMS zip version |
 | `--force-download` | Ignore cached zip in `data/raw/` |
 | `--monthly` | Use monthly PUF instead of quarterly SPUF |
 
