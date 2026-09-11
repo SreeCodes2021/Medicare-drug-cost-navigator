@@ -480,6 +480,24 @@ def repair_missing_mail_retail_contrast_in_prose(
     return "\n\n".join(leads + [explanation.strip()])
 
 
+def _all_priced_channels_same_cost(
+    channels: dict[str, Any],
+    priced: list[str],
+) -> bool:
+    if len(priced) < 2:
+        return False
+    amounts: set[tuple[float, float]] = set()
+    for name in priced:
+        data = channels.get(name) or {}
+        low = data.get("cost_low")
+        if low is None:
+            return False
+        high = data.get("cost_high")
+        high = float(high if high is not None else low)
+        amounts.add((float(low), high))
+    return len(amounts) == 1
+
+
 def channel_wording_for_channels(channels: dict[str, Any] | None) -> str:
     """Suffix for cost sentences — never implies all four channels when data is partial."""
     coverage = summarize_channels_dict(channels)
@@ -494,8 +512,50 @@ def channel_wording_for_channels(channels: dict[str, Any] | None) -> str:
                 f" ({label} only — CMS data has no matching estimate for other pharmacy channels)"
             )
         return f" ({label})"
+    channels = channels or {}
+    if not missing and _all_priced_channels_same_cost(channels, priced):
+        return " across all CMS pharmacy channels"
     if missing:
         return (
             " depending on pharmacy channel (CMS data is missing for some channels)"
         )
     return " depending on pharmacy channel"
+
+
+def repair_misleading_channel_variance_in_prose(
+    explanation: str,
+    channel_estimates: list[dict[str, Any]] | None,
+) -> str:
+    """Drop 'depending on pharmacy channel' when every priced channel shares one cost."""
+    if not explanation or not channel_estimates:
+        return explanation
+    lower = explanation.lower()
+    if "depending on pharmacy channel" not in lower:
+        return explanation
+
+    uniform = True
+    for est in channel_estimates:
+        if not isinstance(est, dict):
+            continue
+        channels = est.get("channels")
+        if not isinstance(channels, dict):
+            uniform = False
+            break
+        coverage = summarize_channels_dict(channels)
+        priced = coverage["priced_channels"]
+        if len(priced) < 2 or coverage["missing_channels"]:
+            uniform = False
+            break
+        if not _all_priced_channels_same_cost(channels, priced):
+            uniform = False
+            break
+
+    if not uniform:
+        return explanation
+
+    return re.sub(
+        r"\s*depending on pharmacy channel(?:\s*\([^)]*\))?",
+        " across all CMS pharmacy channels",
+        explanation,
+        flags=re.I,
+    )

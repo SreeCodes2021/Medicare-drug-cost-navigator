@@ -456,3 +456,61 @@ def test_apply_guardrails_allows_dollar_amount_missing_trailing_zero():
         "Omeprazole costs $31.5 on this plan.", artifacts
     )
     assert errors == []
+
+
+def _find_pharmacies_artifact(**data_overrides):
+    pharmacy = {
+        "npi": "1841304730",
+        "pharmacy_name": "Icon Pharmacy",
+        "address_line1": "300 E Church St",
+        "city": "Orlando",
+        "state": "FL",
+        "zip_code": "32801",
+        "distance_miles": 0.0,
+        "preferred": True,
+        "channel": "preferred_retail",
+    }
+    pharmacy.update(data_overrides)
+    return {
+        "status": "ok",
+        "source_id": "cms_spuf_2026_q1",
+        "as_of_date": "2026-01-15",
+        "message": None,
+        "data": [pharmacy],
+    }
+
+
+def test_build_citations_find_pharmacies_includes_spuf_and_nppes():
+    artifacts = {"find_pharmacies": _find_pharmacies_artifact()}
+    citations = build_citations_from_artifacts(artifacts)
+    source_ids = {c.source_id for c in citations}
+    assert "cms_spuf_2026_q1" in source_ids
+    assert "nppes_npi_registry" in source_ids
+
+
+def test_build_citations_find_pharmacies_no_match_cites_lookup_message():
+    artifacts = {
+        "find_pharmacies": {
+            "status": "no_match",
+            "source_id": "cms_spuf_2026_q1",
+            "as_of_date": "2026-01-15",
+            "message": "No pharmacies found within 25 miles of ZIP 90001.",
+            "data": None,
+        }
+    }
+    citations = build_citations_from_artifacts(artifacts)
+    assert len(citations) == 1
+    assert "90001" in citations[0].claim
+
+
+def test_build_citations_find_pharmacies_combined_with_estimate_cost():
+    """Q2 (drug cost at preferred pharmacy) has both an estimate and a pharmacy citation —
+    the find_pharmacies branch must not be short-circuited by the estimate citation's
+    early return."""
+    artifacts = {
+        "estimate_drug_cost_all_channels": _all_channels_artifact(),
+        "find_pharmacies": _find_pharmacies_artifact(),
+    }
+    citations = build_citations_from_artifacts(artifacts)
+    source_ids = {c.source_id for c in citations}
+    assert "nppes_npi_registry" in source_ids

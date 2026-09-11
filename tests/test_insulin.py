@@ -15,6 +15,7 @@ from medicare_navigator.agent.insulin_requests import (
     format_insulin_estimate_sentence,
     message_names_non_insulin_cost_drugs,
     resolve_insulin_request,
+    resolve_insulin_session_follow_up,
 )
 
 
@@ -235,6 +236,43 @@ def test_insulin_request_detects_remainder_of_year_wording():
     )
     assert request is not None
     assert request.intent == INSULIN_INTENT_REMAINING_YEAR
+
+
+def test_insulin_session_follow_up_reuses_last_insulin_call_for_ytd_only_message():
+    last_calls = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {
+                "plan_key": "S9999-001",
+                "drug_name": "lantus",
+                "days_supply": 30,
+                "ytd_oop_spend": 0,
+            },
+        }
+    ]
+    request = resolve_insulin_session_follow_up(
+        "what if I've spent $2200 YTD?",
+        last_calls,
+    )
+    assert request is not None
+    assert request.products == ("lantus",)
+    assert request.plan_key == "S9999-001"
+    assert request.ytd_oop_spend == 2200.0
+
+
+def test_insulin_session_follow_up_skips_when_last_call_was_non_insulin():
+    last_calls = [
+        {
+            "name": "estimate_drug_cost_all_channels",
+            "arguments": {
+                "plan_key": "S9999-001",
+                "drug_name": "metformin",
+                "dosage": "500mg",
+                "days_supply": 30,
+            },
+        }
+    ]
+    assert resolve_insulin_session_follow_up("what if I've spent $2200 YTD?", last_calls) is None
 
 
 def test_format_insulin_estimate_sentence_uses_remaining_year_total_not_single_fill():

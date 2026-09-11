@@ -41,6 +41,55 @@ def test_channel_wording_single_priced_channel():
     assert "no matching estimate" in note
 
 
+def test_channel_wording_single_priced_channel():
+    channels = {
+        "preferred_retail": {"cost_low": None},
+        "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+        "preferred_mail": {"cost_low": None},
+        "standard_mail": {"cost_low": None},
+    }
+    note = channel_wording_for_channels(channels)
+    assert "Standard retail only" in note
+    assert "no matching estimate" in note
+
+
+def test_channel_wording_uniform_costs_across_all_priced_channels():
+    channels = {
+        "preferred_retail": {"cost_low": 0.0, "cost_high": 0.0},
+        "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+        "preferred_mail": {"cost_low": 0.0, "cost_high": 0.0},
+        "standard_mail": {"cost_low": 0.0, "cost_high": 0.0},
+    }
+    note = channel_wording_for_channels(channels)
+    assert note == " across all CMS pharmacy channels"
+
+
+def test_repair_misleading_channel_variance_in_prose():
+    from medicare_navigator.guardrails.channel_parity import (
+        repair_misleading_channel_variance_in_prose,
+    )
+
+    estimates = [
+        {
+            "plan_key": "S9999-001",
+            "drug_name": "lantus",
+            "channels": {
+                "preferred_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                "standard_retail": {"cost_low": 0.0, "cost_high": 0.0},
+                "preferred_mail": {"cost_low": 0.0, "cost_high": 0.0},
+                "standard_mail": {"cost_low": 0.0, "cost_high": 0.0},
+            },
+        }
+    ]
+    prose = (
+        "Lantus (Tier 3) for a 30-day supply on S9999-001 is estimated at $0.00 "
+        "depending on pharmacy channel."
+    )
+    repaired = repair_misleading_channel_variance_in_prose(prose, estimates)
+    assert "depending on pharmacy channel" not in repaired.lower()
+    assert "across all cms pharmacy channels" in repaired.lower()
+
+
 def test_channel_coverage_note_lists_missing_channels():
     coverage = summarize_channel_coverage(
         [

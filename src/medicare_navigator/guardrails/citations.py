@@ -12,6 +12,7 @@ from medicare_navigator.guardrails.channel_parity import (
     repair_false_unavailable_prose,
     repair_missing_mail_retail_contrast_in_prose,
     repair_missing_tier_in_prose,
+    repair_misleading_channel_variance_in_prose,
     summarize_channel_coverage,
     text_claims_no_estimate,
     deterministic_cost_explanation,
@@ -234,6 +235,32 @@ def build_citations_from_artifacts(
             _add_estimate_citation(artifact)
     else:
         _add_estimate_citation(_primary_estimate_artifact(tool_artifacts))
+
+    pharmacy_artifact = tool_artifacts.get("find_pharmacies")
+    if pharmacy_artifact and pharmacy_artifact.get("source_id"):
+        status = pharmacy_artifact.get("status")
+        source_id = pharmacy_artifact["source_id"]
+        if status == "ok":
+            citations.append(
+                Citation(
+                    claim="Pharmacy network membership from CMS SPUF Pharmacy Network file",
+                    source_id=source_id,
+                    as_of_date=pharmacy_artifact.get("as_of_date", ""),
+                    source_label=label_for_source_id(source_id),
+                    url=url_for_source_id(source_id),
+                )
+            )
+            citations.append(
+                Citation(
+                    claim="Pharmacy name/address from the NPPES NPI Registry",
+                    source_id="nppes_npi_registry",
+                    as_of_date=pharmacy_artifact.get("as_of_date", ""),
+                    source_label=label_for_source_id("nppes_npi_registry"),
+                    url=url_for_source_id("nppes_npi_registry"),
+                )
+            )
+        elif status in _CITABLE_LOOKUP_STATUSES or status == "no_match":
+            citations.append(_citation_from_artifact(pharmacy_artifact))
 
     if citations:
         return citations
@@ -728,6 +755,7 @@ def apply_guardrails(
     out = repair_missing_mail_retail_contrast_in_prose(
         out, channel_estimates, user_message
     )
+    out = repair_misleading_channel_variance_in_prose(out, channel_estimates)
     cites = list(citations or build_citations_from_artifacts(tool_artifacts))
 
     valid_source_ids = extract_source_ids(tool_artifacts)

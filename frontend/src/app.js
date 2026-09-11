@@ -16,6 +16,9 @@ let cachedPrivacyText = "";
 let emptyStateHtml = "";
 let guidedSessionId = null;
 let guidedTurnCount = 0;
+// Which guided sub-tab is active (single/multidrug/compareplans) — sent as the
+// analytics-only `mode` field on /api/chat so usage can be broken out per flow.
+let guidedSubmode = "single";
 
 const DEFAULT_MODEL = "gpt-5.6-luna";
 const MODEL_OPTIONS = [
@@ -607,11 +610,11 @@ async function loadDisclaimer() {
     const res = await fetch(`${API}/api/disclaimer`);
     const data = await res.json();
     cachedDisclaimerText = data.text;
-    el("disclaimer-text").textContent = data.text;
+    el("disclaimer-text").innerHTML = formatPolicyTextToHtml(data.text);
   } catch {
     cachedDisclaimerText =
       "Disclaimer: This tool is for informational purposes only. The model can make mistakes. This is not medical advice.";
-    el("disclaimer-text").textContent = cachedDisclaimerText;
+    el("disclaimer-text").innerHTML = formatPolicyTextToHtml(cachedDisclaimerText);
   }
 }
 
@@ -654,6 +657,124 @@ function closeInfoModal() {
   document.body.classList.remove("modal-open");
 }
 
+function populateFeedbackStateOptions() {
+  const select = el("feedback-state");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">Select a state</option>';
+  for (const state of availableStates) {
+    const option = document.createElement("option");
+    option.value = state;
+    option.textContent = state;
+    select.appendChild(option);
+  }
+  if (current && availableStates.includes(current)) select.value = current;
+}
+
+function setFeedbackStatus(message, type = "") {
+  const status = el("feedback-status");
+  status.textContent = message;
+  status.classList.remove("hidden", "is-error", "is-success");
+  if (type) status.classList.add(type === "error" ? "is-error" : "is-success");
+}
+
+function clearFeedbackStatus() {
+  const status = el("feedback-status");
+  status.textContent = "";
+  status.classList.add("hidden");
+  status.classList.remove("is-error", "is-success");
+}
+
+function hasAssistantMessages(containerId) {
+  const container = el(containerId);
+  return Boolean(container?.querySelector(".message.assistant"));
+}
+
+function setInlineFeedbackEnabled(buttonId, enabled) {
+  const button = el(buttonId);
+  if (!button) return;
+  button.disabled = !enabled;
+  button.setAttribute("aria-disabled", enabled ? "false" : "true");
+}
+
+function updateInlineFeedbackAvailability() {
+  setInlineFeedbackEnabled("chat-feedback-btn", hasAssistantMessages("chat-messages"));
+  setInlineFeedbackEnabled("guided-feedback-btn", hasAssistantMessages("guided-chat-messages"));
+}
+
+function openFeedbackModal() {
+  closeMenu();
+  clearFeedbackStatus();
+  el("feedback-message").value = "";
+  el("feedback-zip").value = "";
+  populateFeedbackStateOptions();
+  const guidedPanel = el("mode-guided");
+  const inGuidedMode = guidedPanel && !guidedPanel.classList.contains("hidden");
+  if (inGuidedMode) {
+    const guidedZip = el("guided-zip-input")?.value.trim();
+    if (guidedZip) el("feedback-zip").value = guidedZip;
+    if (guidedState) el("feedback-state").value = guidedState;
+  } else {
+    const chatZip = getChatZip();
+    if (chatZip) el("feedback-zip").value = chatZip;
+    if (chatState) el("feedback-state").value = chatState;
+  }
+  el("feedback-modal").classList.remove("hidden");
+  document.documentElement.classList.add("modal-open");
+  document.body.classList.add("modal-open");
+  el("feedback-message").focus();
+}
+
+function closeFeedbackModal() {
+  el("feedback-modal").classList.add("hidden");
+  document.documentElement.classList.remove("modal-open");
+  document.body.classList.remove("modal-open");
+  clearFeedbackStatus();
+}
+
+async function submitFeedbackForm(event) {
+  event.preventDefault();
+  const message = el("feedback-message").value.trim();
+  const state = el("feedback-state").value.trim();
+  const zip = el("feedback-zip").value.trim();
+  if (!message) {
+    setFeedbackStatus("Please enter a message before sending.", "error");
+    return;
+  }
+
+  const submitBtn = el("feedback-submit");
+  submitBtn.disabled = true;
+  clearFeedbackStatus();
+  try {
+    const res = await fetch(`${API}/api/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        state: state || null,
+        zip: zip || null,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail;
+      const errorText = Array.isArray(detail)
+        ? detail.map((item) => item.msg || item).join(" ")
+        : detail || "Could not send feedback. Please try again.";
+      setFeedbackStatus(errorText, "error");
+      return;
+    }
+    setFeedbackStatus("Thanks — your feedback was sent.", "success");
+    el("feedback-message").value = "";
+    window.setTimeout(() => closeFeedbackModal(), 1200);
+  } catch (err) {
+    console.error(err);
+    setFeedbackStatus("Could not send feedback. Please try again.", "error");
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
 const ABOUT_APP_HTML = `
   <p>Estimates what a specific prescription drug will cost on a specific Medicare Part D or Medicare Advantage-with-Part-D plan, using CMS's own published formulary and pricing data — before you go to the pharmacy.</p>
   <p>Every dollar figure traces back to a specific CMS record; it isn't guessed by the AI model.</p>
@@ -670,7 +791,7 @@ function showAboutModal() {
 function showDisclaimerModal() {
   closeMenu();
   const text = cachedDisclaimerText || el("disclaimer-text").textContent || "";
-  openInfoModal("Disclaimer", `<p>${escapeHtml(text)}</p>`);
+  openInfoModal("Disclaimer", formatPolicyTextToHtml(text));
 }
 
 async function showPrivacyModal() {
@@ -684,7 +805,7 @@ async function showPrivacyModal() {
       cachedPrivacyText = "Privacy policy could not be loaded right now. Please try again shortly.";
     }
   }
-  openInfoModal("Privacy policy", `<p>${escapeHtml(cachedPrivacyText)}</p>`);
+  openInfoModal("Privacy policy", formatPolicyTextToHtml(cachedPrivacyText));
 }
 
 // ---- New chat ----
@@ -731,6 +852,8 @@ function resetChat() {
   el("chat-input").value = "";
   el("chat-input").focus();
   updateChatComposerHint();
+  updateInlineFeedbackAvailability();
+  clearSearchUrl();
 }
 
 function updateChatComposerHint() {
@@ -742,11 +865,20 @@ function updateChatComposerHint() {
 
 function updatePlanLoadHint(count, message) {
   const hint = el("plan-load-hint");
+  if (!hint) return;
   if (message) {
     hint.textContent = message;
     return;
   }
-  hint.textContent = count > 0 ? `${count} plan(s) loaded` : "No plans in database yet";
+  if (!guidedState) {
+    hint.textContent =
+      allPlans.length > 0
+        ? "Select a state above to see available plans"
+        : "No plans in database yet";
+    return;
+  }
+  hint.textContent =
+    count > 0 ? `${count} plan(s) in ${guidedState}` : `No plans in ${guidedState}`;
 }
 
 function formatPlanLabel(plan) {
@@ -981,6 +1113,7 @@ function onGuidedStateChanged(state) {
   refreshSingleDrugPickers();
   refreshMultiDrugPickers();
   refreshCompareDrugPickers();
+  updatePlanLoadHint(guidedScopedPlans().length);
   updateGuidedSubmitButtonState();
 }
 
@@ -1037,11 +1170,66 @@ function isGuidedComparePlansValid() {
   );
 }
 
+function setFieldMandatoryVisible(msgEl, show) {
+  if (!msgEl) return;
+  msgEl.hidden = !show;
+  msgEl.classList.toggle("hidden", !show);
+}
+
+function isComboboxInputEnabled(inputId) {
+  const input = el(inputId);
+  return Boolean(input && !input.disabled);
+}
+
+function updateGuidedMandatoryHints() {
+  setFieldMandatoryVisible(el("guided-state-mandatory"), !guidedState);
+
+  if (guidedSubmode === "single") {
+    setFieldMandatoryVisible(el("filter-plan-mandatory"), Boolean(guidedState && !el("filter-plan").value));
+    setFieldMandatoryVisible(
+      el("filter-drug-mandatory"),
+      isComboboxInputEnabled("filter-drug-input") && !el("filter-drug").value.trim()
+    );
+    setFieldMandatoryVisible(
+      el("filter-dosage-mandatory"),
+      isComboboxInputEnabled("filter-dosage-input") && !el("filter-dosage").value.trim()
+    );
+  }
+
+  if (guidedSubmode === "multidrug") {
+    const planId = el("md-plan").value;
+    setFieldMandatoryVisible(el("md-plan-mandatory"), Boolean(guidedState && !planId));
+    drugRows.forEach(({ picker, drugMandatoryEl, dosageMandatoryEl }) => {
+      const drug = picker.getDrug();
+      const dosage = picker.getDosage();
+      const drugEnabled = isComboboxInputEnabled(picker.drugInputId);
+      setFieldMandatoryVisible(drugMandatoryEl, drugEnabled && !drug);
+      setFieldMandatoryVisible(dosageMandatoryEl, Boolean(drug && !dosage));
+    });
+  }
+
+  if (guidedSubmode === "compareplans") {
+    setFieldMandatoryVisible(
+      el("cp-drug-mandatory"),
+      isComboboxInputEnabled("cp-drug-input") && !el("cp-drug").value.trim()
+    );
+    setFieldMandatoryVisible(
+      el("cp-dosage-mandatory"),
+      isComboboxInputEnabled("cp-dosage-input") && !el("cp-dosage").value.trim()
+    );
+    comparePlanRows.forEach(({ combobox, planMandatoryEl }, index) => {
+      const showPlanMandatory = Boolean(guidedState && index < 2 && !combobox.getValue());
+      setFieldMandatoryVisible(planMandatoryEl, showPlanMandatory);
+    });
+  }
+}
+
 function updateGuidedSubmitButtonState() {
   const lock = guidedEstimateInFlight;
   el("guided-submit").disabled = lock || !isGuidedSingleValid();
   el("multidrug-submit").disabled = lock || !isGuidedMultiDrugValid();
   el("compareplans-submit").disabled = lock || !isGuidedComparePlansValid();
+  updateGuidedMandatoryHints();
 }
 
 const primaryPlanCombobox = createPlanCombobox({
@@ -1099,7 +1287,7 @@ async function loadPlans(contractYear = null) {
     throw new Error("plans API returned non-array");
   }
   populatePlanSelect(plans);
-  updatePlanLoadHint(plans.length);
+  updatePlanLoadHint(guidedScopedPlans().length);
   return plans.length;
 }
 
@@ -1157,6 +1345,7 @@ async function loadStates() {
     console.warn("Could not load states", e);
     availableStates = [];
   }
+  populateFeedbackStateOptions();
   return availableStates;
 }
 
@@ -1976,48 +2165,54 @@ function createDrugRowElement() {
   row.className = "repeatable-row";
   row.dataset.rowId = String(idx);
   row.innerHTML = `
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="md-drug-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Click to select a drug"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="md-drug-listbox-${idx}"
-        aria-autocomplete="list"
-        readonly
-      />
-      <input type="hidden" id="md-drug-${idx}" value="" />
-      <div id="md-drug-panel-${idx}" class="plan-dropdown-panel hidden" role="presentation">
+    <div class="repeatable-field">
+      <div class="plan-combobox">
         <input
           type="text"
-          id="md-drug-filter-${idx}"
-          class="combobox-filter"
-          placeholder="Search drugs…"
+          id="md-drug-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Click to select a drug"
           autocomplete="off"
-          aria-label="Search drugs"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="md-drug-listbox-${idx}"
+          aria-autocomplete="list"
+          readonly
         />
-        <ul id="md-drug-listbox-${idx}" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+        <input type="hidden" id="md-drug-${idx}" value="" />
+        <div id="md-drug-panel-${idx}" class="plan-dropdown-panel hidden" role="presentation">
+          <input
+            type="text"
+            id="md-drug-filter-${idx}"
+            class="combobox-filter"
+            placeholder="Search drugs…"
+            autocomplete="off"
+            aria-label="Search drugs"
+          />
+          <ul id="md-drug-listbox-${idx}" class="plan-listbox plan-listbox--in-panel" role="listbox" aria-label="Drugs"></ul>
+        </div>
       </div>
+      <span class="field-mandatory-msg hidden" id="md-drug-mandatory-${idx}" hidden>Mandatory</span>
     </div>
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="md-dosage-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Select a drug first"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="md-dosage-listbox-${idx}"
-        aria-autocomplete="list"
-        readonly
-        disabled
-      />
-      <input type="hidden" id="md-dosage-${idx}" value="" />
-      <ul id="md-dosage-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+    <div class="repeatable-field">
+      <div class="plan-combobox">
+        <input
+          type="text"
+          id="md-dosage-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Select a drug first"
+          autocomplete="off"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="md-dosage-listbox-${idx}"
+          aria-autocomplete="list"
+          readonly
+          disabled
+        />
+        <input type="hidden" id="md-dosage-${idx}" value="" />
+        <ul id="md-dosage-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Dosages"></ul>
+      </div>
+      <span class="field-mandatory-msg hidden" id="md-dosage-mandatory-${idx}" hidden>Mandatory</span>
     </div>
     <button type="button" class="repeatable-row-remove" aria-label="Remove drug" title="Remove drug">&times;</button>
   `;
@@ -2037,7 +2232,13 @@ function createDrugRowElement() {
   picker.init();
   const planId = el("md-plan").value;
   picker.setDrugDisabled(!planId, planId ? "Click to select a drug" : "Select a plan first");
-  const entry = { row, picker };
+  const entry = {
+    row,
+    picker,
+    drugMandatoryEl: el(`md-drug-mandatory-${idx}`),
+    dosageMandatoryEl: el(`md-dosage-mandatory-${idx}`),
+  };
+  picker.drugInputId = `md-drug-input-${idx}`;
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => removeDrugRow(entry));
   return entry;
 }
@@ -2093,20 +2294,23 @@ function createComparePlanRowEntry() {
   row.className = "repeatable-row";
   row.dataset.rowId = String(idx);
   row.innerHTML = `
-    <div class="plan-combobox">
-      <input
-        type="text"
-        id="cp-plan-input-${idx}"
-        class="plan-combobox-input"
-        placeholder="Type or scroll to select a plan"
-        autocomplete="off"
-        role="combobox"
-        aria-expanded="false"
-        aria-controls="cp-plan-listbox-${idx}"
-        aria-autocomplete="list"
-      />
-      <input type="hidden" id="cp-plan-${idx}" value="" />
-      <ul id="cp-plan-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+    <div class="repeatable-field">
+      <div class="plan-combobox">
+        <input
+          type="text"
+          id="cp-plan-input-${idx}"
+          class="plan-combobox-input"
+          placeholder="Type or scroll to select a plan"
+          autocomplete="off"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="cp-plan-listbox-${idx}"
+          aria-autocomplete="list"
+        />
+        <input type="hidden" id="cp-plan-${idx}" value="" />
+        <ul id="cp-plan-listbox-${idx}" class="plan-listbox hidden" role="listbox" aria-label="Medicare plans"></ul>
+      </div>
+      <span class="field-mandatory-msg hidden" id="cp-plan-mandatory-${idx}" hidden>Mandatory</span>
     </div>
     <button type="button" class="repeatable-row-remove" aria-label="Remove plan" title="Remove plan">&times;</button>
   `;
@@ -2126,7 +2330,11 @@ function createComparePlanRowEntry() {
   row.querySelector(".repeatable-row-remove").addEventListener("click", () => {
     removeComparePlanRow(entry);
   });
-  const entry = { row, combobox };
+  const entry = {
+    row,
+    combobox,
+    planMandatoryEl: el(`cp-plan-mandatory-${idx}`),
+  };
   return entry;
 }
 
@@ -2174,6 +2382,7 @@ function switchGuidedSubmode(mode) {
     multidrug: "multidrug-submit",
     compareplans: "compareplans-submit",
   };
+  guidedSubmode = mode;
   closeAllDrugPickers();
   ["single", "multidrug", "compareplans"].forEach((m) => {
     const isActive = m === mode;
@@ -2351,6 +2560,77 @@ function getFilters() {
   return Object.keys(filters).length ? filters : null;
 }
 
+function getChatZip() {
+  const input = el("chat-zip-input");
+  return input ? input.value.trim() : "";
+}
+
+function buildSearchParams({ message, filters, zip } = {}) {
+  const params = new URLSearchParams();
+  if (message?.trim()) params.set("q", message.trim());
+  const f = filters || getFilters() || {};
+  if (f.drug) params.set("drug", f.drug);
+  if (f.dosage) params.set("dosage", f.dosage);
+  if (f.plan_id) params.set("plan", f.plan_id);
+  if (f.days_supply) params.set("days", String(f.days_supply));
+  if (f.ytd_oop_spend) params.set("ytd", String(f.ytd_oop_spend));
+  const zipCode = zip ?? getChatZip();
+  if (zipCode) params.set("zip", zipCode);
+  return params;
+}
+
+function syncUrlFromSearch({ message, filters, zip } = {}) {
+  const params = buildSearchParams({ message, filters, zip });
+  const qs = params.toString();
+  const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  history.replaceState(null, "", newUrl);
+}
+
+function clearSearchUrl() {
+  history.replaceState(null, "", window.location.pathname);
+}
+
+function composeMessageFromParams(params) {
+  const drug = params.get("drug");
+  const dosage = params.get("dosage");
+  const plan = params.get("plan");
+  const zip = params.get("zip");
+  const days = params.get("days");
+  const ytd = params.get("ytd");
+
+  if (!drug && !plan && !zip) return "";
+
+  if (drug) {
+    let message = `How much will ${drug}`;
+    if (dosage) message += ` ${dosage}`;
+    message += " cost";
+    if (plan) message += ` on plan ${plan}`;
+    if (zip) message += ` near zip ${zip}`;
+    if (days) message += ` for a ${days}-day supply`;
+    if (ytd) message += ` if I've already spent $${ytd} this year`;
+    return `${message}?`;
+  }
+  if (zip && plan) return `What pharmacies are near zip ${zip} on plan ${plan}?`;
+  if (zip) return `What pharmacies are near zip ${zip}?`;
+  return "";
+}
+
+function hydrateFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const q = params.get("q");
+  if (q) {
+    void sendMessage(q);
+    return;
+  }
+  const zip = params.get("zip");
+  if (zip) {
+    const zipInput = el("chat-zip-input");
+    if (zipInput) zipInput.value = zip;
+  }
+  const message = composeMessageFromParams(params);
+  if (message) void sendMessage(message);
+}
+
 function escapeAttr(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -2361,6 +2641,23 @@ function escapeAttr(value) {
 
 function escapeHtml(value) {
   return escapeAttr(value);
+}
+
+function formatPolicyTextToHtml(text) {
+  if (!text) return "";
+  return text
+    .trim()
+    .split(/\n\n+/)
+    .map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return "";
+      if (trimmed.startsWith("## ")) {
+        return `<h3>${escapeHtml(trimmed.slice(3).trim())}</h3>`;
+      }
+      return `<p>${escapeHtml(trimmed)}</p>`;
+    })
+    .filter(Boolean)
+    .join("");
 }
 
 function withFieldInfo(label, tipId) {
@@ -2684,6 +2981,7 @@ function appendMessage(role, text, source, citations, usage, containerId = "chat
 
   container.appendChild(div);
   div.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (role === "assistant") updateInlineFeedbackAvailability();
 }
 
 function showLoading(text) {
@@ -2907,6 +3205,7 @@ function showGuidedError(message) {
 }
 
 function promptGuidedMandatoryFields() {
+  updateGuidedMandatoryHints();
   showGuidedError("Please fill in all required fields above.");
 }
 
@@ -2989,6 +3288,7 @@ function chatErrorMessage(res, data) {
 async function sendMessage(message, { switchToChat = false } = {}) {
   if (!message.trim()) return;
   appendMessage("user", message);
+  syncUrlFromSearch({ message });
   el("chat-input").value = "";
   el("send-btn").disabled = true;
   el("guided-submit").disabled = true;
@@ -3004,6 +3304,10 @@ async function sendMessage(message, { switchToChat = false } = {}) {
       filters: getFilters(),
       model: getSelectedModel(),
       timezone: getUserTimezone(),
+      // Aggregate usage-analytics labels only — never used to filter or adjust
+      // cost estimates (see collector.py / _normalize_region).
+      region: chatState || null,
+      mode: "chat",
     };
 
     const res = await fetch(`${API}/api/chat`, {
@@ -3110,6 +3414,7 @@ function resetGuidedConversation() {
   el("guided-chat-input").value = "";
   el("guided-chat-input").disabled = true;
   el("guided-send-btn").disabled = true;
+  updateInlineFeedbackAvailability();
 }
 
 function renderGuidedResponse(resp) {
@@ -3148,6 +3453,16 @@ function updateGuidedFollowupAvailability() {
       : "Ask a follow-up about this estimate";
 }
 
+// Maps the active guided sub-tab to the analytics `mode` value the backend expects.
+function guidedAnalyticsMode() {
+  const bySubmode = {
+    single: "guided_single",
+    multidrug: "guided_compare_drug",
+    compareplans: "guided_compare_plan",
+  };
+  return bySubmode[guidedSubmode] || "guided_single";
+}
+
 async function sendGuidedInitial(message, filters = null) {
   resetGuidedConversation();
   await sendGuidedMessage(message, { filters });
@@ -3176,6 +3491,10 @@ async function sendGuidedMessage(message, { filters = null } = {}) {
         filters,
         model: getSelectedModel("guided-model-select"),
         timezone: getUserTimezone(),
+        // Aggregate usage-analytics labels only — never used to filter or adjust
+        // cost estimates (see collector.py / _normalize_region).
+        region: guidedState || null,
+        mode: guidedAnalyticsMode(),
       }),
     });
     const contentType = res.headers.get("content-type") || "";
@@ -3305,13 +3624,24 @@ el("menu-btn").addEventListener("click", (event) => {
   event.stopPropagation();
   toggleMenu();
 });
+el("topbar-home").addEventListener("click", resetChat);
+el("topbar-new-chat").addEventListener("click", resetChat);
 el("menu-new-chat").addEventListener("click", resetChat);
+el("topbar-feedback").addEventListener("click", openFeedbackModal);
+el("chat-feedback-btn").addEventListener("click", openFeedbackModal);
+el("guided-feedback-btn").addEventListener("click", openFeedbackModal);
 el("menu-about").addEventListener("click", showAboutModal);
 el("menu-disclaimer").addEventListener("click", showDisclaimerModal);
 el("menu-privacy").addEventListener("click", showPrivacyModal);
 el("info-modal-close").addEventListener("click", closeInfoModal);
 el("info-modal").addEventListener("click", (event) => {
   if (event.target.dataset.action === "close-info-modal") closeInfoModal();
+});
+el("feedback-modal-close").addEventListener("click", closeFeedbackModal);
+el("feedback-cancel").addEventListener("click", closeFeedbackModal);
+el("feedback-form").addEventListener("submit", submitFeedbackForm);
+el("feedback-modal").addEventListener("click", (event) => {
+  if (event.target.dataset.action === "close-feedback-modal") closeFeedbackModal();
 });
 
 document.addEventListener("click", (event) => {
@@ -3323,6 +3653,10 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (!el("feedback-modal").classList.contains("hidden")) {
+    closeFeedbackModal();
+    return;
+  }
   if (!el("info-modal").classList.contains("hidden")) {
     closeInfoModal();
     return;
@@ -3354,6 +3688,7 @@ loadStates();
 async function initDataAndPlans() {
   await loadDataRelease();
   await pollPlansUntilLoaded();
+  hydrateFromUrl();
 }
 void initDataAndPlans();
 resetGuidedConversation();

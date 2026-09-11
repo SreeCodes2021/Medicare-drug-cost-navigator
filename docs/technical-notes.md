@@ -1,6 +1,6 @@
 # Medicare Drug Cost Navigator — Technical Notes
 
-Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope plus the subsequent insulin-cap and mixed-basket work (see [navigator-implementation-spec.md](./navigator-implementation-spec.md), [phase-6-implementation-plan.md](./phase-6-implementation-plan.md), and [insulin-cost-estimation.md](./insulin-cost-estimation.md)).
+Developer reference for running, developing, testing, and deploying the system. This document reflects **Phase 6** scope plus the subsequent insulin-cap, mixed-basket, and ZIP pharmacy-locator work (see [navigator-implementation-spec.md](./navigator-implementation-spec.md), [insulin-cost-estimation.md](./insulin-cost-estimation.md), and the [Developer Guide](./developer-guide.md), which is the canonical/actively-maintained reference — this file overlaps it and may lag behind on newer features).
 
 ---
 
@@ -88,8 +88,9 @@ The LLM is a **conversational layer** over deterministic MCP tools plus a statel
 |---|---|---|
 | **CMS SPUF** (quarterly zip) | HTTPS download from data.cms.gov | `medicare-ingest spuf` → DuckDB |
 | **RxNorm REST API** (NLM) | HTTPS JSON | `normalize_drug()` (internal to cost pipeline) |
+| **NPPES NPI Registry API** (CMS) | HTTPS JSON, no auth | `ingestion/npi_enrichment.py` — pharmacy name/address enrichment, at ingest time and (for unresolved stubs) at pharmacy-locator query time |
 
-Offline tests use `tests/fixtures/spuf/` — no network required for pytest.
+Offline tests use `tests/fixtures/spuf/` — no network required for pytest. ZIP-centroid distances for the pharmacy locator come from a static, committed CSV (`config/zip_centroids.csv`), not a live source.
 
 ### 2.5 Infrastructure and ops
 
@@ -133,7 +134,7 @@ flowchart TB
         Med["Mediator — optional 2nd LLM call\n(MEDIATOR_ENABLED, rewrite + date extraction only)"]
         Nav[Navigator agent]
         LLM[LLM client — Anthropic / OpenAI / mock]
-        MCP[MCP registry — 5 tools]
+        MCP[MCP registry — 6 tools]
         Guard[Guardrails + citations]
         Session[Session manager — in-memory]
     end
@@ -638,6 +639,17 @@ as_of_date VARCHAR
 -- drugs (RxNorm cache, optional)
 drug_name, rxcui, ndc, dosage, ingredient VARCHAR
 
+-- pharmacy_network (CMS pharmacy-network file; column layout unconfirmed, ingested defensively)
+plan_key, npi VARCHAR
+preferred_yn, retail_yn, mail_yn, ltc_yn, home_infusion_yn BOOLEAN
+as_of_date VARCHAR
+
+-- pharmacies (NPPES enrichment; not plan-key-keyed, never purged per state)
+npi VARCHAR PRIMARY KEY
+pharmacy_name, address_line1, city, state, zip_code, phone VARCHAR
+enrichment_source VARCHAR    -- nppes_api | nppes_offline | cms_pharmacy_zipcode (stub)
+as_of_date VARCHAR
+
 -- query_log (analytics)
 query_id, session_id, tools_invoked, statuses VARCHAR
 latency_ms DOUBLE, created_at TIMESTAMP
@@ -651,6 +663,8 @@ latency_ms DOUBLE, created_at TIMESTAMP
 | `idx_plans_state_year` | `(state, contract_year)` |
 | `idx_beneficiary_cost_lookup` | `(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)` |
 | `idx_pricing_plan_ndc` | `(plan_key, ndc, days_supply)` |
+| `idx_pharmacy_network_plan` | `(plan_key, preferred_yn)` |
+| `idx_pharmacies_zip` | `(zip_code)` |
 
 Indexes are dropped before bulk deletes during ingest (DuckDB ART index delete bug), then recreated.
 
@@ -679,7 +693,7 @@ SCHEMA_MIGRATIONS = (
 
 ## 10. API reference
 
-Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
+Base URL: `http://localhost:8000` (dev) or `https://medicare-drug-cost.onrender.com` (prod).
 
 ### 10.1 Endpoints
 
@@ -693,6 +707,7 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `POST` | `/api/query` | Structured + message query → `QueryResponse` |
 | `POST` | `/api/chat` | Conversational turn → `ChatResponse` (accepts optional `model` override) |
 | `POST` | `/api/estimate` | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels`, no LLM call) |
+| `POST` | `/api/feedback` | User feedback — appends to `{DATA_DIR}/feedback.jsonl` |
 | `GET` | `/` | SPA (`frontend/dist/index.html`) |
 
 ### 10.2 `POST /api/chat`
@@ -744,7 +759,17 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 
 **HTTP errors:** `503` (LLM not configured), `502` (LLM request failed after retries).
 
-### 10.3 `GET /api/health` fields
+### 10.3 `POST /api/feedback`
+
+Appends user feedback to `{DATA_DIR}/feedback.jsonl` (one JSON object per line). Not counted in usage analytics.
+
+**Request:** `{ "message": "…", "state": "TX", "zip": "75001" }` — `state` and `zip` optional; validated as 2-letter state and 5-digit ZIP.
+
+**Response:** `{ "status": "ok", "submitted_at": "…" }`
+
+**HTTP errors:** `400` (empty message, invalid state/ZIP, message > 2000 chars).
+
+### 10.4 `GET /api/health` fields
 
 | Field | Meaning |
 |---|---|
@@ -766,6 +791,7 @@ Base URL: `http://localhost:8000` (dev) or `https://<app>.onrender.com` (prod).
 | `estimate_drug_cost_all_channels` | Yes | `tools/estimate_drug_cost.py` — all four CMS channels in one call; default tool for general cost questions |
 | `lookup_plan` | Yes | `tools/lookup_plan.py` |
 | `list_plans` | Yes | `storage/repository.py` → `PlanRepository.list_plans` |
+| `find_pharmacies` | Yes | `tools/pharmacy_lookup.py` — CMS pharmacy-network locator by ZIP (fixed 25-mile straight-line radius); also reachable via deterministic pre-LLM routing in `agent/pharmacy_questions.py`. See [Developer Guide §8.2](./developer-guide.md#82-pharmacy-locator-find_pharmacies-toolspharmacy_lookuppy) |
 | `get_part_d_benefit_params` | Yes | `tools/part_d_benefit_lookup.py` — annual Part D OOP cap and other statutory benefit parameters for a contract year; used to answer catastrophic-phase/cap questions without inventing figures |
 | `normalize_drug` | **No** | Called internally by `estimate_drug_cost` |
 
@@ -1049,7 +1075,7 @@ flowchart TB
 
 1. Push to GitHub.
 2. Render → **New Blueprint** → `render.yaml`.
-3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<app>.onrender.com`.
+3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
 4. After first deploy, Shell:
 
    ```bash
@@ -1167,17 +1193,72 @@ medicare-ingest spuf --source tests/fixtures/spuf -v  # if verbose flag exists; 
 
 ---
 
+## 19.2 Usage analytics (aggregate-only, privacy-safe)
+
+The app tracks lightweight, **aggregate-only** usage stats — request/session counts,
+prompt-length buckets, success/error counts, and latency sums, rolled up per UTC hour.
+This never includes message text, drug names, IP addresses, or anything that identifies
+an individual — consistent with `config/privacy_policy.txt`.
+
+**How it works** (`src/medicare_navigator/analytics/`): requests increment in-memory
+counters (`collector.py`) with zero disk I/O on the request path. A background task
+(`flush.py`, started in `api/app.py`'s `lifespan()`) drains and writes those counters to
+the `usage_hourly` DuckDB table every `ANALYTICS_FLUSH_INTERVAL_SECONDS` (default 60s).
+Set `ANALYTICS_ENABLED=false` to disable entirely.
+
+**Reading the data:**
+
+```bash
+# Direct DuckDB query (local or after copying the deployed .duckdb file down)
+duckdb data/navigator.duckdb -c "select * from usage_hourly order by hour_bucket desc limit 48"
+```
+
+```bash
+# Via the API (requires ADMIN_TOKEN set in the environment; off/404 if unset)
+curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<host>/api/admin/usage
+```
+
+A small self-contained UI is also served at `/admin/usage.html` (`frontend/src/admin/usage.html`,
+not linked from the main app). It prompts for the token client-side (stored only in
+`sessionStorage`, never in the URL) and calls the same `/api/admin/usage` JSON endpoint —
+no server-side session/auth beyond the header check above.
+
+`ADMIN_TOKEN` is a shared-secret env var (set separately per environment — local `.env`
+and Render's env vars are independent). There is no user-account system in this app, so
+this is a simple gate, not full auth — treat the token like a password and don't commit it.
+
+The `region` column holds the **user-selected state** from the chat/guided-form state
+picker (`chatState` / `guidedState` in `frontend/src/app.js`) — the same picker already
+used to scope the plan combobox, including the existing ZIP→state resolution
+(`GET /api/zip-lookup`, `tools/zip_lookup.py`, a static USPS ZIP3 table). No IP-based
+geo-IP lookup was added. `api/app.py`'s `_resolve_region()` tries, in order:
+
+1. A 2-letter state code sent directly in the request body (the state picker's value).
+2. The state of `filters.plan_id`, if a plan was picked via the plan combobox/guided form
+   (`PlanRepository.get_plan(...).state`, off the event loop via `asyncio.to_thread`).
+3. The state of a plan ID found by regex directly in the message text
+   (`_PLAN_KEY_IN_TEXT_RE`, matching CMS's `<contract_id>-<plan_id>` shape, e.g.
+   `S9999-001`) — covers a user typing a plan ID without ever touching the picker.
+
+Anything else — no state, no resolvable plan, or a malformed/free-text value — collapses
+to `"unknown"` so the bucket key can't be polluted. As with the plan-picker feature, this
+state is never sent to `/api/estimate*` or `/api/compare-plans` and never affects a cost
+figure — it exists solely as an analytics label. Session-creation counts (`sessions_new`)
+are always bucketed under `"unknown"` regardless, since the region isn't known yet at the
+point a session is first created.
+
+---
+
 ## 20. Related documentation
 
 | Document | Contents |
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | v1 product spec, pipeline, CMS bugs |
 | [insulin-cost-estimation.md](./insulin-cost-estimation.md) | IRA $35/30-day insulin cap: source docs, calculation methodology, implementation |
-| [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | What shipped in Phase 6 pivot |
+| [developer-guide.md](./developer-guide.md) | Canonical, actively-maintained technical reference (this file overlaps it) |
 | [deployment.md](./deployment.md) | Render ops, cron, monitoring |
 | [data-sources.md](./data-sources.md) | External dataset URLs (some Phase 1 entries are historical) |
 | [build-requirements.md](../build-requirements.md) | Long-term product vision (broader than v1) |
-| Phase 1–5 plans | Historical implementation records |
 
 ---
 

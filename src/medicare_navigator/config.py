@@ -78,6 +78,15 @@ class Settings(BaseSettings):
 
     default_timezone: str = Field(default="America/Chicago", validation_alias="DEFAULT_TIMEZONE")
 
+    analytics_enabled: bool = Field(default=True, validation_alias="ANALYTICS_ENABLED")
+    analytics_flush_interval_seconds: float = Field(
+        default=60.0, validation_alias="ANALYTICS_FLUSH_INTERVAL_SECONDS"
+    )
+    admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
+    # Default lookback window (hours) when the usage dashboard passes no since/until.
+    # 2160 = ~3 months; keep in sync with the dashboard's "3mo" preset.
+    admin_usage_hours: int = Field(default=2160, validation_alias="ADMIN_USAGE_HOURS")
+
     project_root: Path = Field(default_factory=_resolve_project_root)
 
     @property

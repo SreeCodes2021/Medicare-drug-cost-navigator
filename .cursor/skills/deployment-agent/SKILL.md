@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 # Deployment Agent — Render Debug (Read-Only)
 
-User invoked this skill — inspect the **medicare-navigator** Render service and correlate findings with this repo's deployment layout.
+User invoked this skill — inspect the **medicare-drug-cost** Render service and correlate findings with this repo's deployment layout.
 
 ## Constraints
 
@@ -48,7 +48,7 @@ Task Progress:
 
 ### Step 1 — MCP and workspace
 
-1. Call `list_services()` and find **`medicare-navigator`** (from [`render.yaml`](../../../render.yaml)).
+1. Call `list_services()` and find **`medicare-drug-cost`** (from [`render.yaml`](../../../render.yaml)).
 2. If multiple workspaces, run `list_workspaces()` and set the correct one before continuing.
 3. `get_service(serviceId: "<id>")` — note status, URL, plan, disk mount.
 
@@ -98,7 +98,7 @@ Read [project-context.md](project-context.md) for repo-specific failure patterns
 
 | Check | Expected |
 |-------|----------|
-| Service name | `medicare-navigator` |
+| Service name | `medicare-drug-cost` |
 | Disk | `/data` — DuckDB + Chroma |
 | Process | `supercronic` + `uvicorn` on `$PORT` |
 | Health | `GET /api/health` → `status: ok`, `data_fresh: true` after ingest |
@@ -115,7 +115,7 @@ medicare-ingest spuf --download
 Use this template:
 
 ```markdown
-## Deployment diagnosis — medicare-navigator
+## Deployment diagnosis — medicare-drug-cost
 
 **Service:** <name> (<id>) — <status>
 **Latest deploy:** <status> at <time>

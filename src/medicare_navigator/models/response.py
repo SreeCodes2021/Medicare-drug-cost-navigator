@@ -122,6 +122,22 @@ class CombinedUsage(BaseModel):
     cost_usd: float = 0.0
 
 
+class PharmacyResult(BaseModel):
+    """One pharmacy locator result — CMS SPUF pharmacy network membership (channel/preferred
+    status) enriched with NPPES NPI Registry name/address. distance_miles is straight-line
+    (ZIP centroid to ZIP centroid), not driving distance."""
+
+    npi: str
+    pharmacy_name: str
+    address_line1: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    distance_miles: float | None = None
+    preferred: bool | None = None
+    channel: str | None = None  # preferred_retail | standard_retail | preferred_mail | standard_mail
+
+
 class QueryResponse(BaseModel):
     query_id: str
     session_id: str | None = None
@@ -131,6 +147,7 @@ class QueryResponse(BaseModel):
     estimate: DrugCostEstimate | None = None
     channel_estimate: MultiChannelDrugCostEstimate | None = None
     channel_estimates: list[MultiChannelDrugCostEstimate] = Field(default_factory=list)
+    pharmacies: list[PharmacyResult] = Field(default_factory=list)
     explanation: str = ""
     citations: list[Citation] = Field(default_factory=list)
     disclaimer: str = ""

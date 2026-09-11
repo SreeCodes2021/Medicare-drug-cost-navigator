@@ -43,13 +43,17 @@ at the end of each run (see [Post-run backlog](#post-run-backlog)).
 | `/quality-test/answer-consistency` | Oracle vs UI/chat prose | [answer-consistency/SKILL.md](answer-consistency/SKILL.md) |
 | `/quality-test/insulin` | IRA insulin cap billing — deterministic + 10 LLM (insulin-only) | [insulin/SKILL.md](insulin/SKILL.md) |
 | `/quality-test/mixed-basket` | Insulin + regular same-plan baskets — deterministic + 20 LLM | [mixed-basket/SKILL.md](mixed-basket/SKILL.md) |
+| `/quality-test/pharmacy-lookup` | ZIP-based pharmacy locator (Q1/Q2/Q3 chat routing, ZIP edge cases) — deterministic pytest + 33 LLM scenarios / 34 queries (customizable via `--limit`) | [pharmacy-lookup/SKILL.md](pharmacy-lookup/SKILL.md) |
+| `/quality-test/compound-questions` | Cross-category question routing — does a message spanning insulin/non-insulin/OOP/pharmacy/date-window questions (or multiple distinct questions in one prompt) get every part answered, not just the first-matched deterministic resolver — deterministic pytest + 19 LLM scenarios / 20 queries | [compound-questions/SKILL.md](compound-questions/SKILL.md) |
 
 For a single call that runs everything in this tier, invoke `/quality-test` only.
 
 **Insulin billing** (`/quality-test/insulin`) is a **separate sub-skill** with its own
 **10-query** insulin-only LLM budget. **Mixed insulin + regular baskets**
-(`/quality-test/mixed-basket`) use a **20-query** budget — neither is included in the
-100-query cap above. Invoke after insulin or routing changes, or alongside a general quality pass.
+(`/quality-test/mixed-basket`) use a **20-query** budget. **Compound / cross-category
+questions** (`/quality-test/compound-questions`) use a **20-query** budget. None of the
+three are included in the 100-query cap above. Invoke after insulin, pharmacy, or general
+routing changes, or alongside a general quality pass.
 
 ## Real LLM mandate — no mock, ever, in this skill
 
@@ -350,7 +354,7 @@ phrasing is not.
 | # | Scenario | Example shape (rephrase each run) | Pass criteria |
 |---|----------|-----------------------------------|----------------|
 | 1 | **Remaining-year budget, no explicit start** | "How much will \<insulin\> cost me for the rest of the year on \<plan_key\>?" | `response_source` is the deterministic insulin path; explanation states a multi-fill remaining-year total (not a single 30-day fill); fill count/total roughly matches `window_days_remaining` math for today → Dec 31 |
-| 2 | **Explicit start date narrows the window** | "\<insulin\> on \<plan_key\> for the rest of the year starting \<a future month/day, e.g. "September 1"\>" | Remaining-year total reflects the later start date (fewer days/fills than #1's today-anchored total), not today's date silently substituted |
+| 2 | **Explicit start date narrows the window** | "\<insulin\> on \<plan_key\> for the rest of the year starting \<a month/day still in the future relative to today's date\>" (rephrase each run; **do not** hard-code "September 1" year-round — see calendar note below) | Remaining-year total reflects the later start date (fewer days/fills than #1's today-anchored total), not today's date silently substituted; explanation includes multi-fill remaining-year wording (`remaining`, `fill`) |
 | 3 | **Duration phrase on a mixed basket must not silently single-fill** | "Budget \<insulin\> and \<a regular oral drug with strength\> for the next \<2–4\> months \<optionally "starting <month> <day>"\> on \<plan_key\>" | `response_source` is **not** `System/MixedBasket` (duration signal must force the general agent loop, not the duration-blind deterministic batch path); explanation reflects a multi-month total, not one fill each |
 | 4 | **Mixed basket with no duration still uses the fast deterministic path (control)** | "\<insulin\> and \<a regular oral drug with strength\> on \<plan_key\>" (no date/duration wording) | `response_source` **is** `System/MixedBasket`; confirms #3's routing change is scoped to date/duration signals only, not a general regression |
 
@@ -369,6 +373,21 @@ print(window_days_remaining(2026, None))
 (`add_months`, `window_days_remaining`, `resolve_explicit_start_date` — all deterministic,
 stdlib-only); `tests/test_budget_window.py` for the exact pytest equivalents of scenarios 2
 and 3 above.
+
+**Calendar-dependent dates — offline pytest + live §2h (dual layer):**
+
+`resolve_explicit_start_date` rolls a month/day **without a year** forward to the **next**
+calendar occurrence. After that date passes in the current year, it jumps to next year — which
+can zero out `window_days_remaining` for the current contract year and make scenario #2 look
+like a single 30-day fill instead of a remaining-year total.
+
+| Layer | What runs | Example |
+|-------|-----------|---------|
+| **Offline (commit-push)** | `pytest tests/test_budget_window.py tests/test_mediator.py tests/test_datetime_context.py -v` | `test_mediator_extracted_start_date_flows_into_deterministic_insulin_response` freezes time to **2026-08-03** so `"starting September 1"` resolves to 2026-09-01 and asserts `remaining` + `fill` in the insulin explanation |
+| **Live (this §2h)** | Scenario #2 query each run | Pick a start month/day **still in the future** from today's date (e.g. in August ask for "starting December 1"; in January ask for "starting March 15"), or include an explicit year in the phrasing |
+
+If scenario #2 fails live but offline pytest passes, check whether the chosen anchor date has
+already passed this calendar year before filing a product bug.
 
 ### 2i. Multi-turn conversation depth (mandatory — 30 queries every run)
 
@@ -501,7 +520,7 @@ Follow [`exploratory-qa/SKILL.md`](../utils/exploratory-qa/SKILL.md) — invent 
 | Scenario | Model | Expected | Actual | Verdict | Notes |
 |----------|-------|----------|--------|---------|-------|
 | Remaining-year budget, no explicit start | … | Multi-fill remaining-year total via deterministic insulin path | … | PASS/FAIL | |
-| Explicit start date narrows window | … | Later start → fewer remaining days/fills than #1 | … | PASS/FAIL | |
+| Explicit start date narrows window | … | Later start → fewer remaining days/fills than #1; `remaining` + `fill` in explanation | … | PASS/FAIL | Anchor month/day must still be in the future (see §2h calendar note) |
 | Duration on mixed basket forces agent loop | … | `response_source != System/MixedBasket`; multi-month total | … | PASS/FAIL | |
 | No-duration mixed basket control | … | `response_source == System/MixedBasket` | … | PASS/FAIL | |
 
@@ -591,7 +610,7 @@ Before appending, read the file and skip items that duplicate an open entry (sam
 ## Internal building blocks (do not ask the user to call these separately)
 
 - [`numeric-accuracy/SKILL.md`](../utils/numeric-accuracy/SKILL.md) + [`golden-cases.jsonl`](../utils/numeric-accuracy/golden-cases.jsonl) + `scripts/run_golden_cases.py`
-- **Fixed LLM scenario suites** — `scripts/run_llm_scenarios.py` + `scripts/llm_scenario_suites/` (`mixed-basket`, `insulin`, `quality-test-2g`)
+- **Fixed LLM scenario suites** — `scripts/run_llm_scenarios.py` + `scripts/llm_scenario_suites/` (`mixed-basket`, `insulin`, `quality-test-2g`, `pharmacy-lookup`, `compound-questions`)
 - **T3 live-LLM batch grading** — `scripts/run_quality_test_llm.py` + `scripts/qa_grading.py` (§1c-B, §2b–2i, exploratory). **Do not create ad-hoc `tmp_t3_*.py` scripts** — extend these files or add suite JSON instead.
 - [`chat-QA/SKILL.md`](../utils/chat-QA/SKILL.md) — the rubric itself, applied to both the happy-path baseline and exploratory findings
 - [`exploratory-qa/SKILL.md`](../utils/exploratory-qa/SKILL.md) — the on-the-fly question categories

@@ -25,6 +25,11 @@ SOURCE_CATALOG: dict[str, dict[str, str]] = {
         "url": "https://www.cms.gov/newsroom/fact-sheets/inflation-reduction-act-medicare-drug-price-negotiation-program-initial-price-applicability-year-2026",
         "scope": "Statutory Part D annual out-of-pocket maximum by contract year",
     },
+    "nppes_npi_registry": {
+        "label": "NPPES NPI Registry (CMS)",
+        "url": "https://npiregistry.cms.hhs.gov/",
+        "scope": "Pharmacy name/address enrichment",
+    },
 }
 
 

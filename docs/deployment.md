@@ -12,16 +12,17 @@ Single Docker web service with persistent disk at `/data` and in-container super
 | [`Dockerfile`](../Dockerfile) | Multi-stage image: builds `frontend/dist` from `frontend/src`, then uvicorn + supercronic |
 | [`config/deploy.yaml`](../config/deploy.yaml) | **Cron schedule** (`ingest.cron`, UTC) |
 | [`scripts/docker-start.sh`](../scripts/docker-start.sh) | Starts supercronic + uvicorn |
-| [`scripts/run-daily-ingest.sh`](../scripts/run-daily-ingest.sh) | Nightly: `spuf --download --preserve-other` |
+| [`scripts/run-daily-ingest.sh`](../scripts/run-daily-ingest.sh) | Nightly core ingest + weekly pharmacy refresh |
 
 ### First deploy on Render
 
 1. Connect GitHub → **New Blueprint** → apply `render.yaml`.
-2. Set dashboard secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://<your-app>.onrender.com`.
+2. Set dashboard secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
+   If you rename the service in the Render Dashboard, update `CORS_ORIGINS` to match the new `*.onrender.com` URL.
 3. After deploy, **Shell** on the web service:
 
 ```bash
-medicare-ingest spuf --download
+medicare-ingest spuf --download --with-pharmacy-network --force
 ```
 
 4. Check `GET /api/health` → `data_fresh: true`.
@@ -40,11 +41,41 @@ Each run replaces only that state's plans in DuckDB; the CMS zip is still downlo
 - **Active states (no redeploy):** set `INGEST_STATES` on the Render service (e.g. `AR,TX,CA`). The nightly cron ingests only states that appear in both `INGEST_STATES` and the `pdp_region_codes` catalog in [`config/ingest_filters.yaml`](../config/ingest_filters.yaml). Restart the service after changing env vars.
 - **Resources:** edit `plan` and `disk.sizeGB` in [`render.yaml`](../render.yaml).
 
+### Usage analytics (optional)
+
+Aggregate-only usage stats are collected by default and stored in the `usage_hourly` DuckDB table on the same persistent disk as SPUF data.
+
+| Step | Action |
+|---|---|
+| Enable dashboard | Set `ADMIN_TOKEN` on the web service (Dashboard → Environment). Treat it like a password — do not commit it. |
+| Open UI | `https://medicare-drug-cost.onrender.com/admin/usage.html` (not linked from the main app) |
+| API | `curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<host>/api/admin/usage` |
+| Widen/narrow default window | Optional `ADMIN_USAGE_HOURS` (default `2160` ≈ 3 months) |
+| Disable collection | `ANALYTICS_ENABLED=false` stops the in-memory collector and background flush task |
+
+Full detail: [usage-analytics.md](./usage-analytics.md).
+
+### User feedback
+
+The main UI exposes a **Feedback** button (top bar and inline after an assistant reply). Submissions go to `POST /api/feedback` and append one JSON line per entry to `{DATA_DIR}/feedback.jsonl` (on Render: `/data/feedback.jsonl` on the same persistent disk as DuckDB).
+
+| Field | Required | Notes |
+|---|---|---|
+| `message` | Yes | 1–2000 characters |
+| `state` | No | Two-letter US state code |
+| `zip` | No | Five-digit ZIP |
+
+Nightly SPUF ingest does not touch `feedback.jsonl`. Operators can inspect entries from Render Shell:
+
+```bash
+tail -n 20 /data/feedback.jsonl
+```
+
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Scheduler["supercronic 3AM UTC"]
+    Scheduler["supercronic 2AM CT (07:00 UTC)"]
     Ingest["run-daily-ingest.sh"]
     CMS[data.cms.gov]
     DataVol["/data volume"]
@@ -60,17 +91,27 @@ flowchart LR
 
 | Command | When |
 |---|---|
-| `medicare-ingest spuf --download` | Production first load + nightly refresh |
+| `medicare-ingest spuf --download --core-only` | Nightly core refresh (default cron) |
+| `medicare-ingest spuf --download --with-pharmacy-network --force` | First load / weekly pharmacy / recovery |
 | `medicare-ingest spuf --source path` | Offline fixture or local zip |
 | `medicare-ingest fetch` | Download CMS zip to `data/raw/` only |
-| `scripts/run-daily-ingest.sh` | Cron entrypoint (`--preserve-other`) |
+| `scripts/run-daily-ingest.sh` | Cron entrypoint (`--preserve-other --core-only`) |
 
 ## Daily schedule
 
-Default: `0 3 * * *` UTC in `config/deploy.yaml`. Equivalent manual run:
+From [`config/deploy.yaml`](../config/deploy.yaml):
+
+| Job | Cron (UTC) | Command |
+|-----|------------|---------|
+| Nightly core | `0 7 * * *` (2:00 AM US Central CDT) | `scripts/run-daily-ingest.sh` |
+| Weekly pharmacy | `0 8 * * 0` (Sunday 3:00 AM CDT) | `scripts/run-daily-ingest.sh --with-pharmacy-network --force` |
+
+Nightly core ingest **skips** when the CMS zip version and `INGEST_STATES` already match `manifest.json` (use `--force` to override). Typical nights with no new CMS release finish in under a minute.
+
+Equivalent manual core run:
 
 ```bash
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
 ```
 
 ### Other platforms
@@ -89,6 +130,7 @@ medicare-ingest spuf --download --preserve-other
 | `manifest.json` | Source IDs, `seeded_at`, dataset versions |
 | `raw/` | CMS zip cache (reused when filename unchanged) |
 | `chroma/` | Policy vectors (optional; empty until corpus loader exists) |
+| `feedback.jsonl` | Append-only user feedback from `POST /api/feedback` |
 
 ```bash
 DATA_DIR=/data
@@ -101,7 +143,8 @@ CHROMA_PATH=/data/chroma
 | Layer | Cleared on nightly ingest? |
 |-------|----------------------------|
 | CMS zip files in `data/raw/` | **No** (reused unless `--force-download`) |
-| SPUF tables (plans, formulary, pricing, beneficiary_cost, insulin_beneficiary_cost) | **Replaced** each run |
+| Core SPUF tables (plans, formulary, pricing, beneficiary_cost, insulin_beneficiary_cost) | **Replaced** each core run |
+| `pharmacy_network` / `pharmacies` | **Kept** on nightly `--core-only`; **replaced** on weekly `--with-pharmacy-network` |
 | Other DuckDB tables | **Kept** when using `--preserve-other` (default in `run-daily-ingest.sh`) |
 | Chroma | **Not touched** by SPUF ingest |
 
@@ -177,7 +220,13 @@ medicare-ingest spuf --download --states CA --merge-states
 **Reload active states** (nightly cron equivalent — uses `INGEST_STATES` env or yaml `states` default):
 
 ```bash
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
+```
+
+**Recovery after a failed ingest** (full core + pharmacy reload):
+
+```bash
+medicare-ingest spuf --download --preserve-other --with-pharmacy-network --force
 ```
 
 After ingest, confirm with the DuckDB state query above or `cat /data/manifest.json`.

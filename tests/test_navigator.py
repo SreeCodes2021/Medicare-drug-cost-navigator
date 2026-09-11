@@ -390,6 +390,25 @@ async def test_navigator_ytd_follow_up_without_drug_name_updates_recalculation()
     assert all(e.ytd_oop_spend == 800.0 for e in response.channel_estimates)
 
 
+@pytest.mark.asyncio
+async def test_navigator_insulin_ytd_follow_up_without_drug_name_uses_deterministic_path():
+    """Regression for B3-2: YTD-only follow-up after an insulin opener must stay on
+    System/Insulin, not fall through to the LLM with misleading channel-variance prose."""
+    session_id = "test-insulin-ytd-follow-up-session"
+    opener = f"What's my cost for lantus on plan {PLAN_FL_PDP}?"
+    await navigator.run(opener, session_id=session_id)
+
+    follow_up = "what if I've spent $2200 YTD?"
+    response = await navigator.run(follow_up, session_id=session_id)
+
+    assert response.status == "ok"
+    assert response.response_source == "System/Insulin"
+    lower = response.explanation.lower()
+    assert "$0.00" in response.explanation
+    assert "catastrophic" in lower
+    assert "depending on pharmacy channel" not in lower
+
+
 def test_format_last_tool_calls_single_call_uses_singular_phrasing():
     calls = [
         {

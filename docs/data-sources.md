@@ -1,8 +1,8 @@
 # Data Sources
 
-Exact access methods for all datasets used in Phase 1. URLs should be re-verified at ingestion time — government portals are periodically reorganized.
+Exact access methods for datasets used by the Phase 6 Navigator. URLs should be re-verified at ingestion time — government portals are periodically reorganized.
 
-**Tabular data** is loaded into `data/navigator.duckdb`. **Policy corpus** is embedded in `data/chroma/`.
+**Tabular data** is loaded into `data/navigator.duckdb`. Sections 4–7 and the Chroma policy corpus below describe **Phase 1–5 sources removed in the Phase 6 pivot** — retained here for roadmap reference only.
 
 ---
 
@@ -17,7 +17,19 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 | **Format** | JSON API |
 | **Refresh** | Continuous (on-demand + local DuckDB cache table) |
 | **Auth** | None required |
-| **Used by** | `normalize_drug` tool, Intake agent |
+| **Used by** | `normalize_drug` (internal to `estimate_drug_cost` / `estimate_drug_cost_all_channels`) |
+
+### 1.1 RxNorm offline fallback (`tools/rxnorm_offline.py`)
+
+When live NLM REST calls fail (`httpx.HTTPError`) or return no matches, `normalize_drug` falls back to curated 2026 snapshots for demo/test drugs:
+
+| Field | Value |
+|---|---|
+| **Trigger** | Live API error or empty match set |
+| **Coverage** | Ingredient RXCUIs, strength-specific SCD/SBD concepts, approximate fuzzy match for common demo drugs |
+| **Provenance** | Candidates carry `source: "rxnorm_offline"` in the normalization result |
+| **Purpose** | Offline tests, degraded-network operation, and local development without changing the cost-pipeline contract |
+| **Not a substitute** | Production drug resolution still prefers live RxNorm; offline rows cover only the curated allowlist |
 
 ---
 
@@ -29,12 +41,36 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 | **Order page** | https://www.cms.gov/Research-Statistics-Data-and-Systems/Files-for-Order/NonIdentifiableDataFiles/PrescriptionDrugPlanFormularyPharmacyNetworkandPricingInformationFiles |
 | **Data portal** | https://data.cms.gov/provider-summary-by-type-of-service/medicare-part-d-prescribers/quarterly-prescription-drug-plan-formulary-pharmacy-network-and-pricing-information |
 | **Naming** | `SPUF.YYYY.YYYYMMDD.zip` (quarterly, includes pricing); monthly PUF also available |
-| **Key files** | `plan information`, `basic drugs formulary`, `beneficiary cost`, `pricing` (quarterly only) |
+| **Key files** | `plan information`, `basic drugs formulary`, `beneficiary cost`, `insulin beneficiary cost`, `pharmacy network`, `pricing` (quarterly only) |
 | **Methodology** | https://www.cms.gov/files/document/methodology-spuf-2025.pdf |
 | **Format** | ZIP containing tab-delimited text files |
 | **Refresh** | Monthly (formulary/network); quarterly (pricing) |
-| **Phase 1** | Download latest quarterly zip; filter to `config/demo_plans.yaml` allowlist; load into DuckDB |
-| **Used by** | `formulary_benefit_lookup` tool |
+| **Phase 1** | Download latest quarterly zip; filter to `config/ingest_filters.yaml` states (currently AR + TX); load into DuckDB |
+| **Used by** | `estimate_drug_cost`, `estimate_drug_cost_all_channels`, `lookup_plan`, `list_plans`, `find_pharmacies` (`pharmacy network` file) |
+
+### 2.1 Pharmacy network locator enrichment
+
+Two additional sources back the `find_pharmacies` pharmacy locator (not part of the CMS SPUF release itself):
+
+| Field | Value |
+|---|---|
+| **Source** | NPPES NPI Registry API (CMS) |
+| **Docs / base URL** | https://npiregistry.cms.hhs.gov/api/ |
+| **Format** | JSON API |
+| **Refresh** | On-demand — at SPUF ingest for every new NPI discovered in the `pharmacy network` file, and again at pharmacy-locator query time for any pharmacy that ingest-time enrichment couldn't resolve |
+| **Auth** | None required |
+| **Used by** | `ingestion/npi_enrichment.py` → `pharmacies` table (name, address, phone) |
+| **Offline fallback** | `ingestion/npi_enrichment_offline.py` — a small hardcoded directory of real NPPES records for offline tests/degraded-network operation |
+| **Caveat** | The real CMS `pharmacy network` file's column layout is unconfirmed against a live download — `ingestion/spuf.py` guesses column names defensively (see [quality-test-todos.md](./quality-test-todos.md)) |
+
+**ZIP centroid distances:**
+
+| Field | Value |
+|---|---|
+| **Source** | US Census Bureau 2020 Gazetteer ZCTA file (ZIP centroid coordinates) |
+| **Format** | Static CSV committed at `config/zip_centroids.csv` (`GEOID`/`INTPTLAT`/`INTPTLONG` columns, read as `zip,lat,lon`) |
+| **Refresh** | Static — not re-downloaded or re-ingested; update the committed file if a newer Gazetteer release is needed |
+| **Used by** | `ingestion/zip_centroids.py` — haversine (straight-line) distance for `find_pharmacies`; never loaded into DuckDB |
 
 ---
 
@@ -47,11 +83,11 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 | **Format** | Published reference values → `config/benefit_params.yaml` per contract year |
 | **2026 values (example)** | Deductible $615; OOP cap $2,100; 25% initial coverage coinsurance |
 | **Refresh** | Annual |
-| **Used by** | `formulary_benefit_lookup` tool (benefit-phase math) |
+| **Used by** | Benefit-phase math in `estimate_drug_cost` (`tools/part_d_benefit_params.py`) |
 
 ---
 
-## 4. Medicare drug spending / cost trends
+## 4. Medicare drug spending / cost trends *(Phase 8 — not loaded in v1)*
 
 | Field | Value |
 |---|---|
@@ -64,7 +100,7 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 
 ---
 
-## 5. Therapeutic equivalence (alternatives)
+## 5. Therapeutic equivalence (alternatives) *(Phase 8 — not loaded in v1)*
 
 | Field | Value |
 |---|---|
@@ -77,7 +113,7 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 
 ---
 
-## 6. NADAC (pharmacy acquisition cost benchmark)
+## 6. NADAC (pharmacy acquisition cost benchmark) *(Phase 10 — not loaded in v1)*
 
 | Field | Value |
 |---|---|
@@ -90,7 +126,7 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 
 ---
 
-## 7. Policy / explanation corpus
+## 7. Policy / explanation corpus *(Phase 8 — Chroma removed in Phase 6 pivot)*
 
 | Field | Value |
 |---|---|
@@ -102,7 +138,7 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 
 ---
 
-## 8. Program-level negotiated prices (IRA selected drugs)
+## 8. Program-level negotiated prices (IRA selected drugs) *(Phase 10 — not loaded in v1)*
 
 | Field | Value |
 |---|---|
@@ -118,6 +154,17 @@ Exact access methods for all datasets used in Phase 1. URLs should be re-verifie
 ## 9. Data manifest
 
 Ingestion jobs write `data/manifest.json` recording:
+
+```json
+{
+  "spuf": {"version": "SPUF.2026.20260115", "as_of": "2026-01-15"},
+  "benefit_params": {"contract_year": 2026}
+}
+```
+
+v1 ingest writes `spuf` and `benefit_params` entries. Legacy Phase 1–5 keys (`spending`, `orange_book`, `nadac`, `policy_corpus`) appear only if those pipelines are restored.
+
+Example with all planned sources:
 
 ```json
 {

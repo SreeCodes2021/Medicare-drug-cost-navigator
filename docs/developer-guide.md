@@ -2,7 +2,7 @@
 
 **Medicare Drug Cost & Benefit-Transparency Navigator** — technical reference for running, developing, testing, and deploying the Phase 6 system.
 
-> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, insulin-cap, or catastrophic phase, priced per pharmacy channel — including insulin, priced via its separate IRA statutory $35/30-day cap (see [insulin-cost-estimation.md](./insulin-cost-estimation.md)), and multi-drug baskets mixing insulin and oral drugs on one plan. See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
+> **Scope (v1):** Estimate the out-of-pocket cost of **one drug fill on one Medicare Part D plan's regular formulary**, for a non-LIS beneficiary in pre-deductible, initial-coverage, insulin-cap, or catastrophic phase, priced per pharmacy channel — including insulin, priced via its separate IRA statutory $35/30-day cap (see [insulin-cost-estimation.md](./insulin-cost-estimation.md)), and multi-drug baskets mixing insulin and oral drugs on one plan. Also locates nearby/preferred CMS-network pharmacies by ZIP code (§8.2). See [navigator-implementation-spec.md](./navigator-implementation-spec.md) for the full product contract.
 
 ---
 
@@ -335,7 +335,7 @@ flowchart LR
     CMS[data.cms.gov]
     User[Users]
 
-    SC -->|0 3 * * * UTC| ING
+    SC -->|0 7 * * * UTC| ING
     ING --> CMS
     ING --> Disk
     UV --> Disk
@@ -347,6 +347,7 @@ flowchart LR
 | `/data/navigator.duckdb` | SPUF tables |
 | `/data/manifest.json` | Ingest metadata, freshness |
 | `/data/raw/` | Cached CMS zip files |
+| `/data/feedback.jsonl` | User feedback submissions |
 
 ---
 
@@ -374,8 +375,10 @@ Medicare-drug-cost-navigator/
 │   ├── agent/                # Navigator + system prompt + deterministic request routers
 │   │                         #   (insulin_requests, mixed_basket_requests, dosage_questions,
 │   │                         #    enrollment_questions, invalid_input_questions, ...)
+│   ├── analytics/            # Aggregate usage collector + background DuckDB flush
 │   ├── api/                  # FastAPI app
 │   ├── eval/                 # Offline eval suite (queries.jsonl)
+│   ├── feedback/             # User feedback append-only JSONL store
 │   ├── guardrails/           # Citation enforcement
 │   ├── ingestion/            # SPUF ingest, schema, CMS download
 │   ├── llm/                  # Provider adapter + mock
@@ -415,6 +418,8 @@ erDiagram
     plans ||--o{ beneficiary_cost : "plan_key"
     plans ||--o{ insulin_beneficiary_cost : "plan_key"
     plans ||--o| basic_drugs_formulary : "formulary_id"
+    plans ||--o{ pharmacy_network : "plan_key"
+    pharmacy_network }o--|| pharmacies : "npi"
     drugs }o--o| basic_drugs_formulary : "rxcui / ndc"
 
     plans {
@@ -481,6 +486,29 @@ erDiagram
         varchar ingredient
     }
 
+    pharmacy_network {
+        varchar plan_key
+        varchar npi
+        boolean preferred_yn
+        boolean retail_yn
+        boolean mail_yn
+        boolean ltc_yn
+        boolean home_infusion_yn
+        varchar as_of_date
+    }
+
+    pharmacies {
+        varchar npi PK
+        varchar pharmacy_name
+        varchar address_line1
+        varchar city
+        varchar state
+        varchar zip_code
+        varchar phone
+        varchar enrichment_source "nppes_api | nppes_offline | cms_pharmacy_zipcode (stub)"
+        varchar as_of_date
+    }
+
     query_log {
         varchar query_id
         varchar session_id
@@ -488,6 +516,29 @@ erDiagram
         varchar statuses
         double latency_ms
         timestamp created_at
+    }
+
+    usage_hourly {
+        timestamp hour_bucket
+        varchar region
+        varchar mode
+        varchar model
+        int sessions_new
+        int requests_total
+        int requests_ok
+        int requests_error
+        int requests_clarification
+        int requests_not_found
+        int requests_limit_reached
+        int prompt_len_short
+        int prompt_len_medium
+        int prompt_len_long
+        int prompt_len_sum
+        double latency_ms_sum
+        int tokens_in_sum
+        int tokens_out_sum
+        int requests_with_tokens
+        double cost_usd_sum
     }
 ```
 
@@ -501,7 +552,10 @@ erDiagram
 | `beneficiary_cost` | `beneficiary cost` | Copay/coinsurance by tier, coverage level, days-supply **code** |
 | `insulin_beneficiary_cost` | `insulin beneficiary cost` | Insulin statutory-cap copay by tier (nullable), pharmacy channel, days-supply **code** — no `coverage_level` column; insulin has no deductible phase. `coin_amt_*` columns are deliberately never ingested (see [insulin-cost-estimation.md](./insulin-cost-estimation.md) §5) |
 | `drugs` | Runtime (RxNorm cache) | Cached normalization results |
-| `query_log` | Runtime | Optional analytics (failures swallowed) |
+| `pharmacy_network` | `pharmacy network` | Plan-to-pharmacy membership (NPI, preferred/retail/mail/LTC/home-infusion flags) — real CMS column layout unconfirmed, ingested defensively (see §8.2) |
+| `pharmacies` | Runtime (NPPES enrichment at ingest) | Pharmacy name/address/phone by NPI, not plan-key-keyed (one NPI can serve multiple plans/states) and never purged on a state re-ingest |
+| `query_log` | Runtime | Per-query tool/latency debug log; rows queued in `analytics/collector` and flushed asynchronously (not inline on the request path) |
+| `usage_hourly` | Runtime | Aggregate-only usage rollups keyed by UTC hour, region, mode, model — see [usage-analytics.md](./usage-analytics.md) |
 
 ### 5.3 Schema migrations
 
@@ -511,6 +565,8 @@ Persistent Render disks survive deploys. `CREATE TABLE IF NOT EXISTS` does **not
 SCHEMA_MIGRATIONS = (
     ("plans", "plan_suppressed", "BOOLEAN DEFAULT FALSE"),
     ("beneficiary_cost", "ded_applies_yn", "BOOLEAN"),
+    ("usage_hourly", "prompt_len_sum", "INTEGER DEFAULT 0"),
+    ("usage_hourly", "requests_with_tokens", "INTEGER DEFAULT 0"),
 )
 ```
 
@@ -527,8 +583,10 @@ SCHEMA_MIGRATIONS = (
 | `idx_beneficiary_cost_lookup` | `(plan_key, tier, coverage_level, days_supply_code, pharmacy_channel)` | Cost-share lookup |
 | `idx_pricing_plan_ndc` | `(plan_key, ndc, days_supply)` | Pricing lookup |
 | `idx_insulin_beneficiary_cost` | `(plan_key, tier, days_supply_code, pharmacy_channel)` | Insulin cost-share lookup |
+| `idx_pharmacy_network_plan` | `(plan_key, preferred_yn)` | Pharmacy locator plan-network lookup |
+| `idx_pharmacies_zip` | `(zip_code)` | Pharmacy locator ZIP filtering |
 
-Indexes are dropped before bulk SPUF delete/reload (DuckDB ART index delete bug) and recreated after ingest.
+Indexes are dropped before bulk SPUF delete/reload (DuckDB ART index delete bug) and recreated after ingest. `pharmacy_network` and `pharmacies` use destructive drop-and-recreate migrations (not the additive `SCHEMA_MIGRATIONS` above) when an older disk's schema predates a column rename — see `migrate_schema()`.
 
 ### 5.5 Read-only API connections
 
@@ -571,7 +629,7 @@ Only states present in **both** the requested list and `pdp_region_codes` are in
 | `pdp_region_codes` | all 50 states + DC + territories | Full catalog; MA-PD uses `STATE`, PDP uses region code |
 | `plan_type_prefixes` | S, H | S=PDP, H=local MA-PD |
 
-**Nightly cron** (`run-daily-ingest.sh`) uses `INGEST_STATES` (or yaml defaults) with `--preserve-other` — it **replaces all SPUF tables** with only the active states. To add a state without wiping others, run manually with `--merge-states` (e.g. `medicare-ingest spuf --download --states CA --merge-states`).
+**Nightly cron** (`run-daily-ingest.sh`) uses `INGEST_STATES` (or yaml defaults) with `--preserve-other --core-only`. It reloads plans, formulary, cost shares, and pricing for active states, **skips** when the CMS zip version is unchanged, and **leaves `pharmacy_network` intact**. A weekly job runs `--with-pharmacy-network --force`. To add a state without wiping others, run manually with `--merge-states` (e.g. `medicare-ingest spuf --download --states CA --merge-states`).
 
 ### 5.8 Typical data volumes (2026 AR+TX ingest, default)
 
@@ -706,13 +764,38 @@ class DrugCostEstimate(BaseModel):
 | Filter injection | Guided-form slots appended to user message context |
 | Status derivation | `ok`, `needs_clarification`, `not_found`, `limit_reached` |
 | Guardrail retry | One rewrite attempt if dollar amounts or caveats fail validation |
-| Query logging | Best-effort insert into `query_log` |
+| Query logging | Queued via `analytics/collector.record_query_log`; flushed to `query_log` by `analytics/flush` (not inline DuckDB writes) |
 
-### 7.2 System prompt
+### 7.2 Early-return safety gate (`agent/invalid_input_questions.py`)
+
+Before the mediator or main LLM loop, malformed numeric inputs and prompt-injection patterns are rejected deterministically:
+
+| Pattern | Action |
+|---|---|
+| Non-positive days supply in message | Canned clarification (no LLM call) |
+| Price/jailbreak injection (`ignore instructions`, `disregard … instructions`, `say $…`, **`SYSTEM:`**, **`you are now unrestricted`**) | Refusal unless the message is a recognized mixed-basket price-injection test case |
+
+The safety gate always runs on the **raw** user message.
+
+### 7.2.1 Deterministic request routers (`agent/*_requests.py`)
+
+After the safety gate (and optional mediator), well-known request shapes are parsed and answered without the main LLM pricing loop:
+
+| Module | When |
+|---|---|
+| `insulin_requests.py` | Named insulin products, insulin policy questions, and **session follow-ups** — `resolve_insulin_session_follow_up` re-estimates when the user states new YTD spend but omits drug/plan names, reusing `session["last_tool_calls"]` from the prior turn |
+| `mixed_basket_requests.py` | Multi-drug baskets mixing insulin and oral drugs on one plan |
+| `dosage_questions.py` | Missing dosage clarification |
+| `enrollment_questions.py` | Enrollment / plan-switch asks |
+| `invalid_input_questions.py` | See §7.2 |
+
+Pharmacy questions follow the same pre-LLM-router pattern but live in `agent/pharmacy_questions.py` (not the `*_requests.py` naming convention above) — see §8.2.
+
+### 7.3 System prompt
 
 `agent/prompts.py` — `NAVIGATOR_SYSTEM_PROMPT` encodes v1 scope boundaries (no enrollment advice, cite tool outputs only), plus insulin-specific rules: named insulin products may be priced without a strength/form (the statutory-cap path prices brand-only insulin), multiple named insulin products must never be collapsed into one pooled $35 total, and a normal priced insulin result (`benefit_phase: "insulin_cap"`) is presented like any other drug's estimate — no deductible-phase language.
 
-### 7.3 LLM client (`llm/client.py`)
+### 7.4 LLM client (`llm/client.py`)
 
 | Mode | When | Behavior |
 |---|---|---|
@@ -728,7 +811,7 @@ class DrugCostEstimate(BaseModel):
 
 Every response also carries token usage and an estimated USD cost (`LlmUsage`, via `llm/models.py::estimate_cost_usd` using each model's `input_per_mtok`/`output_per_mtok`); the frontend shows a running session total. When the mediator is enabled it makes its own separate call with its own timeout/retry settings (§2.4) — `LLM_TIMEOUT_SECONDS`/`LLM_MAX_RETRIES` above govern only the main chat model.
 
-### 7.4 Health check behavior
+### 7.5 Health check behavior
 
 `GET /api/health` returns **503 degraded** when LLM is not configured. Data endpoints (`/api/plans`) still work; chat returns 503.
 
@@ -736,7 +819,7 @@ Every response also carries token usage and an estimated USD cost (`LlmUsage`, v
 
 ## 8. MCP tools
 
-Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
+Six tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 
 | Tool | Type | Description |
 |---|---|---|
@@ -744,8 +827,33 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 | `estimate_drug_cost_all_channels` | Async | Same pipeline run independently across all four CMS pharmacy channels; returns `MultiChannelDrugCostEstimate`. Default tool the Navigator calls for general (non-channel-specific) cost questions, including insulin — no separate insulin tool or schema exists; multi-product insulin/mixed-basket requests call this once per product |
 | `lookup_plan` | Sync | Resolve by `plan_key` or fuzzy `search_text` |
 | `list_plans` | Sync | Filter by `state`, `plan_type`, `contract_year` |
+| `find_pharmacies` | Sync (called from an `async` dispatcher — see §8.2 caveat) | CMS pharmacy-network locator by ZIP code, optionally scoped to a plan's network and/or an exact channel; see §8.2 |
+| `get_part_d_benefit_params` | Sync | Annual Part D OOP cap and other statutory benefit parameters for a contract year (`tools/part_d_benefit_lookup.py`) — answers catastrophic-phase/cap questions without inventing figures |
 
 `normalize_drug` is **not** LLM-visible — it runs inside `estimate_drug_cost` so insulin detection cannot be skipped (it now sets a flag rather than hard-stopping).
+
+### 8.1 RxNorm offline fallback (`tools/rxnorm_offline.py`)
+
+When live NLM RxNorm REST calls fail (`httpx.HTTPError`) or return no matches, `normalize_drug` falls back to curated 2026 snapshots for demo/test drugs (ingredient RXCUIs, strength-specific SCD/SBD concepts, approximate fuzzy match). Candidates carry `source: "rxnorm_offline"`. This improves offline tests and degraded-network operation without changing the cost pipeline contract.
+
+### 8.2 Pharmacy locator (`find_pharmacies`, `tools/pharmacy_lookup.py`)
+
+Finds CMS-network pharmacies near a ZIP code:
+
+| Param | Default | Notes |
+|---|---|---|
+| `zip_code` | required | 5-digit ZIP; resolved to a lat/lon centroid via `ingestion/zip_centroids.py` (static `config/zip_centroids.csv`, US Census 2020 Gazetteer ZCTA — never loaded into DuckDB) |
+| `plan_key` | none | Scopes results to that plan's CMS pharmacy network; omitted for a plan-agnostic search across every enriched pharmacy |
+| `preferred_only` | `false` | Restrict to preferred-network pharmacies |
+| `channel` | none | Exact filter: `preferred_retail` \| `standard_retail` \| `preferred_mail` \| `standard_mail` |
+| `radius_miles` | `25` | Fixed per call — chat has no path to widen this; a "search a wider radius" follow-up gets an honest refusal (`agent/pharmacy_questions.py::resolve_pharmacy_radius_follow_up`) |
+| `limit` | `5` | Results returned, sorted by distance ascending |
+
+Distance is **straight-line (haversine) between ZIP centroids**, not driving distance and not pharmacy-street-address-to-ZIP-centroid — a `PharmacyResult` at 0.0 mi means "same ZIP," not "next door." Pharmacy name/address comes from NPPES enrichment (`ingestion/npi_enrichment.py`, `https://npiregistry.cms.hhs.gov/api/`, no auth) run at ingest time against every NPI discovered in the CMS SPUF Pharmacy Network file; unresolvable NPIs are stored as a ZIP-only stub (`"Pharmacy near {zip}"`) that `find_pharmacies` attempts to re-resolve at query time via `PharmacyRepository.enrich_stub_records`.
+
+Deterministic chat routing for five pharmacy question shapes (named/preferred pharmacy, cost at preferred pharmacy, nearby list, plan+pharmacy cross-match, plan-coverage-in-ZIP) lives in `agent/pharmacy_questions.py` and is wired into `navigator.py` ahead of the general LLM tool-calling loop, same pattern as the insulin/mixed-basket/dosage routers in §7.2.1; the LLM can still call `find_pharmacies` directly for phrasing the routers miss. `MAX_COVERED_PLANS_FOR_PHARMACY_CHECK=10` caps how many candidate plans get a per-plan pharmacy-proximity check in the plan-cross-match router.
+
+**Known open risks** (tracked in [quality-test-todos.md](./quality-test-todos.md), not fixed here): the query-time NPPES re-resolution call is synchronous `httpx.Client` inside an `async def call_tool` dispatcher, which can block the event loop; and the real CMS Pharmacy Network file's column layout is unconfirmed (`ingestion/spuf.py` guesses column names defensively).
 
 ### Tool result envelope
 
@@ -768,7 +876,15 @@ Four tools registered in `mcp/schemas.py` and dispatched in `mcp/registry.py`.
 `guardrails/citations.py`:
 
 1. **`build_citations_from_artifacts`** — Maps tool results to `Citation` objects for the Sources panel (including lookup failures).
-2. **`apply_guardrails`** — Force-appends verbatim caveats from tools if the LLM paraphrased or omitted them; validates dollar amounts trace to `cost_low`/`cost_high`.
+2. **`apply_guardrails`** — Force-appends verbatim caveats from tools if the LLM paraphrased or omitted them; validates dollar amounts trace to `cost_low`/`cost_high`; runs channel-parity prose repairs from `guardrails/channel_parity.py`.
+
+`guardrails/channel_parity.py` keeps multi-channel wording honest:
+
+| Function | Role |
+|---|---|
+| `channel_wording_for_channels` | Suffix for cost sentences — uses "across all CMS pharmacy channels" when every priced channel shares one cost; never implies variance when amounts are uniform |
+| `repair_misleading_channel_variance_in_prose` | Rewrites LLM prose that says "depending on pharmacy channel" when all four channels returned the same amount |
+| `repair_missing_mail_retail_contrast_in_prose` | Ensures mail vs retail contrast is stated when channels differ |
 
 Enforced hard-stop statuses: `suppressed`, `insulin_out_of_scope` (the narrow data-gap case), `quantity_limit_blocked`. `INSULIN_STATUTORY_CAP_CAVEAT` is in `_CARD_ONLY_CAVEATS` alongside `BUG2_CAVEAT` — it renders on the estimate card without LLM paraphrasing, same treatment as the deductible-phase caveat.
 
@@ -783,13 +899,16 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/api/health` | None | Service health, LLM config, data freshness |
-| `GET` | `/api/disclaimer` | None | Canonical disclaimer text |
+| `GET` | `/api/disclaimer` | None | Canonical disclaimer text + short privacy pointer (banner and modal) |
+| `GET` | `/api/privacy` | None | Full privacy policy (`config/privacy_policy.txt`); covers session memory, aggregate usage stats, AI providers |
 | `GET` | `/api/meta/as-of` | None | Raw `manifest.json` |
 | `GET` | `/api/plans` | None | Plan list; query params: `plan_type`, `state`, `year` |
 | `GET` | `/api/models` | None | Available LLM models (`llm/models.py` catalog) with per-provider `configured` status |
 | `POST` | `/api/query` | None | Structured query (legacy-compatible) |
 | `POST` | `/api/chat` | None | Conversational turn with optional filters and `model` override |
 | `POST` | `/api/estimate` | None | Structured, non-chat cost estimate (`estimate_drug_cost_all_channels` only, no LLM call) |
+| `POST` | `/api/feedback` | None | User feedback — appends to `{DATA_DIR}/feedback.jsonl` |
+| `GET` | `/api/admin/usage` | `X-Admin-Token` | Aggregate usage rollups; 404 when `ADMIN_TOKEN` unset — see [usage-analytics.md](./usage-analytics.md) |
 | `GET` | `/` | None | SPA shell (`frontend/dist/index.html`) |
 
 ### `POST /api/chat` request
@@ -805,9 +924,13 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
     "contract_year": 2026,
     "days_supply": 30,
     "ytd_oop_spend": 0
-  }
+  },
+  "region": "AR",
+  "mode": "chat"
 }
 ```
+
+Optional `region` (two-letter state from the UI state picker) and `mode` (`chat`, `guided_single`, `guided_compare_drug`, `guided_compare_plan`) are **analytics-only** — they do not affect routing or cost figures. See [usage-analytics.md](./usage-analytics.md).
 
 ### `POST /api/chat` response
 
@@ -837,6 +960,28 @@ Base URL: `http://localhost:8000` (local) or your Render hostname.
 ```
 
 `mediator_llm_usage` / `total_llm_usage` are only populated when `MEDIATOR_ENABLED=1` and the mediator actually ran for that turn.
+
+### `POST /api/feedback`
+
+**Request:**
+
+```json
+{
+  "message": "The pharmacy lookup was confusing.",
+  "state": "TX",
+  "zip": "75001"
+}
+```
+
+`state` and `zip` are optional. Validation: non-empty `message` (max 2000 chars), 2-letter `state`, 5-digit `zip`.
+
+**Response:**
+
+```json
+{ "status": "ok", "submitted_at": "2026-09-04T04:12:00+00:00" }
+```
+
+Each submission appends one JSON line to `{DATA_DIR}/feedback.jsonl` (thread-safe append). Not counted in usage analytics.
 
 ### Error codes
 
@@ -877,11 +1022,20 @@ flowchart LR
 | Plan loading | `GET /api/plans` on startup |
 | Empty DB polling | Every 20s, max 30 attempts, while plan count = 0 |
 | Guided estimate | Composes NL prompt → `POST /api/chat` → switches to chat tab |
+| Guided validation | Required asterisks + `updateGuidedMandatoryHints()` per-field "Mandatory" hints when submit is disabled |
+| Policy modals | `formatPolicyTextToHtml()` renders `##` section headings in disclaimer banner and Privacy/Disclaimer modals |
 | Error display | `chatErrorMessage()` parses FastAPI `detail` (JSON, text, validation arrays) |
 | Session | Stores `session_id` from first response; sends on subsequent turns |
+| Analytics labels | Sends `region` and `mode` on `POST /api/chat` for aggregate usage stats |
+| Feedback modal | Top-bar **Feedback** button and inline **Send feedback** (enabled after first assistant reply); posts to `POST /api/feedback`; pre-fills state/ZIP from the active chat or guided form |
+| Shareable URLs | Chat sends sync `?q=` (and optional filter params) into the address bar; page load hydrates from query string |
 | Cache busting | `?v=` query params on assets; server `Cache-Control: no-cache` |
 
-### 11.3 Build
+### 11.3 Admin pages
+
+`scripts/build-frontend.sh` copies `frontend/src/admin/*.html` to `frontend/dist/admin/` (e.g. `/admin/usage.html` usage dashboard). Not linked from the main SPA. See [usage-analytics.md](./usage-analytics.md).
+
+### 11.4 Build
 
 ```bash
 scripts/build-frontend.sh   # copies src → dist
@@ -918,6 +1072,10 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | `SESSION_TTL_MINUTES` | No | `30` | In-memory session expiry |
 | `MAX_TOOL_ROUNDS` | No | `8` | Agent tool loop cap |
 | `INGEST_STATES` | No | yaml `states` | Comma-separated active ingest states; intersected with `pdp_region_codes` catalog |
+| `ANALYTICS_ENABLED` | No | `true` | Set `false` to disable usage collection and the flush background task |
+| `ANALYTICS_FLUSH_INTERVAL_SECONDS` | No | `60` | Seconds between analytics drains to DuckDB |
+| `ADMIN_TOKEN` | No | empty | Shared secret for `GET /api/admin/usage`; endpoint hidden (404) when unset |
+| `ADMIN_USAGE_HOURS` | No | `2160` | Default lookback window (~3 months) for admin usage API when `since`/`until` omitted |
 
 \*Production requires a real API key **or** intentional mock mode for demos only.
 
@@ -926,9 +1084,10 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | File | Purpose |
 |---|---|
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
-| `config/deploy.yaml` | Ingest cron (`0 3 * * *` UTC), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
+| `config/deploy.yaml` | Ingest cron (`0 7 * * *` UTC core, `0 8 * * 0` UTC pharmacy), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
 | `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
-| `config/disclaimer.txt` | UI disclaimer banner |
+| `config/disclaimer.txt` | UI disclaimer banner + modal; includes a short privacy pointer to the full policy |
+| `config/privacy_policy.txt` | Full privacy policy (`GET /api/privacy`, Privacy menu modal) |
 
 ---
 
@@ -1038,7 +1197,7 @@ Default: **integration tests deselected** (`-m 'not integration'` in `pyproject.
 pytest tests/ -v -m integration
 ```
 
-Current suite: **347 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — 352 total. Run `pytest --collect-only -q` to confirm the current count.
+Current suite: **562 tests** run by default, plus 5 `integration`-marked tests (deselected by default; call live RxNorm/CMS APIs) — **567 total**. Run `pytest --collect-only -q` to confirm the current count.
 
 ### 14.2 Test categories
 
@@ -1050,10 +1209,12 @@ flowchart TB
         T3[test_citations — guardrails]
         T4[test_normalize_drug]
         T5[test_mcp_registry]
-        T10[test_insulin — allowlist, cap, catastrophic $0]
+        T10[test_insulin — allowlist, cap, catastrophic $0, session follow-up]
         T11[test_insulin_golden_contract — golden-037..045]
         T12[test_mixed_basket — insulin + oral baskets]
         T13[test_early_return_questions — enrollment, invalid input]
+        T14[test_channel_parity — uniform-channel prose repair]
+        T15[test_feedback — POST /api/feedback validation + JSONL store]
     end
     subgraph Integration
         T6[test_navigator — E2E agent]
@@ -1092,7 +1253,19 @@ Prompt chips in `frontend/src/index.html` use `S5921-400` (AARP Medicare Rx Pref
 medicare-ui-test run --offline
 ```
 
-Checks DOM IDs, guided-estimate flow, and smoke messages against a running or mocked API.
+Checks DOM IDs, guided-estimate flow, mandatory-field contract, and smoke messages against a running or mocked API.
+
+Playwright browser flows (`medicare-ui-test browser <flow>`):
+
+| Flow | Coverage |
+|---|---|
+| `chat` | Free-form chat smoke |
+| `guided-single` | Single-drug guided estimate |
+| `guided-multi` | Multi-drug guided estimate |
+| `guided-compare-plan` | Compare plans guided flow |
+| `responsive-interactions` | Mobile/tablet/desktop viewports — no horizontal scroll, 44px touch targets, keyboard focus, Escape on menu/modal, combobox expand/collapse |
+
+`medicare-ui-test run` accepts `--base-url` and `--timeout` for live-server runs.
 
 ### 14.6 Linting
 
@@ -1131,8 +1304,8 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 
 ### 16.2 Nightly ingest
 
-- Schedule: `config/deploy.yaml` → `ingest.cron: "0 3 * * *"` UTC
-- Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other`
+- Schedule: `config/deploy.yaml` → `ingest.cron: "0 7 * * *"` UTC (core), `ingest.pharmacy_cron: "0 8 * * 0"` UTC (pharmacy)
+- Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other --core-only --core-only`
 - Active states: `INGEST_STATES` env (e.g. `AR,TX,CA`) intersected with `pdp_region_codes` in yaml; falls back to yaml `states` when unset
 - Runs inside container via supercronic (not Render Cron Jobs — disks cannot mount there)
 - **Note:** nightly run reloads only the active states — list every state you want to keep in `INGEST_STATES`. Use `--merge-states` in Shell to add one state without wiping others.
@@ -1165,7 +1338,7 @@ medicare-ingest spuf --source tests/fixtures/spuf
 medicare-ingest spuf --download
 medicare-ingest spuf --download --states AR --merge-states
 medicare-ingest spuf --download --states CA --merge-states
-medicare-ingest spuf --download --preserve-other
+medicare-ingest spuf --download --preserve-other --core-only
 medicare-ingest spuf --source path/to.zip --states AR
 ```
 
@@ -1175,7 +1348,10 @@ medicare-ingest spuf --source path/to.zip --states AR
 | `--source PATH` | Local zip or extracted fixture directory |
 | `--states AR` | Override `INGEST_STATES` env and yaml defaults |
 | `--merge-states` | Replace only listed states (keep others in DB) |
-| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`); nightly cron reloads all SPUF tables for active states only |
+| `--preserve-other` | Keep non-SPUF tables (e.g. `query_log`); nightly cron reloads core SPUF tables for active states only |
+| `--core-only` | Skip `pharmacy_network` reload (default for nightly cron) |
+| `--with-pharmacy-network` | Also reload pharmacy network and enrich pharmacies |
+| `--force` | Run ingest even when manifest already has the current CMS zip version |
 | `--force-download` | Ignore cached zip in `data/raw/` |
 | `--monthly` | Use monthly PUF instead of quarterly SPUF |
 
@@ -1239,6 +1415,7 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 - Copay cost-sharing (with Bug 2 tier override) for oral drugs; statutory-capped copay for insulin
 - Per-pharmacy-channel pricing (preferred/standard retail, preferred/standard mail) via `estimate_drug_cost_all_channels`
 - PA/ST as soft caveats (cost still computed)
+- Nearby/preferred pharmacy lookup by ZIP code within a fixed 25-mile straight-line radius (`find_pharmacies`, §8.2) — no driving distance, real-time hours, or stock
 
 ### Out of scope (hard stops or deferred)
 
@@ -1260,11 +1437,12 @@ pytest tests/test_estimate_drug_cost.py -v -s -k "bug_2"
 |---|---|
 | [navigator-implementation-spec.md](./navigator-implementation-spec.md) | Implementing or changing cost logic |
 | [insulin-cost-estimation.md](./insulin-cost-estimation.md) | Implementing or changing insulin cost logic; CMS source docs, field-resolution evidence, worked examples |
-| [phase-6-implementation-plan.md](./phase-6-implementation-plan.md) | Understanding the Phase 6 pivot |
 | [deployment.md](./deployment.md) | Ops, cron, Render disk |
-| [data-sources.md](./data-sources.md) | CMS/RxNorm URLs (note stale Chroma sections) |
+| [usage-analytics.md](./usage-analytics.md) | Privacy-safe aggregate telemetry, admin API, dashboard |
+| [data-sources.md](./data-sources.md) | CMS/RxNorm/NPPES/ZIP-centroid URLs (note stale Chroma sections) |
+| [quality-test-todos.md](./quality-test-todos.md) | Known open risks/data gaps, including the pharmacy-locator items in §8.2 |
 | [build-requirements.md](../build-requirements.md) | Long-term product vision |
 
 ---
 
-*Last updated for Phase 6 (Navigator pivot). For doc issues, update this file alongside code changes.*
+*Last updated for Phase 6 plus usage analytics (`feature/frontend_anonymous`), RxNorm offline fallback, prompt-injection hardening, insulin session follow-up, channel-parity prose repair, guided-form mandatory hints, and the ZIP pharmacy locator (`find_pharmacies`). For doc issues, update this file alongside code changes.*

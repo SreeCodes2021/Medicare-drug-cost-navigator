@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from medicare_navigator.agent.mediator import MediatorRewrite
 
 from medicare_navigator.agent.prompts import build_navigator_system_prompt
+from medicare_navigator.analytics.collector import collector
 from medicare_navigator.config import settings
 from medicare_navigator.guardrails.citations import (
     apply_guardrails,
@@ -31,6 +32,7 @@ from medicare_navigator.models.response import (
     DrugCostEstimate,
     LlmUsage,
     MultiChannelDrugCostEstimate,
+    PharmacyResult,
     QueryResponse,
 )
 from medicare_navigator.session.manager import session_manager
@@ -105,6 +107,16 @@ def _record_tool_artifact(
     tool_artifacts[name] = artifact
     if name == "estimate_drug_cost_all_channels":
         tool_artifacts.setdefault(_MULTI_CHANNEL_CALLS_KEY, []).append(artifact)
+
+
+def _pharmacies_from_artifacts(tool_artifacts: dict[str, Any]) -> list[PharmacyResult]:
+    artifact = tool_artifacts.get("find_pharmacies")
+    if not artifact or artifact.get("status") != "ok":
+        return []
+    data = artifact.get("data") or []
+    if not isinstance(data, list):
+        return []
+    return [PharmacyResult.model_validate(p) for p in data]
 
 
 def _last_tool_call_key(arguments: dict[str, Any]) -> str:
@@ -364,6 +376,17 @@ def _build_initial_messages(
     mixed = _mixed_intent_note(message)
     if mixed:
         blocks.append(mixed)
+    from medicare_navigator.agent.compound_questions import (
+        compound_prefetch_context,
+        compound_question_note,
+    )
+
+    compound = compound_question_note(message)
+    if compound:
+        blocks.append(compound)
+    prefetch = compound_prefetch_context(message)
+    if prefetch:
+        blocks.append(prefetch)
     blocks.append(f"Current user message: {message}")
     return [{"role": "user", "content": "\n\n".join(blocks)}]
 
@@ -432,22 +455,10 @@ def _log_query(
     statuses: dict[str, str],
     latency_ms: float,
 ) -> None:
+    # Queued in-memory and written by analytics.flush's periodic loop — never a
+    # blocking disk write on this hot path. See analytics/collector.py.
     try:
-        from medicare_navigator.storage.connection import DuckDBConnection
-
-        db = DuckDBConnection()
-        conn = db.connect()
-        conn.execute(
-            "INSERT INTO query_log VALUES (?, ?, ?, ?, ?, current_timestamp)",
-            [
-                query_id,
-                session_id or "",
-                json.dumps(tools),
-                json.dumps(statuses),
-                latency_ms,
-            ],
-        )
-        conn.close()
+        collector.record_query_log(query_id, session_id or "", tools, statuses, latency_ms)
     except Exception:
         pass
 
@@ -637,6 +648,7 @@ class Navigator:
         from medicare_navigator.agent.insulin_requests import (
             message_names_non_insulin_cost_drugs,
             resolve_insulin_request,
+            resolve_insulin_session_follow_up,
         )
         from medicare_navigator.agent.mixed_basket_requests import (
             build_batch_requests,
@@ -644,15 +656,43 @@ class Navigator:
             batch_result_to_artifact,
             resolve_mixed_basket_request,
         )
+        from medicare_navigator.agent.compound_questions import (
+            should_defer_deterministic_insulin,
+            should_defer_resolver,
+        )
         from medicare_navigator.agent.oop_questions import resolve_oop_question
+        from medicare_navigator.agent.pharmacy_questions import (
+            build_find_pharmacies_session_call,
+            find_pharmacies_had_results,
+            message_names_priceable_drug,
+            resolve_nearby_pharmacy_question,
+            resolve_pharmacy_cost_question,
+            resolve_pharmacy_radius_follow_up,
+            resolve_plan_coverage_question,
+            resolve_plan_pharmacy_match_question,
+            resolve_preferred_pharmacy_question,
+        )
         from medicare_navigator.agent.tier_questions import resolve_tier_question
         from medicare_navigator.guardrails.citations import apply_guardrails, build_citations_from_artifacts
         from medicare_navigator.tools.batch_estimate import run_batch_estimates
 
-        tier_result = await resolve_tier_question(
-            message,
-            filter_plan_id=filter_plan_id,
-            filter_drug=filter_slots.drug if filter_slots else None,
+        # Computed up front (not just before the MixedBasket check further down) so the
+        # plan-scoped pharmacy resolvers below can defer on the same signal — a duration
+        # phrase makes a single 30-day-fill pharmacy-cost answer just as wrong as it would
+        # a mixed-basket one (see has_unhandled_date_window's original use below).
+        has_unhandled_date_window = (
+            date_context is not None
+            and (date_context.duration_count is not None or date_context.explicit_month is not None)
+        ) or bool(_DURATION_PHRASE_RE.search(message))
+
+        tier_result = (
+            await resolve_tier_question(
+                message,
+                filter_plan_id=filter_plan_id,
+                filter_drug=filter_slots.drug if filter_slots else None,
+            )
+            if not should_defer_resolver(message, "tier")
+            else None
         )
         if tier_result:
             explanation, tool_artifacts, tools_invoked = tier_result
@@ -679,7 +719,11 @@ class Navigator:
                 response_source="System/Tier",
             )
 
-        oop_result = resolve_oop_question(message, filter_plan_id=filter_plan_id)
+        oop_result = (
+            resolve_oop_question(message, filter_plan_id=filter_plan_id)
+            if not should_defer_resolver(message, "oop")
+            else None
+        )
         if oop_result:
             explanation, tool_artifacts, tools_invoked = oop_result
             citations = build_citations_from_artifacts(tool_artifacts)
@@ -727,13 +771,273 @@ class Navigator:
                 response_source="System/Alternatives",
             )
 
+        pharmacy_radius_result = resolve_pharmacy_radius_follow_up(
+            message, session.get("last_tool_calls")
+        )
+        if pharmacy_radius_result:
+            explanation, tool_artifacts, tools_invoked, status = pharmacy_radius_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses={},
+                response_source="System/NearbyPharmacy",
+            )
+
+        # Q2 prices a single fixed-days_supply fill (defaulting to 30 days) with no
+        # duration/date-window field at all — the same "silently single-fill a multi-month
+        # ask" bug MixedBasket was fixed for below, just reached through the "preferred
+        # pharmacy" wording instead. Defer to the agent loop whenever a duration signal is
+        # present so it isn't silently dropped.
+        pharmacy_cost_result = (
+            None
+            if has_unhandled_date_window
+            else await resolve_pharmacy_cost_question(
+                message,
+                filter_plan_id=filter_plan_id,
+                filter_days_supply=filter_slots.days_supply if filter_slots else None,
+                filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+                filter_drug=filter_slots.drug if filter_slots else None,
+                filter_dosage=filter_slots.dosage if filter_slots else None,
+            )
+        )
+        if pharmacy_cost_result:
+            explanation, tool_artifacts, tools_invoked, status = pharmacy_cost_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                preferred_only=True,
+                channel="preferred_retail",
+                limit=1,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PharmacyCost",
+            )
+
+        # When Q2 just deferred on a duration signal above, Q1 would otherwise catch the
+        # same "preferred pharmac..." wording next and answer with a bare pharmacy list —
+        # dropping the multi-month cost question a second time through a different
+        # resolver. Only defer Q1 too when a drug is also named (there's a cost question
+        # to protect); a plain "what are my preferred pharmacies" ask with no drug at all
+        # is unaffected by any duration wording and must still answer immediately.
+        preferred_pharmacy_result = (
+            None
+            if (
+                should_defer_resolver(message, "pharmacy")
+                or (has_unhandled_date_window and message_names_priceable_drug(message))
+            )
+            else resolve_preferred_pharmacy_question(message, filter_plan_id=filter_plan_id)
+        )
+        if preferred_pharmacy_result:
+            explanation, tool_artifacts, tools_invoked, status = preferred_pharmacy_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                preferred_only=True,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PreferredPharmacy",
+            )
+
+        plan_pharmacy_match_result = (
+            await resolve_plan_pharmacy_match_question(
+                message,
+                filter_plan_id=filter_plan_id,
+                filter_drug=filter_slots.drug if filter_slots else None,
+                filter_dosage=filter_slots.dosage if filter_slots else None,
+            )
+            if not should_defer_resolver(message, "plan_coverage")
+            else None
+        )
+        if plan_pharmacy_match_result:
+            explanation, tool_artifacts, tools_invoked, status = plan_pharmacy_match_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=None,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/PlanPharmacyMatch",
+            )
+
+        plan_coverage_result = (
+            await resolve_plan_coverage_question(
+                message,
+                filter_plan_id=filter_plan_id,
+                filter_drug=filter_slots.drug if filter_slots else None,
+                filter_dosage=filter_slots.dosage if filter_slots else None,
+            )
+            if not should_defer_resolver(message, "plan_coverage")
+            else None
+        )
+        if plan_coverage_result:
+            explanation, tool_artifacts, tools_invoked, status = plan_coverage_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+                if name in tools_invoked
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                response_source="System/PlanCoverage",
+            )
+
+        nearby_pharmacy_result = (
+            resolve_nearby_pharmacy_question(message, filter_plan_id=filter_plan_id)
+            if not should_defer_resolver(message, "pharmacy")
+            else None
+        )
+        if nearby_pharmacy_result:
+            explanation, tool_artifacts, tools_invoked, status = nearby_pharmacy_result
+            citations = build_citations_from_artifacts(tool_artifacts)
+            explanation, citations, _ = apply_guardrails(
+                explanation, tool_artifacts, citations
+            )
+            tool_statuses = {
+                name: artifact.get("status", "unknown")
+                for name, artifact in tool_artifacts.items()
+            }
+            latency = (time.perf_counter() - start) * 1000
+            _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)
+            last_call = build_find_pharmacies_session_call(
+                message,
+                filter_plan_id=filter_plan_id,
+                had_results=find_pharmacies_had_results(tool_artifacts),
+            )
+            if last_call:
+                session_manager.set_last_tool_calls(session, [last_call])
+            session_manager.append_turn(session, log_message, explanation, query_id=query_id)
+            return QueryResponse(
+                query_id=query_id,
+                session_id=session["session_id"],
+                status=status,
+                explanation=explanation,
+                citations=citations,
+                disclaimer=settings.disclaimer_text,
+                tools_invoked=tools_invoked,
+                tool_statuses=tool_statuses,
+                pharmacies=_pharmacies_from_artifacts(tool_artifacts),
+                response_source="System/NearbyPharmacy",
+            )
+
         insulin_request = resolve_insulin_request(
             message,
             filter_plan_id=filter_plan_id,
             filter_days_supply=filter_slots.days_supply if filter_slots else None,
             filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
         )
-        if insulin_request and insulin_request.is_policy_question:
+        if insulin_request is None or (
+            not insulin_request.products and not insulin_request.is_policy_question
+        ):
+            session_insulin = resolve_insulin_session_follow_up(
+                message,
+                session.get("last_tool_calls"),
+                filter_plan_id=filter_plan_id,
+                filter_days_supply=filter_slots.days_supply if filter_slots else None,
+                filter_ytd_oop_spend=filter_slots.ytd_oop_spend if filter_slots else None,
+            )
+            if session_insulin is not None:
+                insulin_request = session_insulin
+        if (
+            insulin_request
+            and insulin_request.is_policy_question
+            and not should_defer_resolver(message, "insulin_policy")
+        ):
             explanation = _explanation_with_disclaimer(_insulin_policy_explanation())
             session_manager.append_turn(session, log_message, explanation, query_id=query_id)
             return QueryResponse(
@@ -752,11 +1056,8 @@ class Navigator:
         # fall through to the agent loop instead (Phase 3b). The mediator (when enabled) is the
         # precise signal; _DURATION_PHRASE_RE is a cheap regex fallback so this guard still holds
         # with MEDIATOR_ENABLED=False (the default) rather than only degrading gracefully when
-        # the mediator is on.
-        has_unhandled_date_window = (
-            date_context is not None
-            and (date_context.duration_count is not None or date_context.explicit_month is not None)
-        ) or bool(_DURATION_PHRASE_RE.search(message))
+        # the mediator is on. (has_unhandled_date_window is computed once, up top, so the
+        # pharmacy resolvers above see the exact same signal.)
         mixed_request = (
             None
             if has_unhandled_date_window
@@ -826,9 +1127,17 @@ class Navigator:
                 response_source="System/MixedBasket",
             )
 
-        if insulin_request and insulin_request.products and (
-            insulin_request.plan_key or len(insulin_request.plan_keys) >= 2
-        ) and not message_names_non_insulin_cost_drugs(message):
+        if (
+            insulin_request
+            and insulin_request.products
+            and (insulin_request.plan_key or len(insulin_request.plan_keys) >= 2)
+            and not message_names_non_insulin_cost_drugs(message)
+            and not should_defer_deterministic_insulin(
+                message,
+                insulin_request,
+                has_unhandled_date_window=has_unhandled_date_window,
+            )
+        ):
             from medicare_navigator.agent.datetime_context import resolve_explicit_start_date
 
             budget_start_date = None
@@ -904,7 +1213,10 @@ class Navigator:
         start = time.perf_counter()
         query_id = str(uuid.uuid4())
         model_id = llm_model or default_llm_model()
+        was_new_session = session_manager.is_new(session_id)
         session = session_manager.get_or_create(session_id)
+        if was_new_session and settings.analytics_enabled:
+            collector.record_new_session()
         chat_history = session.get("chat_history", [])
 
         if not session_manager.can_continue(session):
@@ -1004,10 +1316,15 @@ class Navigator:
             latency = (time.perf_counter() - start) * 1000
             _log_query(query_id, session["session_id"], tools_invoked, {}, latency)
             session_manager.append_turn(session, message, explanation, query_id=query_id)
+            invalid_status = (
+                "ok"
+                if "get_part_d_benefit_params" in tools_invoked
+                else "needs_clarification"
+            )
             return QueryResponse(
                 query_id=query_id,
                 session_id=session["session_id"],
-                status="needs_clarification",
+                status=invalid_status,
                 explanation=explanation,
                 disclaimer=settings.disclaimer_text,
                 tools_invoked=tools_invoked,
@@ -1178,6 +1495,19 @@ class Navigator:
                 explanation = retry_explanation
                 citations = retry_citations
 
+        from medicare_navigator.agent.compound_questions import (
+            compound_reply_complete,
+            enrich_compound_agent_explanation,
+        )
+
+        explanation = await enrich_compound_agent_explanation(
+            effective_message,
+            explanation,
+            filter_plan_id=filter_plan_id,
+            tool_artifacts=tool_artifacts,
+            last_tool_calls=last_tool_calls,
+        )
+
         if new_last_tool_calls:
             prior_last_tool_calls = session.get("last_tool_calls") or []
             merged_last_tool_calls = _merge_last_tool_calls(
@@ -1239,6 +1569,11 @@ class Navigator:
                     and _parsed_plan_in_message(effective_message)
                 ):
                     status = "not_found"
+
+        if status == "needs_clarification" and compound_reply_complete(
+            effective_message, explanation
+        ):
+            status = "ok"
 
         latency = (time.perf_counter() - start) * 1000
         _log_query(query_id, session["session_id"], tools_invoked, tool_statuses, latency)

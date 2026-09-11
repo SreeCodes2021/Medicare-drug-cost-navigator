@@ -11,11 +11,13 @@ from medicare_navigator.ui_test.checks import BROWSER_FLOW_NAMES, DEFAULT_BASE_U
 def _cmd_run(args: argparse.Namespace) -> int:
     groups = set(args.groups.split(",")) if args.groups else {"static", "api", "chat"}
     offline = getattr(args, "offline", False)
+    base_url = getattr(args, "base_url", DEFAULT_BASE_URL)
+    timeout = getattr(args, "timeout", 120.0)
     report = run_checks(
         groups=groups,
-        offline=args.offline,
-        base_url=args.base_url,
-        timeout=args.timeout,
+        offline=offline,
+        base_url=base_url,
+        timeout=timeout,
     )
     payload = report.to_dict()
     print(json.dumps(payload, indent=2))
@@ -111,6 +113,17 @@ def main(argv: list[str] | None = None) -> int:
         "--offline",
         action="store_true",
         help="Use in-process FastAPI TestClient (no running server required)",
+    )
+    run.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help=f"Live API base URL when not using --offline (default: {DEFAULT_BASE_URL})",
+    )
+    run.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="HTTP timeout in seconds",
     )
     run.set_defaults(func=_cmd_run)
 

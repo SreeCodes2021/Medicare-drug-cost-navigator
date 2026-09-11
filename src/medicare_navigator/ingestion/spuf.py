@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import yaml
 from medicare_navigator.config import settings
 from medicare_navigator.ingestion.manifest import calendar_quarter_from_date, load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
+from medicare_navigator.ingestion.npi_enrichment import enrich_pharmacy_identifiers
 from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
 from medicare_navigator.storage.connection import DuckDBConnection
 
@@ -35,6 +37,19 @@ FORMULARY_FILE_HINTS = ("basic drugs formulary",)
 BENEFICIARY_COST_FILE_HINTS = ("beneficiary cost",)
 PRICING_FILE_HINTS = ("pricing",)
 INSULIN_FILE_HINTS = ("insulin beneficiary cost",)
+PHARMACY_NETWORK_FILE_HINTS = ("pharmacy network",)
+
+# CMS Pharmacy Network file column names are unconfirmed from memory — hint-based, defensive
+# lookups below (.get() with graceful None) so an ingest degrades gracefully rather than
+# KeyError-ing if a real downloaded file uses different column names than guessed here.
+PHARMACY_NETWORK_NPI_COLUMNS = ("NPI", "PHARMACY_NPI", "PROVIDER_ID")
+PHARMACY_NETWORK_NUMBER_COLUMNS = ("PHARMACY_NUMBER",)
+PHARMACY_NETWORK_PREFERRED_COLUMNS = ("PREFERRED_YN", "NTWRK_TYPE")
+PHARMACY_NETWORK_RETAIL_COLUMNS = ("RETAIL_YN", "PHARMACY_RETAIL")
+PHARMACY_NETWORK_MAIL_COLUMNS = ("MAIL_YN", "PHARMACY_MAIL")
+PHARMACY_NETWORK_LTC_COLUMNS = ("LTC_YN",)
+PHARMACY_NETWORK_HOME_INFUSION_COLUMNS = ("HOME_INFUSION_YN",)
+PHARMACY_NETWORK_ZIP_COLUMNS = ("PHARMACY_ZIPCODE", "PHARMACY_ZIP")
 
 # CMS insulin beneficiary cost file column per pharmacy channel. Unlike the general
 # beneficiary cost file, there is no COST_TYPE_* selector — copay_amt_*_insln is the
@@ -55,6 +70,9 @@ INSULIN_PHARMACY_CHANNEL_COLUMNS: dict[str, str] = {
 _PROGRESS_INTERVAL = 500_000
 _WRITE_PARTS = 10
 _FORMULARY_WRITE_PARTS = 100
+# Stream pharmacy-network inserts in fixed batches so we never hold a full CMS part (~5M
+# rows) in memory, and never accumulate rows across parts (OOM on Render Starter).
+_PHARMACY_NETWORK_BATCH = 50_000
 
 _FORMULARY_INSERT_SQL = """
 INSERT INTO basic_drugs_formulary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -65,6 +83,12 @@ INSERT INTO beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 _PRICING_INSERT_SQL = "INSERT INTO pricing VALUES (?, ?, ?, ?)"
 _INSULIN_BENEFICIARY_COST_INSERT_SQL = """
 INSERT INTO insulin_beneficiary_cost VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
+_PHARMACY_NETWORK_INSERT_SQL = """
+INSERT INTO pharmacy_network VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+_PHARMACIES_INSERT_SQL = """
+INSERT INTO pharmacies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -121,6 +145,89 @@ def _insert_in_parts(
         inserted += len(batch)
         _progress(
             f"wrote part {part_num}/{parts} ({inserted:,}/{total:,} rows)",
+            file=label,
+        )
+    return inserted
+
+
+def _insert_pharmacy_network_part(
+    conn,
+    source: Path,
+    pharmacy_member: str | Path,
+    plans: dict[str, dict[str, Any]],
+    *,
+    as_of: str,
+    part_index: int,
+    total_parts: int,
+    pharmacy_network_npis: set[str],
+    pharmacy_zip_by_npi: dict[str, str],
+) -> int:
+    """Scan one CMS pharmacy-network file and insert matching rows."""
+    from medicare_navigator.ingestion.bulk_load import (
+        bulk_insert_pharmacy_network_part,
+        materialize_spuf_member,
+        use_bulk_load,
+    )
+
+    member_path = materialize_spuf_member(source, pharmacy_member)
+    if use_bulk_load(member_path):
+        count, zip_by_npi, npis = bulk_insert_pharmacy_network_part(
+            conn,
+            source,
+            pharmacy_member,
+            as_of=as_of,
+            part_index=part_index,
+            total_parts=total_parts,
+        )
+        pharmacy_network_npis.update(npis)
+        pharmacy_zip_by_npi.update(zip_by_npi)
+        return count
+
+    batch: list[list[Any]] = []
+    inserted = 0
+    label = pharmacy_member
+    for row in _iter_rows(source, pharmacy_member):
+        contract_id = row.get("CONTRACT_ID", "").strip()
+        plan_id = row.get("PLAN_ID", "").strip()
+        plan_key = f"{contract_id}-{plan_id}"
+        if plan_key not in plans:
+            continue
+        membership = _extract_pharmacy_network_row(row)
+        if membership is None:
+            continue
+        npi = membership["npi"]
+        pharmacy_network_npis.add(npi)
+        zip_code = membership.get("zip_code")
+        if zip_code:
+            pharmacy_zip_by_npi[npi] = zip_code
+        batch.append(
+            [
+                plan_key,
+                npi,
+                membership["preferred_yn"],
+                membership["retail_yn"],
+                membership["mail_yn"],
+                membership["ltc_yn"],
+                membership["home_infusion_yn"],
+                as_of,
+            ]
+        )
+        if len(batch) < _PHARMACY_NETWORK_BATCH:
+            continue
+        conn.executemany(_PHARMACY_NETWORK_INSERT_SQL, batch)
+        inserted += len(batch)
+        _progress(
+            f"inserted {inserted:,} pharmacy network row(s) from part "
+            f"{part_index}/{total_parts}...",
+            file=label,
+        )
+        batch = []
+    if batch:
+        conn.executemany(_PHARMACY_NETWORK_INSERT_SQL, batch)
+        inserted += len(batch)
+    if inserted:
+        _progress(
+            f"finished part {part_index}/{total_parts}: {inserted:,} pharmacy network row(s).",
             file=label,
         )
     return inserted
@@ -248,19 +355,47 @@ def _read_pipe_from_zip(zf: zipfile.ZipFile, member: str) -> Iterator[dict[str, 
 def _find_member(
     names: list[str], hints: tuple[str, ...], *, exclude_hints: tuple[str, ...] = ()
 ) -> str | None:
+    matches = _find_all_members(names, hints, exclude_hints=exclude_hints)
+    return matches[0] if matches else None
+
+
+def _pharmacy_network_part_sort_key(name: str) -> tuple[int, str]:
+    match = re.search(r"part\s*(\d+)", name, re.I)
+    return (int(match.group(1)) if match else 0, name.lower())
+
+
+def _find_all_members(
+    names: list[str], hints: tuple[str, ...], *, exclude_hints: tuple[str, ...] = ()
+) -> list[str]:
+    """Return every archive member matching ``hints``, sorted (pharmacy-network parts by number)."""
     lowered = [
         (n, n.lower())
         for n in names
         if not any(ex in n.lower() for ex in exclude_hints)
     ]
+    matches: list[str] = []
     for hint in hints:
         for original, low in lowered:
-            if hint in low and low.endswith(".txt"):
-                return original
-    for hint in hints:
-        for original, low in lowered:
-            if hint in low:
-                return original
+            if hint in low and low.endswith(".txt") and original not in matches:
+                matches.append(original)
+    if not matches:
+        for hint in hints:
+            for original, low in lowered:
+                if hint in low and original not in matches:
+                    matches.append(original)
+    if any("pharmacy network" in n.lower() for n in matches):
+        matches.sort(key=_pharmacy_network_part_sort_key)
+    else:
+        matches.sort(key=str.lower)
+    return matches
+
+
+def _normalize_pharmacy_zipcode(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    digits = "".join(ch for ch in raw.strip() if ch.isdigit())
+    if len(digits) >= 5:
+        return digits[:5]
     return None
 
 
@@ -406,11 +541,66 @@ def _extract_insulin_cost_shares(row: dict[str, str]) -> list[dict[str, Any]]:
     return shares
 
 
-def _discover_spuf_files(source: Path) -> dict[str, str | Path | None]:
+def _first_present(row: dict[str, str], columns: tuple[str, ...]) -> str | None:
+    for col in columns:
+        if col in row:
+            return row[col]
+    return None
+
+
+def _extract_pharmacy_network_row(row: dict[str, str]) -> dict[str, Any] | None:
+    """Extract one pharmacy-network membership row.
+
+    Supports the offline test fixture (NPI + PREFERRED_YN/RETAIL_YN/MAIL_YN) and the
+    quarterly CMS PPUF layout (PHARMACY_NUMBER + PHARMACY_ZIPCODE + PHARMACY_RETAIL/MAIL
+    + PREFERRED_STATUS_RETAIL/MAIL).
+    """
+    npi = (_first_present(row, PHARMACY_NETWORK_NPI_COLUMNS) or "").strip()
+    pharmacy_number = (_first_present(row, PHARMACY_NETWORK_NUMBER_COLUMNS) or "").strip()
+    identifier = npi or pharmacy_number
+    if not identifier:
+        return None
+
+    zip_code = _normalize_pharmacy_zipcode(_first_present(row, PHARMACY_NETWORK_ZIP_COLUMNS))
+    cms_retail_col = row.get("PHARMACY_RETAIL")
+    cms_mail_col = row.get("PHARMACY_MAIL")
+    if cms_retail_col is not None or cms_mail_col is not None or zip_code is not None:
+        retail_yn = _parse_bool_yn(cms_retail_col)
+        mail_yn = _parse_bool_yn(cms_mail_col)
+        if not retail_yn and not mail_yn:
+            return None
+        pref_retail = _parse_bool_yn(row.get("PREFERRED_STATUS_RETAIL"))
+        pref_mail = _parse_bool_yn(row.get("PREFERRED_STATUS_MAIL"))
+        preferred_yn = (pref_retail and retail_yn) or (pref_mail and mail_yn)
+        return {
+            "npi": identifier,
+            "preferred_yn": preferred_yn,
+            "retail_yn": retail_yn,
+            "mail_yn": mail_yn,
+            "ltc_yn": False,
+            "home_infusion_yn": False,
+            "zip_code": zip_code,
+        }
+
+    return {
+        "npi": identifier,
+        "preferred_yn": _parse_bool_yn(_first_present(row, PHARMACY_NETWORK_PREFERRED_COLUMNS)),
+        "retail_yn": _parse_bool_yn(_first_present(row, PHARMACY_NETWORK_RETAIL_COLUMNS)),
+        "mail_yn": _parse_bool_yn(_first_present(row, PHARMACY_NETWORK_MAIL_COLUMNS)),
+        "ltc_yn": _parse_bool_yn(_first_present(row, PHARMACY_NETWORK_LTC_COLUMNS)),
+        "home_infusion_yn": _parse_bool_yn(
+            _first_present(row, PHARMACY_NETWORK_HOME_INFUSION_COLUMNS)
+        ),
+        "zip_code": zip_code,
+    }
+
+
+def _discover_spuf_files(source: Path) -> dict[str, str | Path | list[str | Path] | None]:
     if source.is_dir():
         names = [p.name for p in source.iterdir() if p.is_file()]
         base = source
         insulin_name = _find_member(names, INSULIN_FILE_HINTS)
+        pharmacy_network_names = _find_all_members(names, PHARMACY_NETWORK_FILE_HINTS)
         return {
             "plan": base / _find_member(names, PLAN_FILE_HINTS),
             "formulary": base / _find_member(names, FORMULARY_FILE_HINTS),
@@ -418,10 +608,13 @@ def _discover_spuf_files(source: Path) -> dict[str, str | Path | None]:
             / _find_member(names, BENEFICIARY_COST_FILE_HINTS, exclude_hints=INSULIN_FILE_HINTS),
             "pricing": base / _find_member(names, PRICING_FILE_HINTS),
             "insulin_beneficiary_cost": (base / insulin_name) if insulin_name else None,
+            "pharmacy_network": (base / pharmacy_network_names[0]) if pharmacy_network_names else None,
+            "pharmacy_network_parts": [base / name for name in pharmacy_network_names],
         }
     if source.suffix.lower() == ".zip":
         with zipfile.ZipFile(source) as zf:
             names = zf.namelist()
+            pharmacy_network_names = _find_all_members(names, PHARMACY_NETWORK_FILE_HINTS)
             return {
                 "plan": _find_member(names, PLAN_FILE_HINTS),
                 "formulary": _find_member(names, FORMULARY_FILE_HINTS),
@@ -430,6 +623,8 @@ def _discover_spuf_files(source: Path) -> dict[str, str | Path | None]:
                 ),
                 "pricing": _find_member(names, PRICING_FILE_HINTS),
                 "insulin_beneficiary_cost": _find_member(names, INSULIN_FILE_HINTS),
+                "pharmacy_network": pharmacy_network_names[0] if pharmacy_network_names else None,
+                "pharmacy_network_parts": pharmacy_network_names,
             }
     raise FileNotFoundError(f"SPUF source must be a directory or .zip file: {source}")
 
@@ -476,7 +671,7 @@ def _purge_states(conn, states: list[str]) -> int:
             f"DELETE FROM basic_drugs_formulary WHERE formulary_id IN ({fid_placeholders})",
             formulary_ids,
         )
-    for table in ("beneficiary_cost", "insulin_beneficiary_cost", "pricing"):
+    for table in ("beneficiary_cost", "insulin_beneficiary_cost", "pricing", "pharmacy_network"):
         conn.execute(
             f"DELETE FROM {table} WHERE plan_key IN ({plan_subquery})",
             normalized,
@@ -593,6 +788,7 @@ def ingest_spuf(
     version: str | None = None,
     preserve_non_spuf_tables: bool = False,
     merge_states: bool = False,
+    include_pharmacy_network: bool = False,
 ) -> dict[str, Any]:
     """Load CMS SPUF into DuckDB. Source may be a .zip or directory of pipe-delimited files."""
     filters = filters or IngestFilters.resolve()
@@ -608,32 +804,44 @@ def ingest_spuf(
     ingest_quarter = calendar_quarter_from_date(date.today())
     source_id = f"cms_spuf_{filters.contract_year}_q{ingest_quarter}"
 
+    from medicare_navigator.ingestion.bulk_load import configure_ingest_connection
+
     db = db or DuckDBConnection()
     conn = db.connect()
+    configure_ingest_connection(conn)
     _progress(
         f"Ingesting SPUF into {db.path} "
-        f"(states={','.join(filters.states)}, merge_states={merge_states})...",
+        f"(states={','.join(filters.states)}, merge_states={merge_states}, "
+        f"pharmacy_network={include_pharmacy_network})...",
         file=source,
     )
     try:
+        core_spuf_tables = (
+            "plans",
+            "basic_drugs_formulary",
+            "beneficiary_cost",
+            "insulin_beneficiary_cost",
+            "pricing",
+        )
         if merge_states:
             create_tables(conn, drop_existing=False)
             purged = _purge_states(conn, filters.states)
             if purged:
                 _progress(f"Purged {purged} existing plan(s) for merge.", file="plans")
         elif preserve_non_spuf_tables:
-            for table in (
-                "plans",
-                "basic_drugs_formulary",
-                "beneficiary_cost",
-                "insulin_beneficiary_cost",
-                "pricing",
-            ):
+            for table in core_spuf_tables:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
+            if include_pharmacy_network:
+                conn.execute("DROP TABLE IF EXISTS pharmacy_network")
             create_tables(conn, drop_existing=False)
             purged = 0
         else:
-            create_tables(conn, drop_existing=True)
+            if include_pharmacy_network:
+                create_tables(conn, drop_existing=True)
+            else:
+                for table in core_spuf_tables:
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
+                create_tables(conn, drop_existing=False)
             purged = 0
 
         plans: dict[str, dict[str, Any]] = {}
@@ -742,6 +950,7 @@ def ingest_spuf(
             formulary_by_version.setdefault(fid, {}).setdefault(version_str, []).append(formulary_row)
 
         formulary_drugs = _select_max_version_rows(formulary_by_version)
+        del formulary_by_version
         matched_drugs = sum(len(v) for v in formulary_drugs.values())
         _progress(
             f"scan done: {formulary_scanned:,} rows scanned, "
@@ -787,6 +996,7 @@ def ingest_spuf(
                     len(beneficiary_cost_rows),
                     label=files["beneficiary_cost"],
                 )
+            del beneficiary_cost_rows
 
         insulin_beneficiary_cost_rows: list[list[Any]] = []
         if files.get("insulin_beneficiary_cost"):
@@ -822,6 +1032,7 @@ def ingest_spuf(
                     len(insulin_beneficiary_cost_rows),
                     label=files["insulin_beneficiary_cost"],
                 )
+            del insulin_beneficiary_cost_rows
 
         formulary_total = _count_formulary_insert_rows(formulary_drugs)
         _progress(
@@ -837,24 +1048,118 @@ def ingest_spuf(
             label="basic_drugs_formulary",
             parts=_FORMULARY_WRITE_PARTS,
         )
-        _progress(f"inserted {formulary_inserted:,} basic_drugs_formulary row(s).", file="basic_drugs_formulary")
+        _progress(
+            f"inserted {formulary_inserted:,} basic_drugs_formulary row(s).",
+            file="basic_drugs_formulary",
+        )
+        del formulary_drugs
+
+        pharmacy_network_npis: set[str] = set()
+        pharmacy_zip_by_npi: dict[str, str] = {}
+        pharmacy_network_parts = files.get("pharmacy_network_parts") or []
+        if not pharmacy_network_parts and files.get("pharmacy_network"):
+            pharmacy_network_parts = [files["pharmacy_network"]]
+        if include_pharmacy_network and pharmacy_network_parts:
+            for part_index, pharmacy_member in enumerate(pharmacy_network_parts, start=1):
+                _progress(
+                    f"Loading pharmacy network part {part_index}/{len(pharmacy_network_parts)}...",
+                    file=pharmacy_member,
+                )
+                _insert_pharmacy_network_part(
+                    conn,
+                    source,
+                    pharmacy_member,
+                    plans,
+                    as_of=as_of,
+                    part_index=part_index,
+                    total_parts=len(pharmacy_network_parts),
+                    pharmacy_network_npis=pharmacy_network_npis,
+                    pharmacy_zip_by_npi=pharmacy_zip_by_npi,
+                )
+
+            # `pharmacies` is not plan-key-keyed and is never dropped/purged on a state
+            # reingest (same NPI can serve multiple states' networks) — dedupe against
+            # what's already there instead of re-enriching every NPI every run.
+            existing_npis = {
+                row[0] for row in conn.execute("SELECT npi FROM pharmacies").fetchall()
+            }
+            new_npis = sorted(pharmacy_network_npis - existing_npis)
+            if new_npis:
+                _progress(
+                    f"Enriching {len(new_npis):,} new pharmacy identifier(s) via NPPES...",
+                    file="pharmacies",
+                )
+                enriched = enrich_pharmacy_identifiers(new_npis)
+                pharmacy_rows = []
+                for npi in new_npis:
+                    record = enriched.get(npi)
+                    if record:
+                        pharmacy_rows.append(
+                            [
+                                npi,
+                                record.get("pharmacy_name"),
+                                record.get("address_line1"),
+                                record.get("city"),
+                                record.get("state"),
+                                record.get("zip_code"),
+                                record.get("phone"),
+                                record.get("enrichment_source"),
+                                as_of,
+                            ]
+                        )
+                        continue
+                    zip_code = pharmacy_zip_by_npi.get(npi)
+                    if not zip_code:
+                        continue
+                    pharmacy_rows.append(
+                        [
+                            npi,
+                            f"Pharmacy near {zip_code}",
+                            None,
+                            None,
+                            None,
+                            zip_code,
+                            None,
+                            "cms_pharmacy_zipcode",
+                            as_of,
+                        ]
+                    )
+                if pharmacy_rows:
+                    _insert_in_parts(
+                        conn,
+                        _PHARMACIES_INSERT_SQL,
+                        iter(pharmacy_rows),
+                        len(pharmacy_rows),
+                        label="pharmacies",
+                    )
+                _progress(f"enriched {len(pharmacy_rows):,} pharmacy record(s).", file="pharmacies")
 
         if files.get("pricing"):
-            _progress("Counting matching pricing rows...", file=files["pricing"])
-            pricing_total = _count_pricing_rows(source, files["pricing"], plans)
-            _progress(
-                f"Inserting {pricing_total:,} pricing row(s) in {_WRITE_PARTS} parts "
-                "(scanning pricing file; may take 20–40 min on Starter)...",
-                file=files["pricing"],
+            from medicare_navigator.ingestion.bulk_load import (
+                bulk_insert_pricing,
+                materialize_spuf_member,
+                use_bulk_load,
             )
-            pricing_inserted = _insert_in_parts(
-                conn,
-                _PRICING_INSERT_SQL,
-                _iter_pricing_insert_rows(source, files["pricing"], plans),
-                pricing_total,
-                label=files["pricing"],
-            )
-            _progress(f"inserted {pricing_inserted:,} pricing row(s).", file=files["pricing"])
+
+            pricing_path = materialize_spuf_member(source, files["pricing"])
+            if use_bulk_load(pricing_path):
+                _progress("Bulk-loading pricing rows (SQL)...", file=files["pricing"])
+                bulk_insert_pricing(conn, source, files["pricing"])
+            else:
+                _progress("Counting matching pricing rows...", file=files["pricing"])
+                pricing_total = _count_pricing_rows(source, files["pricing"], plans)
+                _progress(
+                    f"Inserting {pricing_total:,} pricing row(s) in {_WRITE_PARTS} parts...",
+                    file=files["pricing"],
+                )
+                pricing_inserted = _insert_in_parts(
+                    conn,
+                    _PRICING_INSERT_SQL,
+                    _iter_pricing_insert_rows(source, files["pricing"], plans),
+                    pricing_total,
+                    label=files["pricing"],
+                )
+                _progress(f"inserted {pricing_inserted:,} pricing row(s).", file=files["pricing"])
 
         _progress("Creating indexes...", file="navigator.duckdb")
         create_indexes(conn)
@@ -870,6 +1175,10 @@ def ingest_spuf(
             "insulin_beneficiary_cost_rows": conn.execute(
                 "SELECT COUNT(*) FROM insulin_beneficiary_cost"
             ).fetchone()[0],
+            "pharmacy_network_rows": conn.execute(
+                "SELECT COUNT(*) FROM pharmacy_network"
+            ).fetchone()[0],
+            "pharmacies": conn.execute("SELECT COUNT(*) FROM pharmacies").fetchone()[0],
             "total_plans": conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0],
         }
     finally:

@@ -323,11 +323,110 @@ def run_guided_compare_plan_flow(
     return FlowResult(flow="guided-compare-plan", ok=ok, checks=checks, console_errors=console_errors)
 
 
+RESPONSIVE_VIEWPORTS: tuple[tuple[str, int, int], ...] = (
+    ("mobile", 375, 667),
+    ("tablet", 768, 1024),
+    ("desktop", 1280, 800),
+)
+
+TOUCH_TARGET_IDS = ("menu-btn", "send-btn")
+
+
+def run_responsive_interactions_flow(
+    base_url: str = DEFAULT_BASE_URL, *, timeout_ms: int = DEFAULT_TIMEOUT_MS
+) -> FlowResult:
+    """Viewport, keyboard, Escape, combobox, and touch-target smoke checks."""
+    checks: list[FlowCheck] = []
+    console_errors: list[str] = []
+
+    with _require_playwright()() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+        for label, width, height in RESPONSIVE_VIEWPORTS:
+            page.set_viewport_size({"width": width, "height": height})
+            page.goto(base_url.rstrip("/"), wait_until="networkidle", timeout=timeout_ms)
+
+            no_h_scroll = page.evaluate(
+                "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
+            )
+            checks.append(
+                FlowCheck(f"viewport:{label}:no_horizontal_scroll", no_h_scroll, detail=f"{width}x{height}")
+            )
+
+            for element_id in TOUCH_TARGET_IDS:
+                box = page.locator(f"#{element_id}").bounding_box()
+                tall_enough = bool(box and box["height"] >= 44)
+                checks.append(
+                    FlowCheck(
+                        f"viewport:{label}:touch_target:{element_id}",
+                        tall_enough,
+                        detail=f"height={box['height'] if box else None}",
+                    )
+                )
+
+            page.locator("#chat-input").focus()
+            focused_chat = page.evaluate("() => document.activeElement?.id === 'chat-input'")
+            checks.append(FlowCheck(f"viewport:{label}:chat_input_focusable", focused_chat))
+
+            page.locator("#menu-btn").click()
+            menu_open = not page.locator("#app-menu").evaluate("el => el.classList.contains('hidden')")
+            checks.append(FlowCheck(f"viewport:{label}:menu_opens", menu_open))
+            page.keyboard.press("Escape")
+            menu_closed = page.locator("#app-menu").evaluate("el => el.classList.contains('hidden')")
+            checks.append(FlowCheck(f"viewport:{label}:escape_closes_menu", menu_closed))
+
+            page.locator("#menu-btn").click()
+            page.locator("#menu-about").click()
+            modal_open = page.evaluate(
+                "() => !document.getElementById('info-modal').classList.contains('hidden')"
+            )
+            checks.append(FlowCheck(f"viewport:{label}:info_modal_opens", modal_open))
+            page.keyboard.press("Escape")
+            modal_closed = page.evaluate(
+                "() => document.getElementById('info-modal').classList.contains('hidden')"
+            )
+            checks.append(FlowCheck(f"viewport:{label}:escape_closes_modal", modal_closed))
+
+            page.locator("#mode-tab-guided").click()
+            _wait_for_plans(page, timeout_ms)
+            _select_state_combobox(page, "guided-state-input", "guided-state-listbox", TEST_STATE)
+            _select_plan_combobox(page, "filter-plan-input", "filter-plan-listbox", PLAN_FL_PDP)
+            page.wait_for_function(
+                "() => !document.getElementById('filter-drug-input').disabled",
+                timeout=timeout_ms,
+            )
+            drug_input = page.locator("#filter-drug-input")
+            drug_input.click()
+            page.locator("#filter-drug-filter").fill("met")
+            page.wait_for_timeout(400)
+            expanded = drug_input.get_attribute("aria-expanded") == "true"
+            checks.append(FlowCheck(f"viewport:{label}:combobox_expands", expanded))
+            page.keyboard.press("ArrowDown")
+            listbox_visible = page.locator("#filter-drug-listbox .plan-option").count() > 0
+            checks.append(FlowCheck(f"viewport:{label}:combobox_keyboard_options", listbox_visible))
+            page.keyboard.press("Escape")
+            collapsed = drug_input.get_attribute("aria-expanded") == "false"
+            checks.append(FlowCheck(f"viewport:{label}:combobox_escape_collapses", collapsed))
+
+        browser.close()
+
+    ok = all(c.passed for c in checks)
+    return FlowResult(
+        flow="responsive-interactions",
+        ok=ok,
+        checks=checks,
+        console_errors=console_errors,
+    )
+
+
 _FLOW_RUNNERS: dict[str, Callable[..., FlowResult]] = {
     "chat": run_chat_flow,
     "guided-single": run_guided_single_flow,
     "guided-multi": run_guided_multi_flow,
     "guided-compare-plan": run_guided_compare_plan_flow,
+    "responsive-interactions": run_responsive_interactions_flow,
 }
 
 

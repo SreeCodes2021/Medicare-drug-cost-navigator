@@ -7,16 +7,39 @@ import sys
 from pathlib import Path
 
 from medicare_navigator.ingestion.cms_download import download_spuf, resolve_spuf_download
+from medicare_navigator.ingestion.preflight import should_skip_spuf_ingest
 from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
+
+
+def _resolve_pharmacy_network_flag(args: argparse.Namespace) -> bool:
+    if getattr(args, "with_pharmacy_network", False):
+        return True
+    if getattr(args, "core_only", False):
+        return False
+    return False
 
 
 def _cmd_spuf(args: argparse.Namespace) -> None:
     filters = IngestFilters.resolve(states_override=args.states)
+    include_pharmacy_network = _resolve_pharmacy_network_flag(args)
 
     if args.download or not args.source:
         if args.source:
             print("Note: --download ignores --source; fetching from data.cms.gov catalog.", file=sys.stderr)
         print("Resolving latest CMS SPUF download URL from data.cms.gov...")
+        distro = resolve_spuf_download(
+            quarterly=not args.monthly,
+            contract_year=filters.contract_year,
+        )
+        version = args.version or distro.version_label
+        skip, reason = should_skip_spuf_ingest(
+            version=version,
+            states=filters.states,
+            force=args.force,
+        )
+        if skip:
+            print(reason)
+            return
         zip_path, distro = download_spuf(
             quarterly=not args.monthly,
             contract_year=filters.contract_year,
@@ -41,6 +64,7 @@ def _cmd_spuf(args: argparse.Namespace) -> None:
         version=version,
         preserve_non_spuf_tables=args.preserve_other,
         merge_states=args.merge_states,
+        include_pharmacy_network=include_pharmacy_network,
     )
     stats = result["stats"]
     loaded = stats["plans"]
@@ -75,7 +99,7 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Medicare navigator CMS data ingestion",
-        epilog="Production: medicare-ingest spuf --download",
+        epilog="Production: medicare-ingest spuf --download --preserve-other --core-only",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -110,14 +134,30 @@ def main() -> None:
     spuf_parser.add_argument(
         "--preserve-other",
         action="store_true",
-        help="Keep the query_log table when reloading SPUF",
+        help="Keep non-SPUF DuckDB tables (e.g. query_log) when reloading SPUF core tables",
     )
     spuf_parser.add_argument(
         "--merge-states",
         action="store_true",
         help="Replace only the selected state(s) in DuckDB; keep other states already loaded",
     )
-    spuf_parser.set_defaults(func=_cmd_spuf)
+    scope = spuf_parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--core-only",
+        action="store_true",
+        help="Load plans, formulary, cost shares, and pricing only (default for nightly cron)",
+    )
+    scope.add_argument(
+        "--with-pharmacy-network",
+        action="store_true",
+        help="Also reload pharmacy_network and enrich pharmacies (weekly / recovery)",
+    )
+    spuf_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run ingest even when manifest already has the current CMS zip version",
+    )
+    spuf_parser.set_defaults(func=_cmd_spuf, core_only=True)
 
     fetch_parser = sub.add_parser("fetch", help="Download CMS SPUF zip to data/raw/ without ingesting")
     fetch_parser.add_argument(
