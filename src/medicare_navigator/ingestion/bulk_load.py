@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 import shutil
 import zipfile
-from io import BytesIO
 from pathlib import Path
 
 from medicare_navigator.config import settings
 
 _BULK_LOAD_MIN_BYTES = 100_000
+# Leave headroom on the persistent disk for DuckDB WAL/checkpoints during bulk SQL.
+_STAGING_HEADROOM_BYTES = 512 * 1024 * 1024
 _READ_CSV_OPTS = "delim='|', header=true, all_varchar=true, ignore_errors=true"
 
 
@@ -36,13 +37,66 @@ def _find_txt_in_zip_names(names: list[str]) -> str | None:
 
 def configure_ingest_connection(conn) -> None:
     """Tune DuckDB for ingest inside the API container (Render Starter)."""
-    conn.execute("PRAGMA threads=2")
-    conn.execute("PRAGMA memory_limit='384MB'")
+    temp_dir = settings.data_dir / "duckdb_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    conn.execute(f"SET temp_directory TO '{temp_dir.as_posix()}'")
+    # Spill to the persistent data volume (not the container rootfs).
+    conn.execute("SET max_temp_directory_size TO '4GiB'")
+    conn.execute("SET threads TO 1")
+    conn.execute("SET preserve_insertion_order TO false")
+    conn.execute("SET memory_limit TO '320MB'")
 
 
 def _staging_path(member: str | Path) -> Path:
     safe = re.sub(r"[^\w.-]+", "_", _member_label(member))
     return settings.data_dir / "staging" / f"{safe}.txt"
+
+
+def _data_dir_free_bytes() -> int:
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return shutil.disk_usage(settings.data_dir).free
+
+
+def estimate_materialized_bytes(source: Path, member: str | Path) -> int | None:
+    """Estimate uncompressed pipe-delimited bytes needed to stage one archive member."""
+    if isinstance(member, Path):
+        if member.is_file():
+            return member.stat().st_size
+        candidate = source / member if source.is_dir() else member
+        return candidate.stat().st_size if candidate.is_file() else None
+
+    member_str = str(member)
+    if source.is_dir():
+        path = source / member_str
+        return path.stat().st_size if path.is_file() else None
+
+    with zipfile.ZipFile(source) as zf:
+        if member_str.lower().endswith(".zip"):
+            with zf.open(member_str) as nested_raw:
+                with zipfile.ZipFile(nested_raw) as inner_zf:
+                    inner_member = _find_txt_in_zip_names(inner_zf.namelist())
+                    if inner_member:
+                        return inner_zf.getinfo(inner_member).file_size
+            return zf.getinfo(member_str).file_size
+        return zf.getinfo(member_str).file_size
+
+
+def has_staging_disk_for(source: Path, member: str | Path) -> bool:
+    """Return False when staging would likely exhaust the data volume (e.g. Render /data)."""
+    try:
+        needed = estimate_materialized_bytes(source, member)
+    except (KeyError, FileNotFoundError, OSError, zipfile.BadZipFile):
+        return False
+    if needed is None:
+        return False
+    return _data_dir_free_bytes() >= needed + _STAGING_HEADROOM_BYTES
+
+
+def release_staging_member(member: str | Path) -> None:
+    """Delete a staged .txt extracted for DuckDB bulk load."""
+    path = _staging_path(member)
+    if path.is_file():
+        path.unlink()
 
 
 def materialize_spuf_member(source: Path, member: str | Path) -> Path:
@@ -69,12 +123,13 @@ def materialize_spuf_member(source: Path, member: str | Path) -> Path:
 
     with zipfile.ZipFile(source) as zf:
         if member_str.lower().endswith(".zip"):
-            with zipfile.ZipFile(BytesIO(zf.read(member_str))) as inner_zf:
-                inner_member = _find_txt_in_zip_names(inner_zf.namelist())
-                if not inner_member:
-                    raise FileNotFoundError(f"No .txt member in nested zip {member_str}")
-                with inner_zf.open(inner_member) as raw, dest.open("wb") as out:
-                    shutil.copyfileobj(raw, out)
+            with zf.open(member_str) as nested_raw:
+                with zipfile.ZipFile(nested_raw) as inner_zf:
+                    inner_member = _find_txt_in_zip_names(inner_zf.namelist())
+                    if not inner_member:
+                        raise FileNotFoundError(f"No .txt member in nested zip {member_str}")
+                    with inner_zf.open(inner_member) as raw, dest.open("wb") as out:
+                        shutil.copyfileobj(raw, out)
         else:
             with zf.open(member_str) as raw, dest.open("wb") as out:
                 shutil.copyfileobj(raw, out)
@@ -105,7 +160,7 @@ def use_bulk_load(path: Path) -> bool:
 
 def bulk_insert_pharmacy_network_part(
     conn,
-    source: Path,
+    staged_path: Path,
     pharmacy_member: str | Path,
     *,
     as_of: str,
@@ -113,7 +168,7 @@ def bulk_insert_pharmacy_network_part(
     total_parts: int,
 ) -> tuple[int, dict[str, str], set[str]]:
     """Bulk-load one pharmacy-network file; return (rows, npi->zip, npi set)."""
-    path = materialize_spuf_member(source, pharmacy_member)
+    path = staged_path
     columns = _staging_columns(conn, path)
     identifier_sql = _first_present_sql(
         columns,
@@ -167,12 +222,16 @@ def bulk_insert_pharmacy_network_part(
         )
         channel_filter = "TRUE"
 
-    conn.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE pharmacy_staging AS
-        SELECT * FROM read_csv('{path.as_posix()}', {_READ_CSV_OPTS})
-        """
-    )
+    csv_from = f"read_csv('{path.as_posix()}', {_READ_CSV_OPTS})"
+    parsed_rows = f"""
+        SELECT
+            trim(s.CONTRACT_ID) AS contract_id,
+            trim(s.PLAN_ID) AS plan_id,
+            {identifier_sql} AS identifier,
+            {zip_expr} AS zip_code,
+            s.*
+        FROM {csv_from} s
+    """
     before = conn.execute("SELECT COUNT(*) FROM pharmacy_network").fetchone()[0]
     conn.execute(
         f"""
@@ -186,15 +245,7 @@ def bulk_insert_pharmacy_network_part(
             {ltc_yn},
             {home_infusion_yn},
             ?
-        FROM (
-            SELECT
-                trim(s.CONTRACT_ID) AS contract_id,
-                trim(s.PLAN_ID) AS plan_id,
-                {identifier_sql} AS identifier,
-                {zip_expr} AS zip_code,
-                s.*
-            FROM pharmacy_staging s
-        ) s
+        FROM ({parsed_rows}) s
         INNER JOIN plans p ON p.plan_key = s.contract_id || '-' || s.plan_id
         WHERE s.identifier IS NOT NULL
           AND {channel_filter}
@@ -207,24 +258,21 @@ def bulk_insert_pharmacy_network_part(
     zip_rows = conn.execute(
         f"""
         SELECT DISTINCT identifier, zip_code
-        FROM (
-            SELECT
-                {identifier_sql} AS identifier,
-                {zip_expr} AS zip_code
-            FROM pharmacy_staging s
-        )
-        WHERE identifier IS NOT NULL AND zip_code IS NOT NULL
+        FROM ({parsed_rows}) s
+        INNER JOIN plans p ON p.plan_key = s.contract_id || '-' || s.plan_id
+        WHERE s.identifier IS NOT NULL
+          AND s.zip_code IS NOT NULL
+          AND {channel_filter}
         """
     ).fetchall()
     zip_by_npi = {str(row[0]): str(row[1]) for row in zip_rows}
     npi_rows = conn.execute(
         f"""
-        SELECT DISTINCT identifier
-        FROM (
-            SELECT {identifier_sql} AS identifier
-            FROM pharmacy_staging s
-        )
-        WHERE identifier IS NOT NULL
+        SELECT DISTINCT s.identifier
+        FROM ({parsed_rows}) s
+        INNER JOIN plans p ON p.plan_key = s.contract_id || '-' || s.plan_id
+        WHERE s.identifier IS NOT NULL
+          AND {channel_filter}
         """
     ).fetchall()
     npis = {str(row[0]) for row in npi_rows}
@@ -234,7 +282,6 @@ def bulk_insert_pharmacy_network_part(
         f"(bulk SQL).",
         file=pharmacy_member,
     )
-    conn.execute("DROP TABLE IF EXISTS pharmacy_staging")
     return row_count, zip_by_npi, npis
 
 
@@ -250,17 +297,12 @@ def _format_ndc_sql(ndc_expr: str) -> str:
 
 def bulk_insert_pricing(
     conn,
-    source: Path,
+    staged_path: Path,
     pricing_member: str | Path,
 ) -> int:
     """Bulk-load pricing rows joined to ingested plans."""
-    path = materialize_spuf_member(source, pricing_member)
-    conn.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE pricing_staging AS
-        SELECT * FROM read_csv('{path.as_posix()}', {_READ_CSV_OPTS})
-        """
-    )
+    path = staged_path
+    csv_from = f"read_csv('{path.as_posix()}', {_READ_CSV_OPTS})"
     ndc_display = _format_ndc_sql("s.NDC")
     days_supply = (
         "CASE WHEN try_cast(trim(s.DAYS_SUPPLY) AS INTEGER) IS NOT NULL "
@@ -275,7 +317,7 @@ def bulk_insert_pricing(
             {ndc_display},
             {days_supply},
             try_cast(trim(s.UNIT_COST) AS DOUBLE)
-        FROM pricing_staging s
+        FROM {csv_from} s
         INNER JOIN plans p ON p.plan_key = trim(s.CONTRACT_ID) || '-' || trim(s.PLAN_ID)
         WHERE {ndc_display} IS NOT NULL
           AND try_cast(trim(s.UNIT_COST) AS DOUBLE) IS NOT NULL
@@ -284,5 +326,4 @@ def bulk_insert_pricing(
     after = conn.execute("SELECT COUNT(*) FROM pricing").fetchone()[0]
     row_count = after - before
     _progress(f"inserted {row_count:,} pricing row(s) (bulk SQL).", file=pricing_member)
-    conn.execute("DROP TABLE IF EXISTS pricing_staging")
     return row_count

@@ -15,5 +15,5 @@ class QuerySlots(BaseModel):
     plan_id: str | None = None
     contract_year: int | None = None
     ytd_oop_spend: float | None = None
-    days_supply: int | None = 30
+    days_supply: int | None = None
     raw_message: str = ""
