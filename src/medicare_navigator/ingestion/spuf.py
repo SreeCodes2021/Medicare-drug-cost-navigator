@@ -162,27 +162,11 @@ def _insert_pharmacy_network_part(
     pharmacy_network_npis: set[str],
     pharmacy_zip_by_npi: dict[str, str],
 ) -> int:
-    """Scan one CMS pharmacy-network file and insert matching rows."""
-    from medicare_navigator.ingestion.bulk_load import (
-        bulk_insert_pharmacy_network_part,
-        materialize_spuf_member,
-        use_bulk_load,
-    )
+    """Scan one CMS pharmacy-network file and insert matching rows.
 
-    member_path = materialize_spuf_member(source, pharmacy_member)
-    if use_bulk_load(member_path):
-        count, zip_by_npi, npis = bulk_insert_pharmacy_network_part(
-            conn,
-            source,
-            pharmacy_member,
-            as_of=as_of,
-            part_index=part_index,
-            total_parts=total_parts,
-        )
-        pharmacy_network_npis.update(npis)
-        pharmacy_zip_by_npi.update(zip_by_npi)
-        return count
-
+    Always streams from the zip — bulk SQL over multi-GB pharmacy-network parts
+    exhausts DuckDB temp space on Render Starter (320MB RAM / limited spill).
+    """
     batch: list[list[Any]] = []
     inserted = 0
     label = pharmacy_member
@@ -1137,15 +1121,42 @@ def ingest_spuf(
         if files.get("pricing"):
             from medicare_navigator.ingestion.bulk_load import (
                 bulk_insert_pricing,
+                has_staging_disk_for,
                 materialize_spuf_member,
+                release_staging_member,
                 use_bulk_load,
             )
 
-            pricing_path = materialize_spuf_member(source, files["pricing"])
-            if use_bulk_load(pricing_path):
-                _progress("Bulk-loading pricing rows (SQL)...", file=files["pricing"])
-                bulk_insert_pricing(conn, source, files["pricing"])
+            pricing_path: Path | None = None
+            bulk_ok = False
+            if has_staging_disk_for(source, files["pricing"]):
+                try:
+                    pricing_path = materialize_spuf_member(source, files["pricing"])
+                except OSError as exc:
+                    if exc.errno != 28:
+                        raise
+                    _progress(
+                        "pricing staging skipped (disk full); using streaming insert...",
+                        file=files["pricing"],
+                    )
             else:
+                _progress(
+                    "insufficient disk for pricing bulk staging; using streaming insert...",
+                    file=files["pricing"],
+                )
+            if pricing_path and use_bulk_load(pricing_path):
+                _progress("Bulk-loading pricing rows (SQL)...", file=files["pricing"])
+                try:
+                    bulk_insert_pricing(conn, pricing_path, files["pricing"])
+                    bulk_ok = True
+                except Exception as exc:
+                    _progress(
+                        f"bulk pricing load failed ({exc}); falling back to streaming insert...",
+                        file=files["pricing"],
+                    )
+                finally:
+                    release_staging_member(files["pricing"])
+            if not bulk_ok:
                 _progress("Counting matching pricing rows...", file=files["pricing"])
                 pricing_total = _count_pricing_rows(source, files["pricing"], plans)
                 _progress(

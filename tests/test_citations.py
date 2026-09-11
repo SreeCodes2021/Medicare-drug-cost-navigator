@@ -93,6 +93,36 @@ def test_apply_guardrails_appends_channel_coverage_note_for_partial_data():
     assert "no matching estimate" not in explanation.lower()
 
 
+def test_apply_guardrails_skips_channel_note_for_quantity_limit_blocked():
+    artifacts = {
+        "estimate_drug_cost_all_channels": {
+            "status": "quantity_limit_blocked",
+            "source_id": "cms_spuf_2026_q1",
+            "as_of_date": "2026-01-15",
+            "message": (
+                "This plan's quantity limit does not permit a 90-day supply in a single fill. "
+                "The maximum fill size this plan allows is a 30-day supply."
+            ),
+            "data": _all_channels_artifact(
+                quantity_limit_blocked=True,
+                max_allowed_days_supply=30,
+                days_supply=90,
+                channels={
+                    "preferred_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_retail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "preferred_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                    "standard_mail": {"cost_low": None, "cost_high": None, "coinsurance": False},
+                },
+            )["data"],
+        }
+    }
+    explanation, _citations, _errors = apply_guardrails(
+        "This plan's quantity limit does not permit a 90-day supply in a single fill.",
+        artifacts,
+    )
+    assert "matching cost-share row" not in explanation
+
+
 def test_apply_guardrails_skips_duplicate_channel_note_when_prose_covers_gaps():
     artifacts = {
         "estimate_drug_cost_all_channels__calls": [_all_channels_artifact()],

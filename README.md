@@ -36,18 +36,36 @@ Edit `.env`: set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with `LLM_PROVIDER=ope
 
 ### Load CMS data (local)
 
+Production defaults: **`INGEST_STATES=AR,TX`** (see `config/ingest_filters.yaml`). Nightly cron reloads **core tables only** (plans, formulary, costs, pricing) and skips when the CMS zip version is unchanged. Pharmacy network refreshes weekly or on demand.
+
 ```bash
-# Offline tests use tests/fixtures/spuf/ — for local API with real AR data:
-medicare-ingest spuf --download --states AR --merge-states
+# Offline fixture (fast, no network):
+medicare-ingest spuf --source tests/fixtures/spuf --with-pharmacy-network
 
-# Add another state without wiping states already loaded (e.g. California):
-medicare-ingest spuf --download --states CA --merge-states
+# --- One state at a time (low memory; keeps other states already loaded) ---
+medicare-ingest spuf --download --states AR --merge-states --with-pharmacy-network
+medicare-ingest spuf --download --states TX --merge-states --with-pharmacy-network
 
-# Or ingest the offline fixture (fast, no network):
-medicare-ingest spuf --source tests/fixtures/spuf
+# --- Active states from INGEST_STATES / yaml (AR,TX by default) ---
+# Core only (~5 min): formulary, pricing, cost shares — no pharmacy network
+medicare-ingest spuf --download --preserve-other --core-only --force
+
+# Full reload including pharmacy locator data (~1–2 hours; needs more RAM/disk)
+medicare-ingest spuf --download --preserve-other --with-pharmacy-network --force
+
+# Add another state without wiping existing states (e.g. California):
+medicare-ingest spuf --download --states CA --merge-states --with-pharmacy-network
 ```
 
-`--states AR --merge-states` matches `config/ingest_filters.yaml` (Arkansas + Texas, verified against real CMS data) and avoids loading the full multi-GB national file in one pass. See [docs/developer-guide.md](docs/developer-guide.md#5-data-layer) for real ingested row counts.
+| Flag | What it loads |
+|------|----------------|
+| `--core-only` | Plans, formulary, beneficiary/insulin costs, pricing (nightly default) |
+| `--with-pharmacy-network` | Core + `pharmacy_network` + NPPES pharmacy enrichment |
+| `--merge-states` | Replace only the given `--states`; keep other states in DuckDB |
+| `--preserve-other` | Keep non-SPUF tables (`query_log`, analytics, etc.) |
+| `--force` | Run even when manifest already has the current CMS zip version |
+
+See [docs/deployment.md](docs/deployment.md) and [docs/developer-guide.md](docs/developer-guide.md#5-data-layer) for cron schedule, row counts, and Render ops.
 
 ### Build frontend (local dev)
 
@@ -153,12 +171,23 @@ Start at **[docs/README.md](docs/README.md)** for the full documentation index. 
 2. [Render](https://render.com) → **New Blueprint** → connect repo (`render.yaml`).
 3. Set secrets: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://medicare-drug-cost.onrender.com`.
    If renaming an existing service in the Render Dashboard, update `CORS_ORIGINS` to match the new `*.onrender.com` URL.
-4. After first deploy, **Shell** on the web service:
+4. After first deploy, **Shell** on the web service (low-memory path — one state at a time):
 
 ```bash
-medicare-ingest spuf --download --states AR --merge-states
-# Add more states later (keeps existing data):
-medicare-ingest spuf --download --states CA --merge-states
+medicare-ingest spuf --download --states AR --merge-states --with-pharmacy-network
+medicare-ingest spuf --download --states TX --merge-states --with-pharmacy-network
+```
+
+Or reload all active states (`INGEST_STATES`) in one shot if the instance has enough RAM:
+
+```bash
+medicare-ingest spuf --download --preserve-other --with-pharmacy-network --force
+```
+
+Recovery after a failed ingest (core data only, faster):
+
+```bash
+medicare-ingest spuf --download --preserve-other --core-only --force
 ```
 
 5. Verify `GET /api/health` → `data_fresh: true`.

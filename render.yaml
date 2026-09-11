@@ -11,7 +11,7 @@ services:
     disk:
       name: medicare-data
       mountPath: /data
-      sizeGB: 5
+      sizeGB: 10
     envVars:
       - key: PROJECT_ROOT
         value: /app

@@ -783,7 +783,12 @@ def apply_guardrails(
     for warning in prose_tied_lowest_warnings(out, channel_coverage):
         errors.append(warning)
     coverage_note = channel_coverage_note(channel_coverage)
-    if coverage_note and coverage_note not in out and not _prose_covers_channel_gaps(out):
+    if (
+        coverage_note
+        and coverage_note not in out
+        and not _prose_covers_channel_gaps(out)
+        and estimate.get("status") != "quantity_limit_blocked"
+    ):
         out = f"{out}\n\n{coverage_note}"
 
     # Hard-stop messages (suppressed plan, insulin data-gap, quantity limit) are pre-approved

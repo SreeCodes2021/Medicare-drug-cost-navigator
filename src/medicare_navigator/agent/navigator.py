@@ -36,6 +36,7 @@ from medicare_navigator.models.response import (
     QueryResponse,
 )
 from medicare_navigator.session.manager import session_manager
+from medicare_navigator.tools.days_supply import coerce_estimate_days_supply
 from medicare_navigator.tools.estimate_drug_cost import estimate_drug_cost_all_channels
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,42 @@ def _last_tool_call_key(arguments: dict[str, Any]) -> str:
     if plan:
         return f"__plan_{plan}"
     return ""
+
+
+def _last_estimate_call_for_drug(
+    last_tool_calls: list[dict] | None,
+    drug_name: str | None,
+) -> dict[str, Any] | None:
+    target = str(drug_name or "").strip().lower()
+    for call in reversed(last_tool_calls or []):
+        if call.get("name") not in _ESTIMATE_TOOL_NAMES:
+            continue
+        args = call.get("arguments") or {}
+        if not target or str(args.get("drug_name") or "").strip().lower() == target:
+            return call
+    return None
+
+
+def _normalize_estimate_tool_args(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    message: str,
+    filter_slots: QuerySlots | None,
+    last_tool_calls: list[dict] | None,
+) -> dict[str, Any]:
+    if name not in _ESTIMATE_TOOL_NAMES:
+        return arguments
+    normalized = dict(arguments or {})
+    last_call = _last_estimate_call_for_drug(
+        last_tool_calls, normalized.get("drug_name")
+    )
+    normalized["days_supply"] = coerce_estimate_days_supply(
+        message=message,
+        filter_days_supply=filter_slots.days_supply if filter_slots else None,
+        last_tool_call=last_call,
+    )
+    return normalized
 
 
 def _record_last_tool_call(
@@ -1624,6 +1661,7 @@ class Navigator:
         system_prompt = build_navigator_system_prompt(timezone)
 
         explanation = ""
+        prior_estimate_calls = list(last_tool_calls or [])
         for _ in range(settings.max_tool_rounds):
             result = await llm_client.chat_with_tools(
                 system_prompt, messages, tools, model=model_id
@@ -1665,21 +1703,36 @@ class Navigator:
                     messages.append({"role": "assistant", "content": content_blocks})
 
                 batch_results: list[dict[str, Any]] = []
+                normalized_calls: list[tuple[Any, dict[str, Any]]] = []
                 for tc in result.tool_calls:
-                    artifact = await call_tool(tc.name, tc.arguments)
+                    normalized_args = _normalize_estimate_tool_args(
+                        tc.name,
+                        tc.arguments,
+                        message=message,
+                        filter_slots=filter_slots,
+                        last_tool_calls=prior_estimate_calls,
+                    )
+                    normalized_calls.append((tc, normalized_args))
+                    artifact = await call_tool(tc.name, normalized_args)
                     _record_tool_artifact(tool_artifacts, tc.name, artifact)
                     if tc.name not in tools_invoked:
                         tools_invoked.append(tc.name)
-                    if tc.name in ("estimate_drug_cost", "estimate_drug_cost_all_channels"):
-                        _record_last_tool_call(new_last_tool_calls_by_drug, tc.name, tc.arguments)
+                    if tc.name in _ESTIMATE_TOOL_NAMES:
+                        _record_last_tool_call(
+                            new_last_tool_calls_by_drug, tc.name, normalized_args
+                        )
+                        prior_estimate_calls.append(
+                            {"name": tc.name, "arguments": normalized_args}
+                        )
                     batch_results.append(artifact)
 
                 if is_openai:
-                    for tc, artifact in zip(result.tool_calls, batch_results):
+                    for (tc, _), artifact in zip(normalized_calls, batch_results):
                         messages.append(_openai_tool_result_message(tc.id, artifact))
                 else:
+                    retry_tcs = [tc for tc, _ in normalized_calls]
                     messages.append(
-                        _anthropic_tool_result_messages(result.tool_calls, batch_results)
+                        _anthropic_tool_result_messages(retry_tcs, batch_results)
                     )
                 continue
 
@@ -1746,6 +1799,7 @@ class Navigator:
         new_last_tool_calls_by_drug: dict[str, dict[str, Any]] = {}
         token_usage = TokenUsage()
         system_prompt = build_navigator_system_prompt(timezone)
+        prior_estimate_calls = list(last_tool_calls or [])
 
         for _ in range(settings.max_tool_rounds):
             try:
@@ -1794,21 +1848,36 @@ class Navigator:
                     retry_messages.append({"role": "assistant", "content": content_blocks})
 
                 batch_results: list[dict[str, Any]] = []
+                normalized_calls: list[tuple[Any, dict[str, Any]]] = []
                 for tc in result.tool_calls:
-                    artifact = await call_tool(tc.name, tc.arguments)
+                    normalized_args = _normalize_estimate_tool_args(
+                        tc.name,
+                        tc.arguments,
+                        message=message,
+                        filter_slots=filter_slots,
+                        last_tool_calls=prior_estimate_calls,
+                    )
+                    normalized_calls.append((tc, normalized_args))
+                    artifact = await call_tool(tc.name, normalized_args)
                     _record_tool_artifact(merged_artifacts, tc.name, artifact)
                     if tc.name not in retry_tools_invoked:
                         retry_tools_invoked.append(tc.name)
-                    if tc.name in ("estimate_drug_cost", "estimate_drug_cost_all_channels"):
-                        _record_last_tool_call(new_last_tool_calls_by_drug, tc.name, tc.arguments)
+                    if tc.name in _ESTIMATE_TOOL_NAMES:
+                        _record_last_tool_call(
+                            new_last_tool_calls_by_drug, tc.name, normalized_args
+                        )
+                        prior_estimate_calls.append(
+                            {"name": tc.name, "arguments": normalized_args}
+                        )
                     batch_results.append(artifact)
 
                 if is_openai:
-                    for tc, artifact in zip(result.tool_calls, batch_results):
+                    for (tc, _), artifact in zip(normalized_calls, batch_results):
                         retry_messages.append(_openai_tool_result_message(tc.id, artifact))
                 else:
+                    retry_tcs = [tc for tc, _ in normalized_calls]
                     retry_messages.append(
-                        _anthropic_tool_result_messages(result.tool_calls, batch_results)
+                        _anthropic_tool_result_messages(retry_tcs, batch_results)
                     )
                 continue
 

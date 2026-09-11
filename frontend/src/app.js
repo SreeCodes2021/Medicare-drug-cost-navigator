@@ -14,6 +14,7 @@ let sessionMediatorUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 let cachedDisclaimerText = "";
 let cachedPrivacyText = "";
 let emptyStateHtml = "";
+let chatInFlight = false;
 let guidedSessionId = null;
 let guidedTurnCount = 0;
 // Which guided sub-tab is active (single/multidrug/compareplans) — sent as the
@@ -830,6 +831,7 @@ function resetChat() {
   closeMenu();
   switchMode("chat");
 
+  chatInFlight = false;
   sessionId = null;
   turnCount = 0;
   resultsBaseline = null;
@@ -2540,24 +2542,36 @@ function getUserTimezone() {
   }
 }
 
-function getFilters() {
+function getGuidedFilters() {
   const filters = {};
   const drug = el("filter-drug").value.trim();
   const dosage = el("filter-dosage").value.trim();
-  // Falls back to the Chat plan-picker widget's selection when the Guided form's own
-  // plan field is empty (e.g. sending from the plain Chat tab) — plan_id is the only
-  // field the chat picker ever contributes; state/zip themselves are never sent here.
-  const plan = el("filter-plan").value || chatPlanCombobox.getValue();
+  const plan = el("filter-plan").value;
   const daysSupply = el("filter-days-supply").value;
   const ytd = el("filter-ytd").value;
   if (drug) filters.drug = drug;
   if (dosage) filters.dosage = dosage;
   if (plan) filters.plan_id = plan;
   if (currentDataRelease?.contract_year) filters.contract_year = currentDataRelease.contract_year;
-  if (daysSupply) filters.days_supply = parseInt(daysSupply, 10);
+  // Only send non-default fill sizes — 30 is the backend default when omitted.
+  if (daysSupply && daysSupply !== "30") {
+    filters.days_supply = parseInt(daysSupply, 10);
+  }
   const ytdNum = parseFloat(ytd);
   if (ytd && !Number.isNaN(ytdNum) && ytdNum > 0) filters.ytd_oop_spend = ytdNum;
   return Object.keys(filters).length ? filters : null;
+}
+
+function getChatFilters() {
+  const filters = {};
+  const plan = chatPlanCombobox.getValue();
+  if (plan) filters.plan_id = plan;
+  if (currentDataRelease?.contract_year) filters.contract_year = currentDataRelease.contract_year;
+  return Object.keys(filters).length ? filters : null;
+}
+
+function getFilters() {
+  return getGuidedFilters();
 }
 
 function getChatZip() {
@@ -2616,6 +2630,10 @@ function composeMessageFromParams(params) {
 }
 
 function hydrateFromUrl() {
+  // Skip when the user already started a thread (e.g. clicked an example chip while
+  // plan data was still loading — syncUrlFromSearch would have set ?q= by then).
+  if (el("chat-messages")?.classList.contains("is-thread")) return;
+
   const params = new URLSearchParams(window.location.search);
   const q = params.get("q");
   if (q) {
@@ -3287,8 +3305,10 @@ function chatErrorMessage(res, data) {
 
 async function sendMessage(message, { switchToChat = false } = {}) {
   if (!message.trim()) return;
+  if (chatInFlight) return;
+  chatInFlight = true;
   appendMessage("user", message);
-  syncUrlFromSearch({ message });
+  syncUrlFromSearch({ message, filters: getChatFilters() });
   el("chat-input").value = "";
   el("send-btn").disabled = true;
   el("guided-submit").disabled = true;
@@ -3301,7 +3321,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
     const body = {
       message,
       session_id: sessionId,
-      filters: getFilters(),
+      filters: getChatFilters(),
       model: getSelectedModel(),
       timezone: getUserTimezone(),
       // Aggregate usage-analytics labels only — never used to filter or adjust
@@ -3375,6 +3395,7 @@ async function sendMessage(message, { switchToChat = false } = {}) {
     appendMessage("assistant", "Sorry, something went wrong. Please try again.");
     console.error(err);
   } finally {
+    chatInFlight = false;
     hideLoading();
     resetResultsPlaceholderIfEmpty();
     el("send-btn").disabled = false;
@@ -3557,7 +3578,7 @@ el("guided-chat-form").addEventListener("submit", (e) => {
 
 document.addEventListener("click", (event) => {
   const chip = event.target.closest(".chip");
-  if (!chip) return;
+  if (!chip || chatInFlight) return;
   sendMessage(chip.textContent.trim());
 });
 
@@ -3667,6 +3688,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 emptyStateHtml = el("empty-state").outerHTML;
+hydrateFromUrl();
 updateChatComposerHint();
 loadDisclaimer();
 initDisclaimerCollapse();
@@ -3688,7 +3710,6 @@ loadStates();
 async function initDataAndPlans() {
   await loadDataRelease();
   await pollPlansUntilLoaded();
-  hydrateFromUrl();
 }
 void initDataAndPlans();
 resetGuidedConversation();
