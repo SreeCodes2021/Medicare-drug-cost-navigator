@@ -4,8 +4,8 @@
 ingest:
   cron: "0 7 * * *"
   # 07:00 UTC = 2:00 AM US Central (CDT, UTC-5). During CST (UTC-6), runs at 1:00 AM.
-  pharmacy_cron: "0 8 * * 0"
-  # 08:00 UTC Sunday = 3:00 AM US Central (CDT). Weekly pharmacy-network refresh.
+  pharmacy_cron: "30 4 * * 0"
+  # 04:30 UTC Sunday = 11:30 PM US Central (CDT, UTC-5) Saturday. During CST (UTC-6), runs at 10:30 PM Saturday.
 
 render:
   plan: starter
