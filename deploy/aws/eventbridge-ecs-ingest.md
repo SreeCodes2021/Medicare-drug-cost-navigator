@@ -12,10 +12,10 @@ cron(0 7 * * ? *)
 
 `07:00 UTC` = 2:00 AM US Central (CDT, UTC-5). During CST (UTC-6), the job runs at 1:00 AM.
 
-Weekly pharmacy-network refresh (Sunday 08:00 UTC):
+Weekly pharmacy-network refresh (Sunday 04:37 UTC = Saturday 11:37 PM US Central CDT):
 
 ```
-cron(0 8 ? * SUN *)
+cron(37 4 ? * SUN *)
 ```
 
 Run `scripts/run-daily-ingest.sh --with-pharmacy-network --force` for that job.

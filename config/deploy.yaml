@@ -4,8 +4,8 @@
 ingest:
   cron: "0 7 * * *"
   # 07:00 UTC = 2:00 AM US Central (CDT, UTC-5). During CST (UTC-6), runs at 1:00 AM.
-  pharmacy_cron: "30 4 * * 0"
-  # 04:30 UTC Sunday = 11:30 PM US Central (CDT, UTC-5) Saturday. During CST (UTC-6), runs at 10:30 PM Saturday.
+  pharmacy_cron: "37 4 * * 0"
+  # 04:37 UTC Sunday = 11:37 PM US Central (CDT, UTC-5) Saturday. During CST (UTC-6), runs at 10:37 PM Saturday.
 
 render:
   plan: starter
