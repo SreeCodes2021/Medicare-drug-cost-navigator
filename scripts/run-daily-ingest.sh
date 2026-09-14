@@ -15,16 +15,20 @@ export DATA_DIR="${DATA_DIR:-./data}"
 export DUCKDB_PATH="${DUCKDB_PATH:-${DATA_DIR}/navigator.duckdb}"
 
 WITH_PHARMACY=false
+PHARMACY_ONLY=false
 FORCE=false
 for arg in "$@"; do
   case "$arg" in
     --with-pharmacy-network) WITH_PHARMACY=true ;;
+    --pharmacy-only) PHARMACY_ONLY=true ;;
     --force) FORCE=true ;;
   esac
 done
 
 ARGS=(spuf --download --preserve-other)
-if $WITH_PHARMACY; then
+if $PHARMACY_ONLY; then
+  ARGS+=(--pharmacy-only)
+elif $WITH_PHARMACY; then
   ARGS+=(--with-pharmacy-network)
 else
   ARGS+=(--core-only)
@@ -33,6 +37,6 @@ if $FORCE; then
   ARGS+=(--force)
 fi
 
-echo "[$(date -Iseconds)] Starting SPUF ingest (DATA_DIR=${DATA_DIR}, pharmacy=${WITH_PHARMACY})"
+echo "[$(date -Iseconds)] Starting SPUF ingest (DATA_DIR=${DATA_DIR}, pharmacy_only=${PHARMACY_ONLY}, pharmacy=${WITH_PHARMACY})"
 medicare-ingest "${ARGS[@]}"
 echo "[$(date -Iseconds)] SPUF ingest complete"

@@ -19,7 +19,13 @@ from medicare_navigator.config import settings
 from medicare_navigator.ingestion.manifest import calendar_quarter_from_date, load_manifest, merge_manifest
 from medicare_navigator.ingestion.ndc import format_ndc_display, normalize_ndc
 from medicare_navigator.ingestion.npi_enrichment import enrich_pharmacy_identifiers
-from medicare_navigator.ingestion.schema import create_indexes, create_tables, drop_spuf_indexes
+from medicare_navigator.ingestion.schema import (
+    create_indexes,
+    create_pharmacy_network_index,
+    create_tables,
+    drop_pharmacy_network_index,
+    drop_spuf_indexes,
+)
 from medicare_navigator.storage.connection import DuckDBConnection
 
 log = logging.getLogger(__name__)
@@ -623,6 +629,146 @@ def _iter_rows(source: Path, member: str | Path | None) -> Iterator[dict[str, st
         yield from _read_pipe_from_zip(zf, member)
 
 
+def _load_plans_from_db(conn, states: list[str]) -> dict[str, dict[str, Any]]:
+    """Load existing plan rows for pharmacy-only refresh (no core table reload)."""
+    normalized = [s.upper() for s in states]
+    placeholders = ", ".join("?" * len(normalized))
+    rows = conn.execute(
+        f"""
+        SELECT plan_key, contract_id, plan_id, plan_name, plan_type, state,
+               deductible, contract_year, formulary_id, plan_suppressed
+        FROM plans
+        WHERE upper(state) IN ({placeholders})
+        """,
+        normalized,
+    ).fetchall()
+    plans: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        plans[row[0]] = {
+            "plan_key": row[0],
+            "contract_id": row[1],
+            "plan_id": row[2],
+            "plan_name": row[3],
+            "plan_type": row[4],
+            "state": row[5],
+            "deductible": row[6],
+            "contract_year": row[7],
+            "formulary_id": row[8],
+            "plan_suppressed": row[9],
+        }
+    return plans
+
+
+def _purge_pharmacy_network_for_states(conn, states: list[str]) -> int:
+    """Remove pharmacy_network rows for the given states without touching core SPUF tables."""
+    if not states:
+        return 0
+    normalized = [s.upper() for s in states]
+    placeholders = ", ".join("?" * len(normalized))
+    plan_subquery = f"SELECT plan_key FROM plans WHERE upper(state) IN ({placeholders})"
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM pharmacy_network WHERE plan_key IN ({plan_subquery})",
+        normalized,
+    ).fetchone()[0]
+    if count == 0:
+        return 0
+    drop_pharmacy_network_index(conn)
+    conn.execute(
+        f"DELETE FROM pharmacy_network WHERE plan_key IN ({plan_subquery})",
+        normalized,
+    )
+    return count
+
+
+def _load_pharmacy_network_and_pharmacies(
+    conn,
+    source: Path,
+    files: dict[str, Any],
+    plans: dict[str, dict[str, Any]],
+    *,
+    as_of: str,
+) -> None:
+    pharmacy_network_npis: set[str] = set()
+    pharmacy_zip_by_npi: dict[str, str] = {}
+    pharmacy_network_parts = files.get("pharmacy_network_parts") or []
+    if not pharmacy_network_parts and files.get("pharmacy_network"):
+        pharmacy_network_parts = [files["pharmacy_network"]]
+    if not pharmacy_network_parts:
+        raise FileNotFoundError(
+            "SPUF source must include pharmacy network file(s) for pharmacy refresh. "
+            f"Found: {list(files.keys())}"
+        )
+    for part_index, pharmacy_member in enumerate(pharmacy_network_parts, start=1):
+        _progress(
+            f"Loading pharmacy network part {part_index}/{len(pharmacy_network_parts)}...",
+            file=pharmacy_member,
+        )
+        _insert_pharmacy_network_part(
+            conn,
+            source,
+            pharmacy_member,
+            plans,
+            as_of=as_of,
+            part_index=part_index,
+            total_parts=len(pharmacy_network_parts),
+            pharmacy_network_npis=pharmacy_network_npis,
+            pharmacy_zip_by_npi=pharmacy_zip_by_npi,
+        )
+
+    existing_npis = {row[0] for row in conn.execute("SELECT npi FROM pharmacies").fetchall()}
+    new_npis = sorted(pharmacy_network_npis - existing_npis)
+    if not new_npis:
+        return
+    _progress(
+        f"Enriching {len(new_npis):,} new pharmacy identifier(s) via NPPES...",
+        file="pharmacies",
+    )
+    enriched = enrich_pharmacy_identifiers(new_npis)
+    pharmacy_rows = []
+    for npi in new_npis:
+        record = enriched.get(npi)
+        if record:
+            pharmacy_rows.append(
+                [
+                    npi,
+                    record.get("pharmacy_name"),
+                    record.get("address_line1"),
+                    record.get("city"),
+                    record.get("state"),
+                    record.get("zip_code"),
+                    record.get("phone"),
+                    record.get("enrichment_source"),
+                    as_of,
+                ]
+            )
+            continue
+        zip_code = pharmacy_zip_by_npi.get(npi)
+        if not zip_code:
+            continue
+        pharmacy_rows.append(
+            [
+                npi,
+                f"Pharmacy near {zip_code}",
+                None,
+                None,
+                None,
+                zip_code,
+                None,
+                "cms_pharmacy_zipcode",
+                as_of,
+            ]
+        )
+    if pharmacy_rows:
+        _insert_in_parts(
+            conn,
+            _PHARMACIES_INSERT_SQL,
+            iter(pharmacy_rows),
+            len(pharmacy_rows),
+            label="pharmacies",
+        )
+    _progress(f"enriched {len(pharmacy_rows):,} pharmacy record(s).", file="pharmacies")
+
+
 def _purge_states(conn, states: list[str]) -> int:
     """Remove plans and related SPUF rows for the given state codes. Returns plans removed."""
     if not states:
@@ -764,6 +910,56 @@ def _iter_pricing_insert_rows(
             yield insert_row
 
 
+def _ingest_pharmacy_only(
+    source: Path,
+    files: dict[str, Any],
+    *,
+    filters: IngestFilters,
+    db: DuckDBConnection,
+    version: str,
+) -> dict[str, Any]:
+    """Refresh pharmacy_network + pharmacies for active states without reloading core SPUF."""
+    as_of = _parse_as_of_from_version(version)
+    ingest_quarter = calendar_quarter_from_date(date.today())
+    source_id = f"cms_spuf_{filters.contract_year}_q{ingest_quarter}"
+
+    from medicare_navigator.ingestion.bulk_load import configure_ingest_connection
+
+    conn = db.connect()
+    configure_ingest_connection(conn)
+    _progress(
+        f"Pharmacy-only refresh into {db.path} (states={','.join(filters.states)})...",
+        file=source,
+    )
+    try:
+        create_tables(conn, drop_existing=False)
+        plans = _load_plans_from_db(conn, filters.states)
+        if not plans:
+            raise ValueError(
+                "Pharmacy-only ingest requires existing plans in DuckDB; run core ingest first."
+            )
+        purged = _purge_pharmacy_network_for_states(conn, filters.states)
+        if purged:
+            _progress(f"Purged {purged:,} pharmacy_network row(s) for refresh.", file="pharmacy_network")
+
+        _load_pharmacy_network_and_pharmacies(conn, source, files, plans, as_of=as_of)
+        create_pharmacy_network_index(conn)
+
+        stats = {
+            "plans": len(plans),
+            "plans_purged": 0,
+            "pharmacy_network_rows": conn.execute("SELECT COUNT(*) FROM pharmacy_network").fetchone()[0],
+            "pharmacies": conn.execute("SELECT COUNT(*) FROM pharmacies").fetchone()[0],
+            "total_plans": conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0],
+            "pharmacy_only": True,
+        }
+    finally:
+        conn.close()
+
+    manifest = merge_manifest({"spuf": {"pharmacy_refreshed_at": date.today().isoformat()}})
+    return {"stats": stats, "manifest": manifest, "source_id": source_id, "as_of": as_of}
+
+
 def ingest_spuf(
     source: Path,
     *,
@@ -773,24 +969,29 @@ def ingest_spuf(
     preserve_non_spuf_tables: bool = False,
     merge_states: bool = False,
     include_pharmacy_network: bool = False,
+    pharmacy_only: bool = False,
 ) -> dict[str, Any]:
     """Load CMS SPUF into DuckDB. Source may be a .zip or directory of pipe-delimited files."""
     filters = filters or IngestFilters.resolve()
     files = _discover_spuf_files(source)
+    version = version or source.stem
+    db = db or DuckDBConnection()
+
+    if pharmacy_only:
+        return _ingest_pharmacy_only(source, files, filters=filters, db=db, version=version)
+
     if not files.get("plan") or not files.get("formulary"):
         raise FileNotFoundError(
             "SPUF source must include plan information and basic drugs formulary files. "
             f"Found: {list(files.keys())}"
         )
 
-    version = version or source.stem
     as_of = _parse_as_of_from_version(version)
     ingest_quarter = calendar_quarter_from_date(date.today())
     source_id = f"cms_spuf_{filters.contract_year}_q{ingest_quarter}"
 
     from medicare_navigator.ingestion.bulk_load import configure_ingest_connection
 
-    db = db or DuckDBConnection()
     conn = db.connect()
     configure_ingest_connection(conn)
     _progress(
@@ -1038,85 +1239,8 @@ def ingest_spuf(
         )
         del formulary_drugs
 
-        pharmacy_network_npis: set[str] = set()
-        pharmacy_zip_by_npi: dict[str, str] = {}
-        pharmacy_network_parts = files.get("pharmacy_network_parts") or []
-        if not pharmacy_network_parts and files.get("pharmacy_network"):
-            pharmacy_network_parts = [files["pharmacy_network"]]
-        if include_pharmacy_network and pharmacy_network_parts:
-            for part_index, pharmacy_member in enumerate(pharmacy_network_parts, start=1):
-                _progress(
-                    f"Loading pharmacy network part {part_index}/{len(pharmacy_network_parts)}...",
-                    file=pharmacy_member,
-                )
-                _insert_pharmacy_network_part(
-                    conn,
-                    source,
-                    pharmacy_member,
-                    plans,
-                    as_of=as_of,
-                    part_index=part_index,
-                    total_parts=len(pharmacy_network_parts),
-                    pharmacy_network_npis=pharmacy_network_npis,
-                    pharmacy_zip_by_npi=pharmacy_zip_by_npi,
-                )
-
-            # `pharmacies` is not plan-key-keyed and is never dropped/purged on a state
-            # reingest (same NPI can serve multiple states' networks) — dedupe against
-            # what's already there instead of re-enriching every NPI every run.
-            existing_npis = {
-                row[0] for row in conn.execute("SELECT npi FROM pharmacies").fetchall()
-            }
-            new_npis = sorted(pharmacy_network_npis - existing_npis)
-            if new_npis:
-                _progress(
-                    f"Enriching {len(new_npis):,} new pharmacy identifier(s) via NPPES...",
-                    file="pharmacies",
-                )
-                enriched = enrich_pharmacy_identifiers(new_npis)
-                pharmacy_rows = []
-                for npi in new_npis:
-                    record = enriched.get(npi)
-                    if record:
-                        pharmacy_rows.append(
-                            [
-                                npi,
-                                record.get("pharmacy_name"),
-                                record.get("address_line1"),
-                                record.get("city"),
-                                record.get("state"),
-                                record.get("zip_code"),
-                                record.get("phone"),
-                                record.get("enrichment_source"),
-                                as_of,
-                            ]
-                        )
-                        continue
-                    zip_code = pharmacy_zip_by_npi.get(npi)
-                    if not zip_code:
-                        continue
-                    pharmacy_rows.append(
-                        [
-                            npi,
-                            f"Pharmacy near {zip_code}",
-                            None,
-                            None,
-                            None,
-                            zip_code,
-                            None,
-                            "cms_pharmacy_zipcode",
-                            as_of,
-                        ]
-                    )
-                if pharmacy_rows:
-                    _insert_in_parts(
-                        conn,
-                        _PHARMACIES_INSERT_SQL,
-                        iter(pharmacy_rows),
-                        len(pharmacy_rows),
-                        label="pharmacies",
-                    )
-                _progress(f"enriched {len(pharmacy_rows):,} pharmacy record(s).", file="pharmacies")
+        if include_pharmacy_network:
+            _load_pharmacy_network_and_pharmacies(conn, source, files, plans, as_of=as_of)
 
         if files.get("pricing"):
             from medicare_navigator.ingestion.bulk_load import (

@@ -1084,7 +1084,7 @@ Docker and pytest `conftest.py` auto-build if `frontend/dist/index.html` is miss
 | File | Purpose |
 |---|---|
 | `config/ingest_filters.yaml` | PDP region catalog + default states; runtime selection via `INGEST_STATES` |
-| `config/deploy.yaml` | Ingest cron (`0 7 * * *` UTC core, `0 8 * * 0` UTC pharmacy), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
+| `config/deploy.yaml` | Ingest cron (`0 7 * * *` UTC core, `37 4 * * 0` UTC pharmacy), Render plan hints, and the **LLM model catalog** (`llm.models`, `llm.default_model`, `llm.mediator_default_model` — see §2.4) |
 | `config/benefit_params.yaml` | Annual Part D OOP cap by contract year |
 | `config/disclaimer.txt` | UI disclaimer banner + modal; includes a short privacy pointer to the full policy |
 | `config/privacy_policy.txt` | Full privacy policy (`GET /api/privacy`, Privacy menu modal) |
@@ -1304,7 +1304,7 @@ See [deployment.md](./deployment.md) for full detail. Summary:
 
 ### 16.2 Nightly ingest
 
-- Schedule: `config/deploy.yaml` → `ingest.cron: "0 7 * * *"` UTC (core), `ingest.pharmacy_cron: "0 8 * * 0"` UTC (pharmacy)
+- Schedule: `config/deploy.yaml` → `ingest.cron: "0 7 * * *"` UTC (core), `ingest.pharmacy_cron: "37 4 * * 0"` UTC (pharmacy)
 - Entrypoint: `scripts/run-daily-ingest.sh` → `medicare-ingest spuf --download --preserve-other --core-only --core-only`
 - Active states: `INGEST_STATES` env (e.g. `AR,TX,CA`) intersected with `pdp_region_codes` in yaml; falls back to yaml `states` when unset
 - Runs inside container via supercronic (not Render Cron Jobs — disks cannot mount there)

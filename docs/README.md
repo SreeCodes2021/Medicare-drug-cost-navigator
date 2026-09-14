@@ -10,6 +10,7 @@ Developer-facing documentation for the **Medicare Drug Cost & Benefit-Transparen
 | [Insulin Cost Estimation](./insulin-cost-estimation.md) | Product / backend | IRA $35/30-day statutory cap: CMS source docs, calculation methodology, empirical field-resolution evidence, implementation, worked examples |
 | [Insulin Trails (review)](./insulin_trails/README.md) | Maintainers / reviewers | Implementation review of insulin coverage: architecture summary, strengths, bugs/risks, action items, test gaps (feedback only) |
 | [Deployment](./deployment.md) | DevOps | Render, cron ingest, persistent disk, monitoring |
+| [Data Ingestion Debug](./data_ingestion_debug.md) | DevOps / backend | Render Shell commands for row counts, per-state breakdowns, ingest health checks |
 | [Usage Analytics](./usage-analytics.md) | Ops / backend | Privacy-safe aggregate telemetry, admin API, dashboard, configuration |
 | [Data Sources](./data-sources.md) | Data / backend | CMS SPUF, RxNorm, NPPES, ZIP centroids, manifest fields (note: some Phase 1–5 sources are removed) |
 | [UI Requirements](./ui-requirements.md) | Product / frontend | Guided-form data-release display, repeatable-row caps, sub-mode tabs |

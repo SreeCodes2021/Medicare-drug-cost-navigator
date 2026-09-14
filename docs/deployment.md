@@ -104,7 +104,7 @@ From [`config/deploy.yaml`](../config/deploy.yaml):
 | Job | Cron (UTC) | Command |
 |-----|------------|---------|
 | Nightly core | `0 7 * * *` (2:00 AM US Central CDT) | `scripts/run-daily-ingest.sh` |
-| Weekly pharmacy | `0 8 * * 0` (Sunday 3:00 AM CDT) | `scripts/run-daily-ingest.sh --with-pharmacy-network --force` |
+| Weekly pharmacy | `37 4 * * 0` (Saturday 11:37 PM CDT) | `scripts/run-daily-ingest.sh --with-pharmacy-network --force` |
 
 Nightly core ingest **skips** when the CMS zip version and `INGEST_STATES` already match `manifest.json` (use `--force` to override). Typical nights with no new CMS release finish in under a minute.
 
@@ -165,6 +165,8 @@ python scripts/validate_insulin_cost_data.py --db /data/navigator.duckdb
 ## Inspecting and managing loaded data (Render Shell)
 
 On Render, open **Shell** on the web service. Paths below assume the default disk layout (`DUCKDB_PATH=/data/navigator.duckdb`). For local dev, use `./data/navigator.duckdb` instead.
+
+For **row counts by table and per-state breakdowns**, see [data_ingestion_debug.md](./data_ingestion_debug.md).
 
 ### Which states are loaded?
 

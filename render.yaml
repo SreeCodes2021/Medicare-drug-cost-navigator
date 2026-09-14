@@ -6,7 +6,7 @@ services:
   - type: web
     name: medicare-drug-cost
     runtime: docker
-    plan: starter
+    plan: standard
     dockerfilePath: ./Dockerfile
     disk:
       name: medicare-data
@@ -29,3 +29,5 @@ services:
         sync: false
       - key: INGEST_STATES
         value: AR,TX
+      - key: INGEST_PLAN
+        value: standard

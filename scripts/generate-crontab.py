@@ -18,7 +18,7 @@ def main() -> None:
     nightly = ingest.get("cron", "0 7 * * *")
     pharmacy = ingest.get("pharmacy_cron", "0 8 * * 0")
     print(f"{nightly} {INGEST_SCRIPT}")
-    print(f"{pharmacy} {INGEST_SCRIPT} --with-pharmacy-network --force")
+    print(f"{pharmacy} {INGEST_SCRIPT} --pharmacy-only --force")
 
 
 if __name__ == "__main__":

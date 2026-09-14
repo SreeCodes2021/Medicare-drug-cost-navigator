@@ -184,10 +184,18 @@ def migrate_schema(conn) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
+PHARMACY_NETWORK_INDEX = "idx_pharmacy_network_plan"
+
+
 def drop_spuf_indexes(conn) -> None:
     """Drop SPUF lookup indexes before bulk deletes (DuckDB ART index delete bug)."""
     for name in SPUF_INDEX_NAMES:
         conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+
+def drop_pharmacy_network_index(conn) -> None:
+    """Drop only the pharmacy_network index before targeted pharmacy-network deletes."""
+    conn.execute(f"DROP INDEX IF EXISTS {PHARMACY_NETWORK_INDEX}")
 
 
 def create_indexes(conn) -> None:
@@ -205,8 +213,12 @@ def create_indexes(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_insulin_beneficiary_cost "
         "ON insulin_beneficiary_cost(plan_key, tier, days_supply_code, pharmacy_channel)"
     )
+    create_pharmacy_network_index(conn)
+
+
+def create_pharmacy_network_index(conn) -> None:
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pharmacy_network_plan "
+        f"CREATE INDEX IF NOT EXISTS {PHARMACY_NETWORK_INDEX} "
         "ON pharmacy_network(plan_key, preferred_yn)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pharmacies_zip ON pharmacies(zip_code)")

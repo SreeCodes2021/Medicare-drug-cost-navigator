@@ -8,8 +8,8 @@ ingest:
   # 04:37 UTC Sunday = 11:37 PM US Central (CDT, UTC-5) Saturday. During CST (UTC-6), runs at 10:37 PM Saturday.
 
 render:
-  plan: starter
-  disk_size_gb: 5
+  plan: standard
+  disk_size_gb: 10
 
 # LLM model catalog. Changing a model here (or adding a new one) does not require a code
 # change — see src/medicare_navigator/llm/models.py, which loads this section (falling back

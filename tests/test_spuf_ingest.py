@@ -631,3 +631,69 @@ def test_ingest_spuf_cms_pharmacy_network_creates_zip_stub_pharmacies(spuf_db, t
         conn.close()
     assert network_count == 1
     assert pharmacy == ("Pharmacy near 32801", "32801", "cms_pharmacy_zipcode")
+
+
+def test_ingest_spuf_pharmacy_only_preserves_core_tables(spuf_db, tmp_path, monkeypatch):
+    """Weekly pharmacy refresh must not drop or reload pricing/formulary."""
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.npi_enrichment.enrich_npis",
+        lambda npis: {},
+    )
+    monkeypatch.setattr(
+        "medicare_navigator.ingestion.spuf.date",
+        type("date", (), {"today": staticmethod(lambda: date(2026, 1, 15))})(),
+    )
+    ingest_spuf(
+        FIXTURE_DIR,
+        filters=_fl_filters(),
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        include_pharmacy_network=False,
+    )
+    conn = spuf_db.connect()
+    try:
+        pricing_before = conn.execute("SELECT COUNT(*) FROM pricing").fetchone()[0]
+        formulary_before = conn.execute(
+            "SELECT COUNT(*) FROM basic_drugs_formulary"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert pricing_before > 0
+    assert formulary_before > 0
+
+    cms_network = tmp_path / "pharmacy networks file  PPUF_2026Q2 part 1.txt"
+    cms_network.write_text(
+        "CONTRACT_ID|PLAN_ID|SEGMENT_ID|PHARMACY_NUMBER|PHARMACY_ZIPCODE|"
+        "PREFERRED_STATUS_RETAIL|PREFERRED_STATUS_MAIL|PHARMACY_RETAIL|PHARMACY_MAIL\n"
+        "S9999|001|000|101689685109|32801|Y|N|Y|N\n",
+        encoding="utf-8",
+    )
+    for path in FIXTURE_DIR.iterdir():
+        if path.is_file() and path.name != "pharmacy network file.txt":
+            target = tmp_path / path.name
+            if not target.exists():
+                target.write_bytes(path.read_bytes())
+
+    result = ingest_spuf(
+        tmp_path,
+        filters=_fl_filters(),
+        db=spuf_db,
+        version="SPUF.2026.20260115",
+        pharmacy_only=True,
+    )
+    conn = spuf_db.connect()
+    try:
+        pricing_after = conn.execute("SELECT COUNT(*) FROM pricing").fetchone()[0]
+        formulary_after = conn.execute(
+            "SELECT COUNT(*) FROM basic_drugs_formulary"
+        ).fetchone()[0]
+        network_count = conn.execute(
+            "SELECT COUNT(*) FROM pharmacy_network WHERE plan_key = 'S9999-001'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert result["stats"]["pharmacy_only"] is True
+    assert pricing_after == pricing_before
+    assert formulary_after == formulary_before
+    assert network_count == 1

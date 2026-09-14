@@ -12,6 +12,8 @@ from medicare_navigator.ingestion.spuf import IngestFilters, ingest_spuf
 
 
 def _resolve_pharmacy_network_flag(args: argparse.Namespace) -> bool:
+    if getattr(args, "pharmacy_only", False):
+        return True
     if getattr(args, "with_pharmacy_network", False):
         return True
     if getattr(args, "core_only", False):
@@ -65,6 +67,7 @@ def _cmd_spuf(args: argparse.Namespace) -> None:
         preserve_non_spuf_tables=args.preserve_other,
         merge_states=args.merge_states,
         include_pharmacy_network=include_pharmacy_network,
+        pharmacy_only=getattr(args, "pharmacy_only", False),
     )
     stats = result["stats"]
     loaded = stats["plans"]
@@ -150,7 +153,12 @@ def main() -> None:
     scope.add_argument(
         "--with-pharmacy-network",
         action="store_true",
-        help="Also reload pharmacy_network and enrich pharmacies (weekly / recovery)",
+        help="Full core ingest plus pharmacy_network and pharmacies (recovery)",
+    )
+    scope.add_argument(
+        "--pharmacy-only",
+        action="store_true",
+        help="Refresh pharmacy_network and pharmacies only (weekly cron; skips core tables)",
     )
     spuf_parser.add_argument(
         "--force",

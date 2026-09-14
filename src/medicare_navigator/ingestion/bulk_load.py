@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import shutil
 import zipfile
 from pathlib import Path
 
+import yaml
+
 from medicare_navigator.config import settings
+
+log = logging.getLogger(__name__)
 
 _BULK_LOAD_MIN_BYTES = 100_000
 # Leave headroom on the persistent disk for DuckDB WAL/checkpoints during bulk SQL.
@@ -35,16 +41,70 @@ def _find_txt_in_zip_names(names: list[str]) -> str | None:
     return None
 
 
+_INGEST_MEMORY_BY_PLAN: dict[str, str] = {
+    "free": "256MB",
+    "starter": "320MB",
+    "standard": "1.2GB",
+    "pro": "1.5GB",
+    "pro_plus": "2GB",
+}
+
+
+def resolve_ingest_plan_tier() -> str:
+    """Render/compute tier for ingest tuning (INGEST_PLAN env > deploy.yaml > starter)."""
+    explicit = os.environ.get("INGEST_PLAN", "").strip().lower()
+    if explicit:
+        return explicit
+    deploy_path = settings.config_dir / "deploy.yaml"
+    if deploy_path.is_file():
+        try:
+            data = yaml.safe_load(deploy_path.read_text(encoding="utf-8")) or {}
+            render_plan = (data.get("render") or {}).get("plan")
+            if render_plan:
+                return str(render_plan).strip().lower()
+        except (OSError, yaml.YAMLError):
+            pass
+    return "starter"
+
+
+def resolve_ingest_memory_limit() -> str:
+    """DuckDB memory_limit for ingest; override with INGEST_MEMORY_LIMIT."""
+    override = os.environ.get("INGEST_MEMORY_LIMIT", "").strip()
+    if override:
+        return override
+    tier = resolve_ingest_plan_tier()
+    if tier.startswith("2c"):
+        return "1.5GB"
+    return _INGEST_MEMORY_BY_PLAN.get(tier, "1.2GB")
+
+
+def resolve_ingest_threads() -> int:
+    """Keep ingest single-threaded so cron jobs do not peg multi-core hosts."""
+    raw = os.environ.get("INGEST_THREADS", "1").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
 def configure_ingest_connection(conn) -> None:
-    """Tune DuckDB for ingest inside the API container (Render Starter)."""
+    """Tune DuckDB for ingest inside the API container (plan-aware limits)."""
     temp_dir = settings.data_dir / "duckdb_temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     conn.execute(f"SET temp_directory TO '{temp_dir.as_posix()}'")
     # Spill to the persistent data volume (not the container rootfs).
     conn.execute("SET max_temp_directory_size TO '4GiB'")
-    conn.execute("SET threads TO 1")
+    threads = resolve_ingest_threads()
+    memory_limit = resolve_ingest_memory_limit()
+    conn.execute(f"SET threads TO {threads}")
     conn.execute("SET preserve_insertion_order TO false")
-    conn.execute("SET memory_limit TO '320MB'")
+    conn.execute(f"SET memory_limit TO '{memory_limit}'")
+    log.info(
+        "DuckDB ingest tuning: plan=%s memory_limit=%s threads=%s",
+        resolve_ingest_plan_tier(),
+        memory_limit,
+        threads,
+    )
 
 
 def _staging_path(member: str | Path) -> Path:
