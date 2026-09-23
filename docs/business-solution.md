@@ -18,7 +18,7 @@ This application addresses that gap by combining:
 
 The system processes only public government data, stores no Protected Health Information (PHI), and does not provide enrollment or plan-switching advice.
 
-**Current status.** The system is a working, tested implementation running against real CMS data for two states (Arkansas and Texas), covering drugs on a plan's regular formulary for a non-low-income-subsidy beneficiary: oral drugs priced through the standard tiered/deductible pipeline, and insulin priced through its own Inflation Reduction Act $35-per-30-day statutory cap (no deductible phase), in the pre-deductible, initial-coverage, insulin-cap, or catastrophic benefit phase, priced independently across all four CMS pharmacy channels (preferred/standard retail, preferred/standard mail-order) — including combined requests that mix insulin and oral drugs on one plan. This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach coinsurance and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
+**Current status.** The system is a working, tested implementation running against real CMS data for **two states (Arkansas and Texas)** for drug-cost estimates, covering drugs on a plan's regular formulary for a non-low-income-subsidy beneficiary: oral drugs priced through the standard tiered/deductible pipeline, and insulin priced through its own Inflation Reduction Act $35-per-30-day statutory cap (no deductible phase), in the pre-deductible, initial-coverage, insulin-cap, or catastrophic benefit phase, priced independently across all four CMS pharmacy channels (preferred/standard retail, preferred/standard mail-order) — including combined requests that mix insulin and oral drugs on one plan. **Pharmacy-network lookup** (nearby/preferred pharmacies by ZIP, plan-scoped network search, and "cost at my nearest preferred pharmacy") is loaded for **Arkansas only** — Texas has full cost-estimate data but no `pharmacy_network` rows yet. This is a deliberate engineering choice, not a limitation the team was unaware of: the project treats *correctness on a narrow, real slice* as the prerequisite for expansion, rather than approximating a broad slice. Section 5 states exactly what is and is not covered today; Section 9 lays out the specific, sequenced engineering work — already scoped at the data-source and module level — to reach coinsurance, pharmacy data for additional states, and all-50-state coverage. Section 12 explains why closing this gap at national scale matters beyond this one application.
 
 ---
 
@@ -109,7 +109,8 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Capability | Detail |
 |---|---|
 | Plan types | Stand-alone PDP (S*) and local MA-PD (H*) plans |
-| Geographic coverage | Arkansas + Texas (462 plans in the combined AR+TX 2026 ingest) |
+| Cost-estimate geographic coverage | Arkansas + Texas (462 plans in the combined AR+TX 2026 ingest) |
+| Pharmacy-locator geographic coverage | Arkansas only — CMS `pharmacy_network` + NPPES enrichment ingested for AR plans; TX has cost data but no pharmacy-network rows loaded yet |
 | Drug types | Oral generic/brand on regular formulary, plus insulin — priced via its separate Inflation Reduction Act $35-per-30-day statutory cap rather than the tiered/deductible pipeline (see [Insulin Cost Estimation](./insulin-cost-estimation.md)) |
 | Beneficiary type | Non-LIS (no Low-Income Subsidy) |
 | Benefit phases | Pre-deductible, initial coverage, insulin-cap, and catastrophic (user supplies YTD OOP; catastrophic applies once YTD meets or exceeds the CMS annual Part D out-of-pocket maximum for the plan's contract year, from `config/benefit_params.yaml`) |
@@ -120,7 +121,8 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Insulin session follow-up | After an insulin estimate, a follow-up that only changes YTD spend (e.g. "what if I've spent $2,200 YTD?") re-prices the same product(s) and plan from the prior turn without re-stating drug or plan names |
 | Operator analytics | Aggregate-only usage rollups (request counts, latency, LLM token/cost sums, coarse prompt-length buckets, interaction mode, two-letter state label) — no message text, drug names, or per-user identity; operator dashboard gated by shared secret — see [Usage Analytics](./usage-analytics.md) |
 | Restrictions | Prior auth and step therapy surfaced as soft caveats; quantity limits as hard stops |
-| Pharmacy lookup | Nearby- and preferred-pharmacy search by ZIP code against CMS's published pharmacy-network data (enriched with NPPES name/address), within a fixed 25-mile straight-line radius — used to name a specific in-network pharmacy before pricing a drug "at my preferred pharmacy" |
+| Pharmacy lookup | **Chat-only** (no guided-form tab or dedicated REST endpoint). Nearby- and preferred-pharmacy search by ZIP against CMS pharmacy-network data for **Arkansas plans** (NPPES name/address enrichment), within a fixed 25-mile straight-line radius — used to name a specific in-network pharmacy before pricing a drug "at my preferred pharmacy". Five question shapes answered deterministically before the LLM runs (`agent/pharmacy_questions.py`); the LLM can also call `find_pharmacies` directly for other phrasing |
+| Structured estimate APIs | `POST /api/estimate` (single drug, all channels, no LLM), `POST /api/estimate-batch` (up to 5 drugs on one plan), `POST /api/compare-plans` (one drug across 2–N plans) — same deterministic pipeline as chat; used by the guided form and as the numeric-accuracy oracle for QA |
 
 ### 5.2 Out of scope (honest limitations)
 
@@ -131,6 +133,7 @@ This re-verification pass also caught and fixed a real bug: CMS's beneficiary-co
 | Medicaid | Not supported |
 | Excluded-drug formulary | Not supported |
 | Real-time pharmacy pricing | CMS quarterly reference data only |
+| Pharmacy lookup outside Arkansas | No `pharmacy_network` data for TX or other states — cannot list nearby/preferred pharmacies or answer "cost at my pharmacy" for non-AR plans; channel-level cost estimates still work |
 | Plan switching / enrollment advice | Never provided |
 
 *Insulin is now in scope (see table above). A narrow `insulin_out_of_scope` hard stop remains only for the rare case where a specific plan has no published CMS insulin cost-share record for that product's tier and fill size — a genuine data gap, not a blanket exclusion.*
@@ -152,6 +155,7 @@ flowchart TB
         Health["/api/health"]
         Chat["/api/chat"]
         Query["/api/query"]
+        Est["/api/estimate*"]
         Plans["/api/plans"]
         Meta["/api/meta/as-of"]
     end
@@ -241,8 +245,10 @@ sequenceDiagram
 |---|---|
 | **Disclaimer banner** | Always-visible notice: informational only; not medical, financial, or enrollment advice; short privacy pointer to aggregate usage stats |
 | **Privacy policy modal** | Full plain-language policy from `config/privacy_policy.txt` (`GET /api/privacy`); section headings rendered in the banner and modals |
-| **Ask in Chat tab** | Free-form natural language with session follow-ups (max 5 turns) |
-| **Guided Estimate tab** | Structured form: state, drug, dosage, plan, contract year, days supply, YTD OOP — required fields marked with asterisks and per-field "Mandatory" hints when submit is disabled |
+| **Ask in Chat tab** | Free-form natural language with session follow-ups (max 5 turns); per-session model selector and token/cost usage display |
+| **Guided Estimate tab** | Three sub-modes — **Single** (one drug), **Multiple drugs** (up to 5 on one plan, combined total), **Compare plans** (one drug across 2–N plans). Shared fields: state, drug, dosage, plan(s), contract year, days supply, YTD OOP — required fields marked with asterisks and per-field "Mandatory" hints when submit is disabled. State/ZIP are plan-discovery convenience only; they do not change cost figures |
+| **Channel cost table** | Structured per-channel cost-share breakdown (preferred/standard retail and mail) rendered alongside chat and guided responses when multi-channel data exists |
+| **About app modal** | Plain-language scope summary (AR+TX cost data, AR-only pharmacy lookup, insulin/coinsurance boundaries) |
 | **Prompt chips** | Example queries using the real plan `S5921-400` (AARP Medicare Rx Preferred from UHC, AR 2026), so they resolve once a real CMS AR ingest has run — see [§3.3](#33-verified-example) |
 | **Plan polling** | Auto-refreshes plan list every 20s during CMS data ingest |
 | **Sources panel** | Citations, data-as-of badge, tool status footer |
@@ -260,12 +266,21 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 | `GET /api/health` | Service health, `data_fresh` flag, LLM configuration status |
 | `POST /api/chat` | Conversational turn with estimate and citations |
 | `POST /api/query` | Structured query (same backend pipeline) |
-| `GET /api/plans` | Plan list for guided form |
+| `POST /api/estimate` | Deterministic single-drug cost estimate (all channels, no LLM) |
+| `POST /api/estimate-batch` | Deterministic multi-drug batch (up to 5 drugs on one plan) |
+| `POST /api/compare-plans` | Deterministic plan comparison (one drug across 2–N plans) |
+| `GET /api/plans` | Plan list for guided form (`?state=AR` filter) |
+| `GET /api/states` | States with ingested plan data |
+| `GET /api/zip-lookup` | ZIP → state lookup for guided-form plan discovery (UX only) |
+| `GET /api/drugs`, `GET /api/drug-dosages` | RxNorm-backed drug/dosage pickers for guided form |
+| `GET /api/models` | Available LLM models and pricing catalog |
 | `GET /api/meta/as-of` | Data freshness manifest |
+| `GET /api/data-releases`, `GET /api/data-release` | CMS SPUF release metadata |
 | `GET /api/disclaimer` | Canonical disclaimer text + short privacy pointer |
 | `GET /api/privacy` | Full privacy policy text |
 | `POST /api/feedback` | User feedback (append-only `feedback.jsonl` on persistent disk) |
 | `GET /api/admin/usage` | Aggregate usage rollups (shared-secret gate; hidden when unset) — see [Usage Analytics](./usage-analytics.md) |
+| `GET /api/admin/feedback` | Operator feedback viewer (shared-secret gate) |
 
 ### 7.3 Navigator agent (`src/medicare_navigator/agent/`)
 
@@ -273,7 +288,7 @@ Dollar figures appear in the chat transcript. The Sources panel provides auditab
 |---|---|
 | `navigator.py` | LLM tool-calling loop; invokes MCP tools; extracts `DrugCostEstimate` |
 | `prompts.py` | Enforces scope, verbatim caveats, no plan-switching advice |
-| Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `enrollment_questions.py`, `invalid_input_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, missing dosage, enrollment asks, malformed numeric input, prompt-injection patterns) and either answer directly or call the estimate tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior. `resolve_insulin_session_follow_up` re-estimates insulin when a follow-up turn changes YTD spend but omits drug/plan names, reusing `last_tool_calls` from the prior session turn |
+| Deterministic request routers | `insulin_requests.py`, `mixed_basket_requests.py`, `dosage_questions.py`, `tier_questions.py`, `oop_questions.py`, `pharmacy_questions.py` (five pharmacy shapes + radius follow-up), `alternatives_questions.py`, `enrollment_questions.py`, `medical_advice_questions.py`, `invalid_input_questions.py`, `conversation_recall_questions.py`, `compound_questions.py` — parse well-known request shapes (named insulin products, multi-drug baskets, tier-only lookups, OOP-cap questions, pharmacy locator/cost-at-pharmacy, therapeutic-alternatives asks, missing dosage, enrollment asks, medical-advice refusal, malformed numeric input, prompt-injection patterns, session recall, multi-topic compound messages) and either answer directly or call the estimate/locator tools before the LLM runs, so scope and per-product pricing rules can't be skipped or pooled by model behavior. `resolve_insulin_session_follow_up` re-estimates insulin when a follow-up turn changes YTD spend but omits drug/plan names, reusing `last_tool_calls` from the prior session turn |
 | `mediator.py` | Optional pre-processing step (off unless `MEDIATOR_ENABLED=1`) that runs a second, separate LLM call before the routers/agent loop to normalize phrasing and pull out date/duration wording (e.g. "the next 3 months") into structured fields — it never answers, routes, or prices anything, and safety refusal checks always see the user's original wording regardless of whether this step is on |
 | LLM client | OpenAI (default model) or Anthropic Claude; `LLM_MOCK=1` for offline use. Which models are available, their pricing, and the default are configuration (`config/deploy.yaml`), not application code — switching or repricing a model doesn't require a code change |
 
@@ -344,7 +359,7 @@ When a user names insulin products alongside oral drugs for the same plan (e.g.,
 
 #### Pharmacy locator: `find_pharmacies`
 
-Finds CMS-network pharmacies near a ZIP code — optionally scoped to a named plan's network and/or an exact pharmacy channel — within a fixed 25-mile straight-line (not driving) radius, enriched with name/address from the free NPPES NPI Registry. Used two ways: as its own answer ("what pharmacies are near me / in my plan's network"), and as a precursor to a cost estimate when a user asks what a drug costs "at my preferred pharmacy" — the system names the nearest preferred-retail pharmacy first, then prices the drug at that channel, since CMS prices at the channel level rather than per physical pharmacy address. Five common pharmacy-question shapes are answered deterministically (`agent/pharmacy_questions.py`) before the LLM is asked to route them itself.
+Finds CMS-network pharmacies near a ZIP code — optionally scoped to a named plan's network and/or an exact pharmacy channel — within a fixed 25-mile straight-line (not driving) radius, enriched with name/address from the free NPPES NPI Registry. **Production data is loaded for Arkansas only** — the tool works for any state with `pharmacy_network` rows in DuckDB, but TX and other states have not been pharmacy-ingested yet. Used two ways: as its own answer ("what pharmacies are near me / in my plan's network"), and as a precursor to a cost estimate when a user asks what a drug costs "at my preferred pharmacy" — the system names the nearest preferred-retail pharmacy first, then prices the drug at that channel, since CMS prices at the channel level rather than per physical pharmacy address. Five common pharmacy-question shapes are answered deterministically (`agent/pharmacy_questions.py`) before the LLM is asked to route them itself; there is no guided-form UI or REST endpoint for pharmacy search — chat only.
 
 ### 7.5 Data storage
 
@@ -358,7 +373,7 @@ Finds CMS-network pharmacies near a ZIP code — optionally scoped to a named pl
 | `pharmacy_network` | `pharmacy network` | `plan_key`, `npi`, preferred/retail/mail flags | Plan-to-pharmacy membership for the pharmacy locator |
 | `pharmacies` | Runtime (NPPES enrichment) | `npi`, name, address, `zip_code` | Pharmacy directory used by the locator; not plan-specific |
 
-**Ingestion:** `medicare-ingest spuf` downloads CMS quarterly ZIP, filters by state, writes to DuckDB, updates `manifest.json`. Nightly supercronic refresh on Render. Schema migrations support persistent disks across deploys.
+**Ingestion:** `medicare-ingest spuf` downloads CMS quarterly ZIP, filters by state, writes to DuckDB, updates `manifest.json`. Nightly supercronic refresh on Render reloads **core tables only** (`--core-only` — plans, formulary, pricing, beneficiary/insulin costs); a **weekly** job reloads `pharmacy_network` + NPPES enrichment (`--pharmacy-only`). Pharmacy ingest is heavier (~1–2 hours for a full reload) and is currently run for **Arkansas only** in production; Texas cost data is on the nightly path but without pharmacy-network rows. Schema migrations support persistent disks across deploys.
 
 ### 7.6 Guardrails (`src/medicare_navigator/guardrails/`)
 
@@ -376,11 +391,11 @@ Finds CMS-network pharmacies near a ZIP code — optionally scoped to a named pl
 | Asset | Coverage |
 |---|---|
 | 15-case eval suite | Cost estimates, not-found, not-covered, insulin (priced, catastrophic $0, data-gap), suppressed, quantity-limit |
-| 559 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, early-return question routing, channel-parity prose repair, insulin session follow-up, pharmacy locator |
+| 610 unit/integration tests | Pipeline rules, ingest schema, guardrails, API health, UI contract, insulin cost-share, mixed baskets, batch/compare-plans APIs, early-return question routing, channel-parity prose repair, insulin session follow-up, pharmacy locator |
 | 5 live-API integration tests | Real RxNorm and CMS catalog API calls (excluded from default run; opt-in via `pytest -m integration`) |
-| UI test harness | Guided form, mode switching, smoke messages, mandatory-field contract checks, responsive-interactions Playwright flow (viewport, touch targets, keyboard/Escape, combobox) |
+| UI test harness | Guided form (single/multi-drug/compare-plans sub-modes), mode switching, smoke messages, mandatory-field contract checks, responsive-interactions Playwright flow (viewport, touch targets, keyboard/Escape, combobox) |
 
-Current result: 15/15 eval cases passing; 554/559 default-suite tests passing (5 skipped); 5/5 live-API integration tests passing.
+Current result: 15/15 eval cases passing; 605/610 default-suite tests passing (5 skipped); 5/5 live-API integration tests passing.
 
 ---
 
@@ -478,6 +493,16 @@ Phase 7 extends the `estimate_drug_cost` pipeline to cover benefit phases and dr
 | **Current impact** | None yet — the two currently-ingested states, AR (region `19`) and TX (region `22`), both have unique region codes. |
 | **Future impact** | Once ingestion expands to states sharing a PDP region code, the state-based plan picker (§7.6 UI) will under-represent PDP plan availability for every state in a shared region except the one arbitrarily chosen first. |
 | **Fix (not scheduled)** | Either store all states sharing a region code per plan (denormalized list or join table), or ingest the CMS county/region reference file directly rather than approximating via `config/ingest_filters.yaml`. Out of scope for the current zip/state plan-picker feature — zip/state remain a plan-*discovery* convenience there, not a source of new geographic precision. |
+
+#### 7.6.2 Pharmacy-network geographic expansion
+
+| Item | Detail |
+|---|---|
+| **Current state** | Pharmacy locator data (`pharmacy_network` + NPPES `pharmacies`) ingested for **Arkansas only**; Texas has full cost-estimate tables but no pharmacy-network rows |
+| **Target** | Load pharmacy-network data for Texas (and each subsequent state as cost data expands) |
+| **Implementation** | `medicare-ingest spuf --states TX --merge-states --with-pharmacy-network`; weekly `--pharmacy-only` cron already respects `INGEST_STATES` |
+| **Ops note** | Pharmacy ingest is significantly heavier than core-only (~1–2 hours full reload vs ~5 minutes nightly); production currently prioritizes AR pharmacy data while TX runs on the lighter core path |
+| **UI / API** | No new endpoints required — `find_pharmacies` and chat resolvers work for any ingested state; guided form remains cost-only |
 
 ---
 
@@ -719,6 +744,7 @@ gantt
     Coinsurance computation              :p7c, 2026-09-01, 2026-12-01
     Excluded-drugs formulary             :p7d, 2026-10-01, 2026-12-01
     Indication restrictions              :p7e, 2026-11-01, 2027-01-01
+    Pharmacy-network TX expansion        :p7g, 2026-09-01, 2026-11-01
     National 50-state ingest             :p7f, 2026-08-01, 2027-02-01
 
     section Phase 8 - Benefit transparency
@@ -755,8 +781,8 @@ Phases 1–6 were built and verified against real CMS data over 2026-02-28 to 20
 
 | Phase | Theme | Key deliverables |
 |---|---|---|
-| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX data, chat + guided UI, catastrophic phase + multi-channel pricing + insulin cost estimator added post-release |
-| **7** | Complete the cost estimator | Coinsurance, excluded formulary, indications, 50-state ingest |
+| **6 (current)** | Verifiable single-fill cost estimate | 8-step pipeline, 6 CMS correctness rules, AR+TX cost data, AR-only pharmacy locator, chat + guided UI (single/multi-drug/compare-plans), structured estimate APIs, catastrophic phase + multi-channel pricing + insulin cost estimator added post-release |
+| **7** | Complete the cost estimator | Coinsurance, excluded formulary, indications, pharmacy data for TX + additional states, 50-state ingest |
 | **8** | Benefit transparency | Cost trends, alternatives, cost-change explanation, policy Q&A, LIS |
 | **9** | User experience | Build pipeline, results cards, clarification agent, accessibility, print/share |
 | **10** | Data platform | CI gate, freshness monitoring, NADAC, IRA MFP, storage scaling |
